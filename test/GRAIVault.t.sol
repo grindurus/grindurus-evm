@@ -1,89 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-
-import {GRAI} from "../src/GRAI.sol";
-import {GRAIVault} from "../src/GRAIVault.sol";
-import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
-import {CustomPriceFeed} from "../src/CustomPriceFeed.sol";
+import {GRAIFixture} from "./GRAIFixture.sol";
 import {SeniorVault} from "../src/SeniorVault.sol";
 import {JuniorVault} from "../src/JuniorVault.sol";
 
-import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockAggregator} from "./mocks/MockAggregator.sol";
-
-contract GRAITest is Test {
-    address admin = makeAddr("admin");
-    address treasury = makeAddr("treasury");
-    address alice = makeAddr("alice");
-    address bob = makeAddr("bob");
-    address custody = makeAddr("custody");
-
-    GRAI grai;
-    GRAIVault vault;
-    PriceOracleRouter oracle;
-
-    MockERC20 usdc; // 6 decimals
-    MockERC20 weth; // 18 decimals
-    MockAggregator usdcFeed; // 8 decimals, $1
-    MockAggregator wethFeed; // 8 decimals, $2000
-
-    uint16 constant BPS = 10_000;
-
-    function setUp() public {
-        // --- token (UUPS proxy) ---
-        GRAI tokenImpl = new GRAI();
-        bytes memory tokenInit = abi.encodeCall(GRAI.initialize, (admin));
-        grai = GRAI(address(new ERC1967Proxy(address(tokenImpl), tokenInit)));
-
-        // --- oracle + tranche templates ---
-        oracle = new PriceOracleRouter();
-        address seniorImpl = address(new SeniorVault());
-        address juniorImpl = address(new JuniorVault());
-
-        // --- vault (UUPS proxy) ---
-        GRAIVault vaultImpl = new GRAIVault();
-        bytes memory vaultInit = abi.encodeCall(
-            GRAIVault.initialize, (admin, address(grai), address(oracle), seniorImpl, juniorImpl, treasury)
-        );
-        vault = GRAIVault(address(new ERC1967Proxy(address(vaultImpl), vaultInit)));
-
-        // --- wire minter role ---
-        bytes32 minterRole = grai.MINTER_ROLE();
-        vm.prank(admin);
-        grai.grantRole(minterRole, address(vault));
-
-        // --- assets + feeds ---
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        weth = new MockERC20("Wrapped Ether", "WETH", 18);
-        usdcFeed = new MockAggregator(8, 1e8);
-        wethFeed = new MockAggregator(8, 2000e8);
-
-        vm.startPrank(admin);
-        vault.addAsset(address(usdc), address(usdcFeed));
-        vault.addAsset(address(weth), address(wethFeed));
-        vm.stopPrank();
-
-        usdc.mint(alice, 1_000e6);
-        usdc.mint(bob, 1_000e6);
-        usdc.mint(custody, 1_000e6); // for distribute
-        weth.mint(alice, 100e18);
-    }
-
-    function test_TokenMetadata() public view {
-        assertEq(grai.name(), "Grinders Artificial Index");
-        assertEq(grai.symbol(), "GRAI");
-        assertEq(grai.decimals(), 18);
-    }
-
-    function test_OnlyVaultCanMint() public {
-        vm.expectRevert();
-        vm.prank(alice);
-        grai.mint(alice, 1e18);
-    }
-
+contract GRAIVaultTest is GRAIFixture {
     function test_AddAssetDeploysVaults() public view {
         assertEq(vault.assetCount(), 2);
         (bool exists, SeniorVault senior, JuniorVault junior,,,,,,) = vault.assets(address(usdc));
@@ -98,13 +20,6 @@ contract GRAITest is Test {
         vm.prank(admin);
         vm.expectRevert(bytes("exists"));
         vault.addAsset(address(usdc), address(usdcFeed));
-    }
-
-    function _mint(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
-        vm.startPrank(user);
-        token.approve(address(vault), amount);
-        graiOut = vault.mint(address(token), amount);
-        vm.stopPrank();
     }
 
     function test_FirstMintBootstrapsAtParity() public {
@@ -145,10 +60,6 @@ contract GRAITest is Test {
         assertEq(graiOut, 2000e18); // $2000
         assertEq(vault.totalValue(), 2000e18);
     }
-
-    // -------------------------------------------------------------------------
-    // allocate + distribute (NAV growth)
-    // -------------------------------------------------------------------------
 
     function test_AllocateMovesJuniorToCustody() public {
         _mint(alice, usdc, 100e6); // junior holds 50 USDC
@@ -223,11 +134,7 @@ contract GRAITest is Test {
 
     function test_GetVaultsSnapshot() public {
         _mint(alice, usdc, 100e6);
-        GRAIVault.VaultSnapshot[] memory snap = vault.getVaults();
-        assertEq(snap.length, 2);
-        assertEq(snap[0].asset, address(usdc));
-        assertEq(snap[0].seniorBalance, 50e6);
-        assertEq(snap[0].juniorBalance, 50e6);
+        _assertFirstVaultSnapshot(address(usdc), 50e6, 50e6);
     }
 
     function test_StalePriceReverts() public {
@@ -270,24 +177,5 @@ contract GRAITest is Test {
         vm.expectRevert(bytes("active funds"));
         vault.removeAsset(address(usdc));
         vm.stopPrank();
-    }
-
-    function test_CustomPriceFeedWorksThroughRouter() public {
-        address oracleSigner = makeAddr("oracleSigner");
-        CustomPriceFeed feed = new CustomPriceFeed(8, "MOCK/USD", oracleSigner, admin);
-
-        vm.prank(oracleSigner);
-        feed.setPrice(5e8); // $5
-
-        (uint256 price, uint8 dec) = oracle.getPrice(address(feed));
-        assertEq(price, 5e8);
-        assertEq(dec, 8);
-    }
-
-    function test_CustomPriceFeedAclEnforced() public {
-        CustomPriceFeed feed = new CustomPriceFeed(8, "MOCK/USD", makeAddr("oracleSigner"), admin);
-        vm.expectRevert(bytes("not oracle"));
-        vm.prank(alice);
-        feed.setPrice(5e8);
     }
 }

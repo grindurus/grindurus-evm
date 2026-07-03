@@ -7,6 +7,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {GRAI} from "../src/GRAI.sol";
 import {GRAIVault} from "../src/GRAIVault.sol";
 import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
+import {PythPriceFeed} from "../src/PythPriceFeed.sol";
 import {SeniorVault} from "../src/SeniorVault.sol";
 import {JuniorVault} from "../src/JuniorVault.sol";
 
@@ -14,9 +15,20 @@ import {JuniorVault} from "../src/JuniorVault.sol";
 ///   ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol \
 ///     --rpc-url $RPC_URL --broadcast
 ///
-/// Then, per asset (e.g. on mainnet):
-///   vault.addAsset(USDC, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 /* USDC/USD */);
+/// Then register each asset with a feed that implements AggregatorV3Interface:
+///   - Chainlink (mainnet):
+///       vault.addAsset(USDC, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 /* USDC/USD */);
+///   - Pyth (any network): deploy a per-asset adapter, then register it:
+///       address feed = deployer.deployPythFeed(PYTH, USDC_USD_ID, "USDC/USD");
+///       vault.addAsset(USDC, feed);
 contract Deploy is Script {
+    function deployPythFeed(address pyth, bytes32 priceId, string memory description)
+        public
+        returns (PythPriceFeed feed)
+    {
+        feed = new PythPriceFeed(pyth, priceId, description);
+    }
+
     function run() external returns (GRAI grai, GRAIVault vault, PriceOracleRouter oracle) {
         address admin = vm.envOr("ADMIN", msg.sender);
         address treasury = vm.envOr("TREASURY", admin);

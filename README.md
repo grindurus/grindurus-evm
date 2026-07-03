@@ -31,10 +31,11 @@ raises NAV for all holders, and 20% to the treasury).
                      └───────────────┬────────────────┘
                                      │ mint / burn
                                      ▼
-┌────────────────┐  addAsset  ┌──────────────────────────────────┐  reads   ┌───────────────────┐
-│ PriceOracle     │◄──────────►│  GRAIVault (core, Upgradeable)    │◄────────►│  Chainlink Feeds  │
-│ Router          │  getPrice  │  - asset registry & NAV           │          │  (AggregatorV3)   │
-└────────────────┘            │  - mint / burn / allocate / distr │          └───────────────────┘
+┌────────────────┐  addAsset  ┌──────────────────────────────────┐  reads   ┌────────────────────────┐
+│ PriceOracle     │◄──────────►│  GRAIVault (core, Upgradeable)    │◄────────►│  AggregatorV3 feeds:   │
+│ Router          │  getPrice  │  - asset registry & NAV           │          │  Chainlink / Pyth /    │
+└────────────────┘            │  - mint / burn / allocate / distr │          │  Custom                │
+                                                                              └────────────────────────┘
                               │  - deploys Senior/Junior vaults   │
                               └───────┬───────────────────┬───────┘
                             deploys   │                   │   deploys
@@ -50,8 +51,9 @@ raises NAV for all holders, and 20% to the treasury).
 | `GRAI` | Upgradeable ERC20 share token (name `Grinders Artificial Index`, symbol `GRAI`, 18 decimals). Minting is restricted to the vault via `MINTER_ROLE`. |
 | `GRAIVault` | Protocol core (UUPS upgradeable). Holds the asset registry and NAV; implements `mint`/`burn`/`allocate`/`distribute`; deploys the per-asset tranche stores in `addAsset`. |
 | `SeniorVault` / `JuniorVault` | Per-asset token stores deployed as EIP-1167 clones inside `addAsset`. They are intentionally minimal — they only hold tokens and release them on the core's command. Senior holds the idle reserve (source of burns); junior holds active capital routed to custody. |
-| `PriceOracleRouter` | Reads Chainlink `AggregatorV3Interface` feeds with positivity and staleness checks; isolates price logic so sources can be swapped without upgrading the core. |
+| `PriceOracleRouter` | Reads any `AggregatorV3Interface` feed with positivity and staleness checks; isolates price logic so sources can be swapped without upgrading the core. |
 | `CustomPriceFeed` | Optional fallback oracle (for assets without a Chainlink feed) implementing `AggregatorV3Interface` with an access-controlled price pusher and on-chain freshness. |
+| `PythPriceFeed` | Adapter that exposes a [Pyth](https://pyth.network) price feed through `AggregatorV3Interface`. One adapter per asset wraps the network's Pyth contract + a network-agnostic `bytes32` price id, so Pyth works on any chain with no change to the core. |
 
 ## Lifecycle
 
@@ -142,6 +144,59 @@ before deploying.
 | USDC/USD | `0x16a9FA2FDa030272Ce99B29CF780dFA30361E0f3` | 8 |
 | LINK/USD | `0xCc232dcFAAE6354cE191Bd574108c1aD03f86229` | 8 |
 
+## Pyth price feeds (any network)
+
+[Pyth](https://pyth.network) is a *pull* oracle: it deploys one contract per network,
+and every asset is identified by a network-agnostic `bytes32` **price id** (the same id
+means the same pair on every chain). The `PythPriceFeed` adapter wraps
+`(pythContract, priceId)` behind `AggregatorV3Interface`, so it plugs into the existing
+router and vault with no core changes and works on any Pyth-supported chain.
+
+To add a Pyth-priced asset:
+
+```solidity
+// 1. deploy one adapter per asset (pythContract is per-network, priceId is shared)
+PythPriceFeed feed = new PythPriceFeed(
+    0x4305FB66699C3B2702D4d05CF36551390A4c69C6, // Ethereum Pyth contract
+    0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a, // USDC/USD price id
+    "USDC/USD"
+);
+// 2. register it like any other feed
+vault.addAsset(USDC, address(feed));
+```
+
+A Pyth price is a fixed-point number `price * 10^expo`; the adapter maps the mantissa onto
+`answer` and `-expo` onto `decimals`, so the value is identical in meaning to a Chainlink
+answer. Freshness is enforced by `PriceOracleRouter.MAX_STALENESS` (1 hour), exactly like
+the Chainlink feeds — see the production note about keeping Pyth prices posted on-chain.
+
+### Pyth contract addresses (mainnets)
+
+Verify against the [official Pyth EVM address list](https://docs.pyth.network/price-feeds/core/contract-addresses/evm)
+before deploying.
+
+| Network | Pyth contract |
+|---------|---------------|
+| Ethereum  | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
+| Arbitrum  | `0xff1a0f4744e8582DF1aE09D5611b887B6a12925C` |
+| Optimism  | `0xff1a0f4744e8582DF1aE09D5611b887B6a12925C` |
+| Polygon   | `0xff1a0f4744e8582DF1aE09D5611b887B6a12925C` |
+| Base      | `0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a` |
+| Avalanche | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
+| BNB Chain | `0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594` |
+
+### Pyth price feed IDs (identical on every network)
+
+The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/price-feeds/price-feed-ids).
+
+| Pair | Price id |
+|------|----------|
+| BTC/USD  | `0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` |
+| ETH/USD  | `0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` |
+| USDC/USD | `0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` |
+| USDT/USD | `0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b` |
+| ARB/USD  | `0x3fa4252848f9f0a1480be62745a4629d9eb1322aebab8a791e344b3b9c1adcf5` |
+
 ### Common USDC token addresses (for `addAsset`)
 
 | Network | USDC address |
@@ -161,3 +216,8 @@ before deploying.
   - Optimism: `0x371EAD81c9102C9BF4874A9075FFFf170F2Ee389`
 - For assets without a Chainlink feed, deploy a `CustomPriceFeed` and keep its price fresh
   via an off-chain keeper.
+- Pyth is a **pull** oracle: the on-chain price only updates when someone submits an update.
+  For Pyth-priced assets, run a keeper that periodically calls
+  `IPyth.updatePriceFeeds{value: fee}(updateData)` (with `fee = getUpdateFee(updateData)`,
+  using update blobs from Hermes) so the price stays within `MAX_STALENESS`; otherwise
+  `mint`/`burn` will revert with `stale price`.
