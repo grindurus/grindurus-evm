@@ -11,4 +11,10 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
 ]
 
+# RPC endpoints for fork tests. Override the public defaults by exporting
+# ETH_RPC_URL / ARBITRUM_RPC_URL (e.g. your own Alchemy/Infura endpoint).
+[rpc_endpoints]
+ethereum = "${ETH_RPC_URL}"
+arbitrum = "${ARBITRUM_RPC_URL}"
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
