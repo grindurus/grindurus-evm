@@ -55,10 +55,6 @@ contract GRAIVault is OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgrad
     /// @dev Storage gap for future upgrades.
     uint256[40] private __gap;
 
-    // ----------------------------------------------------------------------------------
-    // Events
-    // ----------------------------------------------------------------------------------
-
     event TreasuryUpdated(address indexed treasury);
     event AssetAdded(address indexed asset, address senior, address junior, address priceFeed);
     event AssetRemoved(address indexed asset);
@@ -74,10 +70,6 @@ contract GRAIVault is OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgrad
     event Distributed(
         address indexed asset, address indexed custody, uint256 yieldAmount, uint256 seniorYield, uint256 treasuryYield
     );
-
-    // ----------------------------------------------------------------------------------
-    // Init
-    // ----------------------------------------------------------------------------------
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
