@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console2} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {GRAIToken} from "../src/GRAIToken.sol";
+import {GRAI} from "../src/GRAI.sol";
 import {GRAIVault} from "../src/GRAIVault.sol";
 import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
 import {SeniorVault, JuniorVault} from "../src/VaultBase.sol";
@@ -16,7 +16,7 @@ import {SeniorVault, JuniorVault} from "../src/VaultBase.sol";
 /// Then, per asset (e.g. on mainnet):
 ///   vault.addAsset(USDC, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 /* USDC/USD */);
 contract Deploy is Script {
-    function run() external returns (GRAIToken grai, GRAIVault vault, PriceOracleRouter oracle) {
+    function run() external returns (GRAI grai, GRAIVault vault, PriceOracleRouter oracle) {
         address admin = vm.envOr("ADMIN", msg.sender);
         address treasury = vm.envOr("TREASURY", admin);
 
@@ -30,8 +30,8 @@ contract Deploy is Script {
         oracle = new PriceOracleRouter();
 
         // 3. GRAI token (UUPS proxy)
-        GRAIToken tokenImpl = new GRAIToken();
-        grai = GRAIToken(address(new ERC1967Proxy(address(tokenImpl), abi.encodeCall(GRAIToken.initialize, (admin)))));
+        GRAI tokenImpl = new GRAI();
+        grai = GRAI(address(new ERC1967Proxy(address(tokenImpl), abi.encodeCall(GRAI.initialize, (admin)))));
 
         // 4. GRAI vault (UUPS proxy)
         GRAIVault vaultImpl = new GRAIVault();
@@ -51,7 +51,7 @@ contract Deploy is Script {
 
         vm.stopBroadcast();
 
-        console2.log("GRAIToken proxy:", address(grai));
+        console2.log("GRAI proxy:", address(grai));
         console2.log("GRAIVault proxy:", address(vault));
         console2.log("PriceOracleRouter:", address(oracle));
         console2.log("SeniorVault impl:", seniorImpl);

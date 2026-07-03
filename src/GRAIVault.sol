@@ -10,7 +10,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {SeniorVault, JuniorVault} from "./VaultBase.sol";
-import {IGRAIToken} from "./interfaces/IGRAIToken.sol";
+import {IGRAI} from "./interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "./interfaces/IPriceOracleRouter.sol";
 
 contract GRAIVault is OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable {
@@ -40,7 +40,7 @@ contract GRAIVault is OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgrad
     address public treasury;
 
     IPriceOracleRouter public oracle;
-    IGRAIToken public grai;
+    IGRAI public grai;
 
     address public seniorImpl;
     address public juniorImpl;
@@ -100,7 +100,7 @@ contract GRAIVault is OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgrad
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
 
-        grai = IGRAIToken(grai_);
+        grai = IGRAI(grai_);
         oracle = IPriceOracleRouter(oracle_);
         seniorImpl = seniorImpl_;
         juniorImpl = juniorImpl_;

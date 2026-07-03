@@ -26,7 +26,7 @@ raises NAV for all holders, and 20% to the treasury).
 
 ```
                      ┌──────────────────────────────┐
-                     │  GRAIToken (Upgradeable ERC20) │  name: Grinders Artificial Index
+                     │  GRAI (Upgradeable ERC20) │  name: Grinders Artificial Index
                      │  symbol: GRAI, decimals: 18    │  mint/burn only via GRAIVault
                      └───────────────┬────────────────┘
                                      │ mint / burn
@@ -47,7 +47,7 @@ raises NAV for all holders, and 20% to the treasury).
 
 | Contract | Role |
 |----------|------|
-| `GRAIToken` | Upgradeable ERC20 share token (name `Grinders Artificial Index`, symbol `GRAI`, 18 decimals). Minting is restricted to the vault via `MINTER_ROLE`. |
+| `GRAI` | Upgradeable ERC20 share token (name `Grinders Artificial Index`, symbol `GRAI`, 18 decimals). Minting is restricted to the vault via `MINTER_ROLE`. |
 | `GRAIVault` | Protocol core (UUPS upgradeable). Holds the asset registry and NAV; implements `mint`/`burn`/`allocate`/`distribute`; deploys the per-asset tranche stores in `addAsset`. |
 | `SeniorVault` / `JuniorVault` | Per-asset token stores deployed as EIP-1167 clones inside `addAsset`. They are intentionally minimal — they only hold tokens and release them on the core's command. Senior holds the idle reserve (source of burns); junior holds active capital routed to custody. |
 | `PriceOracleRouter` | Reads Chainlink `AggregatorV3Interface` feeds with positivity and staleness checks; isolates price logic so sources can be swapped without upgrading the core. |

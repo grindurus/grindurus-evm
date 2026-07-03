@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {GRAIToken} from "../src/GRAIToken.sol";
+import {GRAI} from "../src/GRAI.sol";
 import {GRAIVault} from "../src/GRAIVault.sol";
 import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
 import {CustomPriceFeed} from "../src/CustomPriceFeed.sol";
@@ -20,7 +20,7 @@ contract GRAITest is Test {
     address bob = makeAddr("bob");
     address custody = makeAddr("custody");
 
-    GRAIToken grai;
+    GRAI grai;
     GRAIVault vault;
     PriceOracleRouter oracle;
 
@@ -33,9 +33,9 @@ contract GRAITest is Test {
 
     function setUp() public {
         // --- token (UUPS proxy) ---
-        GRAIToken tokenImpl = new GRAIToken();
-        bytes memory tokenInit = abi.encodeCall(GRAIToken.initialize, (admin));
-        grai = GRAIToken(address(new ERC1967Proxy(address(tokenImpl), tokenInit)));
+        GRAI tokenImpl = new GRAI();
+        bytes memory tokenInit = abi.encodeCall(GRAI.initialize, (admin));
+        grai = GRAI(address(new ERC1967Proxy(address(tokenImpl), tokenInit)));
 
         // --- oracle + tranche templates ---
         oracle = new PriceOracleRouter();
