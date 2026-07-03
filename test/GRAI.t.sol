@@ -8,7 +8,8 @@ import {GRAI} from "../src/GRAI.sol";
 import {GRAIVault} from "../src/GRAIVault.sol";
 import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
 import {CustomPriceFeed} from "../src/CustomPriceFeed.sol";
-import {SeniorVault, JuniorVault} from "../src/VaultBase.sol";
+import {SeniorVault} from "../src/SeniorVault.sol";
+import {JuniorVault} from "../src/JuniorVault.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";

@@ -7,7 +7,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {GRAI} from "../src/GRAI.sol";
 import {GRAIVault} from "../src/GRAIVault.sol";
 import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
-import {SeniorVault, JuniorVault} from "../src/VaultBase.sol";
+import {SeniorVault} from "../src/SeniorVault.sol";
+import {JuniorVault} from "../src/JuniorVault.sol";
 
 /// Usage:
 ///   ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol \

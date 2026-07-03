@@ -35,9 +35,3 @@ contract VaultBase is Initializable {
         asset.safeTransfer(to, amount);
     }
 }
-
-/// Idle liquidity reserve, the only source of `burn` redemptions.
-contract SeniorVault is VaultBase {}
-
-/// Active capital routed to custody via `allocate`.
-contract JuniorVault is VaultBase {}
