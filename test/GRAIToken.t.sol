@@ -10,8 +10,15 @@ contract GRAITokenTest is GRAIFixture {
         assertEq(grai.decimals(), 18);
     }
 
-    function test_OnlyVaultCanMint() public {
-        vm.expectRevert();
+    function test_TokenURI() public {
+        string memory uri = "https://example.com/grai.json";
+        vm.prank(admin);
+        grai.setTokenURI(uri);
+        assertEq(grai.tokenURI(), uri);
+    }
+
+    function test_MintRequiresRegisteredAsset() public {
+        vm.expectRevert(bytes("unknown asset"));
         vm.prank(alice);
         grai.mint(alice, 1e18);
     }

@@ -2,6 +2,9 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+import {PriceOracleRouter} from "../../src/PriceOracleRouter.sol";
 
 /// Base fixture for live-network fork tests.
 ///
@@ -34,5 +37,14 @@ abstract contract ForkFixture is Test {
     function _forkArbitrum() internal returns (uint256 forkId) {
         forkId = vm.createSelectFork(_arbitrumRpc());
         assertEq(block.chainid, ARBITRUM_CHAIN_ID, "expected arbitrum one fork");
+    }
+
+    function _newRouter() internal returns (PriceOracleRouter router) {
+        PriceOracleRouter impl = new PriceOracleRouter();
+        router = PriceOracleRouter(
+            address(
+                new ERC1967Proxy(address(impl), abi.encodeCall(PriceOracleRouter.initialize, (address(this))))
+            )
+        );
     }
 }
