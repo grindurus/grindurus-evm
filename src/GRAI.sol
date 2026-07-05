@@ -75,6 +75,8 @@ contract GRAI is
         juniorVault = j;
     }
 
+    receive() external payable {}
+
     function tokenURI() external view returns (string memory) {
         return _tokenURI;
     }
@@ -90,13 +92,15 @@ contract GRAI is
         emit TreasuryUpdate(newTreasury);
     }
 
-    function addAsset(address asset) external onlyRole(ADMIN_ROLE) {
+    function addAsset(address asset, uint16 mintSplit, uint16 yieldSplit) external onlyRole(ADMIN_ROLE) {
         require(!assets[asset].exists, "exists");
+        require(mintSplit <= BPS, "bps>max");
+        require(yieldSplit <= BPS, "bps>max");
 
         assets[asset] = IGRAI.AssetConfig({
             exists: true,
-            mintSplit: DEFAULT_MINT_SPLIT,
-            yieldSplit: DEFAULT_YIELD_SPLIT,
+            mintSplit: mintSplit,
+            yieldSplit: yieldSplit,
             pausedMinting: false,
             totalValue: 0,
             activeAmount: 0
@@ -153,6 +157,22 @@ contract GRAI is
         require(bps <= BPS, "bps>max");
         assets[asset].yieldSplit = bps;
         emit YieldSplitUpdate(asset, bps);
+    }
+
+    function sweep(address asset, address to) external onlyRole(ADMIN_ROLE) nonReentrant {
+        require(to != address(0), "to=0");
+        if (asset == address(0)) {
+            uint256 amount = address(this).balance;
+            require(amount > 0, "amount=0");
+            (bool ok,) = to.call{value: amount}("");
+            require(ok, "eth transfer failed");
+            emit Sweep(asset, to, amount);
+        } else {
+            uint256 amount = IERC20(asset).balanceOf(address(this));
+            require(amount > 0, "amount=0");
+            IERC20(asset).safeTransfer(to, amount);
+            emit Sweep(asset, to, amount);
+        }
     }
 
     function mint(address asset, uint256 amount) external payable nonReentrant returns (uint256 graiOut) {

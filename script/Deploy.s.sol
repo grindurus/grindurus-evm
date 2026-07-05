@@ -37,9 +37,11 @@ contract Deploy is Script {
 
         GRAI impl = new GRAI();
         grai = GRAI(
-            address(
-                new ERC1967Proxy(
-                    address(impl), abi.encodeCall(GRAI.initialize, (admin, address(oracle), treasury))
+            payable(
+                address(
+                    new ERC1967Proxy(
+                        address(impl), abi.encodeCall(GRAI.initialize, (admin, address(oracle), treasury))
+                    )
                 )
             )
         );

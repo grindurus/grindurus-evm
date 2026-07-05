@@ -22,4 +22,12 @@ contract GRAITokenTest is GRAIFixture {
         vm.prank(alice);
         grai.mint(alice, 1e18);
     }
+
+    function test_SweepRecoversStrayERC20() public {
+        usdc.mint(address(grai), 10e6);
+        vm.prank(admin);
+        grai.sweep(address(usdc), treasury);
+        assertEq(usdc.balanceOf(address(grai)), 0);
+        assertEq(usdc.balanceOf(treasury), 10e6);
+    }
 }

@@ -20,12 +20,12 @@ contract VaultBase {
 
     receive() external payable {}
 
-    function balance(address asset) external view returns (uint256) {
+    function balance(address asset) public view returns (uint256) {
         if (asset == address(0)) return address(this).balance;
         return IERC20(asset).balanceOf(address(this));
     }
 
-    function deposit(address asset, uint256 amount) external payable {
+    function deposit(address asset, uint256 amount) public payable {
         _onlyProprietor();
         if (asset == address(0)) {
             require(msg.value == amount, "value mismatch");
@@ -36,7 +36,7 @@ contract VaultBase {
         }
     }
 
-    function withdraw(address asset, address to, uint256 amount) external {
+    function withdraw(address asset, address to, uint256 amount) public {
         _onlyProprietor();
         if (asset == address(0)) {
             require(to != address(0), "to=0");

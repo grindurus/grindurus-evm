@@ -15,7 +15,7 @@ contract GRAIVaultTest is GRAIFixture {
     function test_AddAssetDuplicateReverts() public {
         vm.prank(admin);
         vm.expectRevert(bytes("exists"));
-        grai.addAsset(address(usdc));
+        grai.addAsset(address(usdc), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
     }
 
     function test_FirstMintBootstrapsAtParity() public {
@@ -163,7 +163,7 @@ contract GRAIVaultTest is GRAIFixture {
     function test_MintWithEther() public {
         vm.startPrank(admin);
         oracle.addChainlinkFeed(address(0), address(wethFeed));
-        grai.addAsset(address(0));
+        grai.addAsset(address(0), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         vm.stopPrank();
 
         uint256 amount = 1 ether;
@@ -179,7 +179,7 @@ contract GRAIVaultTest is GRAIFixture {
     function test_BurnRedeemsEther() public {
         vm.startPrank(admin);
         oracle.addChainlinkFeed(address(0), address(wethFeed));
-        grai.addAsset(address(0));
+        grai.addAsset(address(0), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         vm.stopPrank();
 
         uint256 amount = 1 ether;

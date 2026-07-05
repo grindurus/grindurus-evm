@@ -28,7 +28,7 @@ contract PythPriceFeedTest is GRAIFixture {
         (, MockERC20 asset) = _deployPythFeed(2000e8, -8);
 
         vm.prank(admin);
-        grai.addAsset(address(asset));
+        grai.addAsset(address(asset), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
 
         asset.mint(alice, 1e18);
         uint256 graiOut = _mint(alice, asset, 1e18); // 1 token @ $2000

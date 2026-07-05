@@ -26,6 +26,8 @@ abstract contract GRAIFixture is Test {
     MockAggregator wethFeed; // 8 decimals, $2000
 
     uint16 constant BPS = 10_000;
+    uint16 constant DEFAULT_MINT_SPLIT = 5_000;
+    uint16 constant DEFAULT_YIELD_SPLIT = 8_000;
 
     function setUp() public virtual {
         PriceOracleRouter oracleImpl = new PriceOracleRouter();
@@ -37,7 +39,7 @@ abstract contract GRAIFixture is Test {
 
         GRAI impl = new GRAI();
         bytes memory init = abi.encodeCall(GRAI.initialize, (admin, address(oracle), treasury));
-        grai = GRAI(address(new ERC1967Proxy(address(impl), init)));
+        grai = GRAI(payable(address(new ERC1967Proxy(address(impl), init))));
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
@@ -47,8 +49,8 @@ abstract contract GRAIFixture is Test {
         vm.startPrank(admin);
         oracle.addChainlinkFeed(address(usdc), address(usdcFeed));
         oracle.addChainlinkFeed(address(weth), address(wethFeed));
-        grai.addAsset(address(usdc));
-        grai.addAsset(address(weth));
+        grai.addAsset(address(usdc), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
+        grai.addAsset(address(weth), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         vm.stopPrank();
 
         usdc.mint(alice, 1_000e6);
