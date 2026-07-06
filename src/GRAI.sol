@@ -45,7 +45,7 @@ contract GRAI is
     mapping(address custody => mapping(address asset => uint256)) public allocatedAmount;
 
     /// custody => asset => cumulative yield units returned by that custody.
-    mapping(address custody => mapping(address asset => uint256)) public yieldReturned;
+    mapping(address custody => mapping(address asset => uint256)) public yieldGenerated;
 
     string private _tokenURI;
 
@@ -60,7 +60,6 @@ contract GRAI is
     function initialize(address admin, address oracle_, address treasury_) external initializer {
         require(admin != address(0) && oracle_ != address(0) && treasury_ != address(0), "zero addr");
         __ERC20_init("Grinders Artificial Index", "GRAI");
-        _tokenURI = "https://grindurus.xyz/metadata.json";
         __AccessControl_init();
         __UUPSUpgradeable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -68,6 +67,7 @@ contract GRAI is
 
         oracle = IPriceOracleRouter(oracle_);
         treasury = treasury_;
+        _tokenURI = "https://grindurus.xyz/metadata.json";
 
         SeniorVault s = new SeniorVault(address(this));
         JuniorVault j = new JuniorVault(address(this));
@@ -271,22 +271,23 @@ contract GRAI is
     }
 
     function deallocate(address asset, uint256 amount) external payable {
+        address custody = msg.sender;
         IGRAI.AssetConfig storage a = assets[asset];
         require(a.exists, "unknown asset");
         require(amount > 0, "amount=0");
-        require(allocatedAmount[msg.sender][asset] >= amount, "insufficient allocation");
+        require(allocatedAmount[custody][asset] >= amount, "insufficient allocation");
         require(a.activeAmount >= amount, "insufficient active");
 
-        allocatedAmount[msg.sender][asset] -= amount;
+        allocatedAmount[custody][asset] -= amount;
         a.activeAmount -= amount;
-        emit Deallocate(asset, msg.sender, amount);
+        emit Deallocate(asset, custody, amount);
 
         if (asset == address(0)) {
             require(msg.value == amount, "value mismatch");
             seniorVault.deposit{value: amount}(address(0), amount);
         } else {
             require(msg.value == 0, "unexpected value");
-            IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+            IERC20(asset).safeTransferFrom(custody, address(this), amount);
             seniorVault.deposit(asset, amount);
         }
     }
@@ -303,7 +304,7 @@ contract GRAI is
         // Effects: update NAV before pulling yield into vaults or treasury.
         a.totalValue += yieldValue;
         totalValue += yieldValue;
-        yieldReturned[msg.sender][asset] += yieldAmount;
+        yieldGenerated[msg.sender][asset] += yieldAmount;
         emit Distribute(asset, msg.sender, yieldAmount, seniorYield, treasuryYield);
 
         if (asset == address(0)) {

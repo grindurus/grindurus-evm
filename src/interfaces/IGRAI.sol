@@ -52,7 +52,7 @@ interface IGRAI is IERC20, IERC1046 {
     function seniorVault() external view returns (SeniorVault);
     function juniorVault() external view returns (JuniorVault);
     function allocatedAmount(address custody, address asset) external view returns (uint256);
-    function yieldReturned(address custody, address asset) external view returns (uint256);
+    function yieldGenerated(address custody, address asset) external view returns (uint256);
 
     function assets(address asset)
         external
