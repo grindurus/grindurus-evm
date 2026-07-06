@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -14,23 +13,25 @@ import {JuniorVault} from "./JuniorVault.sol";
 import {IPriceOracleRouter} from "./interfaces/IPriceOracleRouter.sol";
 import {IGRAI} from "./interfaces/IGRAI.sol";
 
+/// @title GRAI (implementation)
+/// @dev Do not call this contract directly. Use the ERC1967Proxy address only.
+///      Direct calls write to implementation storage, not the live protocol state.
 contract GRAI is
     IGRAI,
     ERC20Upgradeable,
     AccessControlUpgradeable,
-    ReentrancyGuardUpgradeable,
     UUPSUpgradeable
 {
     using SafeERC20 for IERC20;
 
-    uint16 public constant BPS = 100_00; // 100%
     uint8 public constant USD_DECIMALS = 18;
+    uint16 public constant BPS = 100_00; // 100%
     uint16 public constant DEFAULT_MINT_SPLIT = 50_00; // 50%
     uint16 public constant DEFAULT_YIELD_SPLIT = 80_00; // 80%
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
-    mapping(address => IGRAI.AssetConfig) public assets;
+    mapping(address asset => IGRAI.AssetConfig) public assets;
     address[] public assetList;
 
     uint256 public totalValue;
@@ -61,7 +62,6 @@ contract GRAI is
         __ERC20_init("Grinders Artificial Index", "GRAI");
         _tokenURI = "https://grindurus.xyz/metadata.json";
         __AccessControl_init();
-        __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
@@ -115,7 +115,7 @@ contract GRAI is
         emit AssetAdd(asset);
     }
 
-    function removeAsset(address asset) external onlyRole(ADMIN_ROLE) {
+    function removeAsset(address asset, uint256 hintId) external onlyRole(ADMIN_ROLE) {
         IGRAI.AssetConfig storage a = assets[asset];
         require(a.exists, "unknown asset");
         require(a.pausedMinting, "not paused");
@@ -128,13 +128,15 @@ contract GRAI is
         totalValue -= a.totalValue;
 
         uint256 len = assetList.length;
-        for (uint256 i; i < len; ++i) {
-            if (assetList[i] == asset) {
-                assetList[i] = assetList[len - 1];
-                assetList.pop();
-                break;
-            }
+        require(hintId < len, "bad hint");
+        require(assetList[hintId] == asset, "hint mismatch");
+
+        uint256 index = hintId;
+        uint256 lastIndex = assetList.length - 1;
+        if (index != lastIndex) {
+            assetList[index] = assetList[lastIndex];
         }
+        assetList.pop();
         delete assets[asset];
         emit AssetRemove(asset);
     }
@@ -159,7 +161,7 @@ contract GRAI is
         emit YieldSplitUpdate(asset, bps);
     }
 
-    function sweep(address asset, address to) external onlyRole(ADMIN_ROLE) nonReentrant {
+    function sweep(address asset, address to) external onlyRole(ADMIN_ROLE) {
         require(to != address(0), "to=0");
         if (asset == address(0)) {
             uint256 amount = address(this).balance;
@@ -175,41 +177,42 @@ contract GRAI is
         }
     }
 
-    function mint(address asset, uint256 amount) external payable nonReentrant returns (uint256 graiOut) {
+    function mint(address asset, uint256 amount) external payable returns (uint256 graiOut) {
         IGRAI.AssetConfig storage a = assets[asset];
         require(a.exists, "unknown asset");
         require(!a.pausedMinting, "paused");
         require(amount > 0, "amount=0");
 
-        uint256 idle = (amount * a.mintSplit) / BPS; // to senior
-        uint256 active = amount - idle; // to junior
+        uint256 seniorBalanceIn = (amount * a.mintSplit) / BPS;
+        uint256 juniorBalanceIn = amount - seniorBalanceIn;
 
-        if (asset == address(0)) {
-            require(msg.value == amount, "value mismatch");
-            if (idle > 0) seniorVault.deposit{value: idle}(address(0), idle);
-            if (active > 0) juniorVault.deposit{value: active}(address(0), active);
-        } else {
-            require(msg.value == 0, "unexpected value");
-            IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-            if (idle > 0) seniorVault.deposit(asset, idle);
-            if (active > 0) juniorVault.deposit(asset, active);
-        }
-
-        uint256 depositValue = _usdValue(asset, amount);
+        uint256 depositValue = usdValue(asset, amount);
         require(depositValue > 0, "value=0");
 
         uint256 supply = totalSupply();
         graiOut = (supply == 0 || totalValue == 0) ? depositValue : (depositValue * supply) / totalValue;
         require(graiOut > 0, "grai=0");
 
+        // Effects: mint GRAI and update NAV before pulling assets into vaults.
         a.totalValue += depositValue;
         totalValue += depositValue;
-
         _mint(msg.sender, graiOut);
         emit Mint(msg.sender, asset, amount, graiOut, depositValue);
+
+        // Interactions: collect assets and route to senior/junior vaults.
+        if (asset == address(0)) {
+            require(msg.value == amount, "value mismatch");
+            if (seniorBalanceIn > 0) seniorVault.deposit{value: seniorBalanceIn}(address(0), seniorBalanceIn);
+            if (juniorBalanceIn > 0) juniorVault.deposit{value: juniorBalanceIn}(address(0), juniorBalanceIn);
+        } else {
+            require(msg.value == 0, "unexpected value");
+            IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+            if (seniorBalanceIn > 0) seniorVault.deposit(asset, seniorBalanceIn);
+            if (juniorBalanceIn > 0) juniorVault.deposit(asset, juniorBalanceIn);
+        }
     }
 
-    function burn(uint256 graiAmount) public override nonReentrant {
+    function burn(uint256 graiAmount) public override {
         require(graiAmount > 0, "amount=0");
         uint256 supply = totalSupply();
         require(supply > 0, "no supply");
@@ -218,9 +221,15 @@ contract GRAI is
         uint256 totalValueBefore = totalValue;
         uint256 burnValue = (graiAmount * totalValueBefore) / supply;
 
-        _burn(msg.sender, graiAmount);
-
         uint256 len = assetList.length;
+        address[] memory redeemAssets = new address[](len);
+        uint256[] memory redeemAmounts = new uint256[](len);
+        uint256 redeemCount;
+
+        // Effects: burn GRAI and update NAV before any senior vault payouts.
+        _burn(msg.sender, graiAmount);
+        totalValue = totalValueBefore - burnValue;
+
         for (uint256 i; i < len; ++i) {
             address asset = assetList[i];
             IGRAI.AssetConfig storage a = assets[asset];
@@ -231,21 +240,24 @@ contract GRAI is
                 a.totalValue -= share;
             }
 
-            uint256 idleBal = seniorVault.balance(asset);
-            if (idleBal == 0) continue;
-            uint256 redeem = (graiAmount * idleBal) / supply; // senior idle only
-            if (redeem > 0) seniorVault.withdraw(asset, msg.sender, redeem);
+            uint256 seniorBalance = seniorVault.balance(asset);
+            if (seniorBalance == 0) continue;
+            uint256 redeem = (graiAmount * seniorBalance) / supply;
+            if (redeem == 0) continue;
+            redeemAssets[redeemCount] = asset;
+            redeemAmounts[redeemCount] = redeem;
+            ++redeemCount;
         }
 
-        totalValue = totalValueBefore - burnValue;
         emit Burn(msg.sender, graiAmount, burnValue);
+
+        // Interactions: pay out from senior vault after all accounting is final.
+        for (uint256 i; i < redeemCount; ++i) {
+            seniorVault.withdraw(redeemAssets[i], msg.sender, redeemAmounts[i]);
+        }
     }
 
-    function allocate(address asset, address custody, uint256 amount)
-        external
-        onlyRole(ADMIN_ROLE)
-        nonReentrant
-    {
+    function allocate(address asset, address custody, uint256 amount) external onlyRole(ADMIN_ROLE) {
         IGRAI.AssetConfig storage a = assets[asset];
         require(a.exists, "unknown asset");
         require(custody != address(0), "custody=0");
@@ -253,18 +265,25 @@ contract GRAI is
 
         a.activeAmount += amount;
         allocatedAmount[custody][asset] += amount;
+        emit Allocate(asset, custody, amount);
 
         juniorVault.withdraw(asset, custody, amount);
-        emit Allocate(asset, custody, amount);
     }
 
-    function distribute(address asset, uint256 yieldAmount) external payable nonReentrant {
+    function distribute(address asset, uint256 yieldAmount) external payable {
         IGRAI.AssetConfig storage a = assets[asset];
         require(a.exists, "unknown asset");
         require(yieldAmount > 0, "amount=0");
 
         uint256 seniorYield = (yieldAmount * a.yieldSplit) / BPS;
         uint256 treasuryYield = yieldAmount - seniorYield;
+        uint256 yieldValue = seniorYield > 0 ? usdValue(asset, seniorYield) : 0;
+
+        // Effects: update NAV before pulling yield into vaults or treasury.
+        a.totalValue += yieldValue;
+        totalValue += yieldValue;
+        yieldReturned[msg.sender][asset] += yieldAmount;
+        emit Distribute(asset, msg.sender, yieldAmount, seniorYield, treasuryYield);
 
         if (asset == address(0)) {
             require(msg.value == yieldAmount, "value mismatch");
@@ -281,14 +300,6 @@ contract GRAI is
             }
             if (treasuryYield > 0) IERC20(asset).safeTransferFrom(msg.sender, treasury, treasuryYield);
         }
-
-        // Only the senior-credited portion increases NAV (matches Solana distribute).
-        uint256 yieldValue = seniorYield > 0 ? _usdValue(asset, seniorYield) : 0;
-        a.totalValue += yieldValue;
-        totalValue += yieldValue;
-
-        yieldReturned[msg.sender][asset] += yieldAmount;
-        emit Distribute(asset, msg.sender, yieldAmount, seniorYield, treasuryYield);
     }
 
     function nav() external view returns (uint256 total) {
@@ -296,7 +307,7 @@ contract GRAI is
         for (uint256 i; i < len; ++i) {
             address asset = assetList[i];
             uint256 idleBal = seniorVault.balance(asset);
-            if (idleBal > 0) total += _usdValue(asset, idleBal);
+            if (idleBal > 0) total += usdValue(asset, idleBal);
         }
     }
 
@@ -323,7 +334,7 @@ contract GRAI is
         return assetList.length;
     }
 
-    function _usdValue(address asset, uint256 amount) internal view returns (uint256) {
+    function usdValue(address asset, uint256 amount) public view returns (uint256) {
         if (amount == 0) return 0;
         (uint256 price, uint8 pdec) = oracle.getPrice(asset);
         uint8 adec = asset == address(0) ? 18 : IERC20Metadata(asset).decimals();

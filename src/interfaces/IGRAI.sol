@@ -43,7 +43,6 @@ interface IGRAI is IERC20, IERC1046 {
     event Sweep(address indexed asset, address indexed to, uint256 amount);
 
     function BPS() external view returns (uint16);
-    function USD_DECIMALS() external view returns (uint8);
     function DEFAULT_MINT_SPLIT() external view returns (uint16);
     function DEFAULT_YIELD_SPLIT() external view returns (uint16);
     function ADMIN_ROLE() external view returns (bytes32);
@@ -73,7 +72,7 @@ interface IGRAI is IERC20, IERC1046 {
     function setTokenURI(string calldata tokenURI) external;
     function setTreasury(address newTreasury) external;
     function addAsset(address asset, uint16 mintSplit, uint16 yieldSplit) external;
-    function removeAsset(address asset) external;
+    function removeAsset(address asset, uint256 hintId) external;
     function setPaused(address asset, bool paused) external;
     function setMintSplit(address asset, uint16 bps) external;
     function setYieldSplit(address asset, uint16 bps) external;
@@ -85,6 +84,7 @@ interface IGRAI is IERC20, IERC1046 {
     function distribute(address asset, uint256 yieldAmount) external payable;
 
     function nav() external view returns (uint256 total);
+    function usdValue(address asset, uint256 amount) external view returns (uint256);
     function getAssets() external view returns (address[] memory);
     function getVaults() external view returns (VaultSnapshot[] memory);
     function assetCount() external view returns (uint256);

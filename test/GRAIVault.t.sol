@@ -152,7 +152,7 @@ contract GRAIVaultTest is GRAIFixture {
 
         vm.startPrank(admin);
         grai.setPaused(address(usdc), true);
-        grai.removeAsset(address(usdc));
+        grai.removeAsset(address(usdc), 0);
         vm.stopPrank();
 
         assertEq(grai.assetCount(), 1);
