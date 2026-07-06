@@ -37,6 +37,7 @@ interface IGRAI is IERC20, IERC1046 {
     );
     event Burn(address indexed burner, uint256 graiAmount, uint256 burnValue);
     event Allocate(address indexed asset, address indexed custody, uint256 amount);
+    event Deallocate(address indexed asset, address indexed custody, uint256 amount);
     event Distribute(
         address indexed asset, address indexed custody, uint256 yieldAmount, uint256 seniorYield, uint256 treasuryYield
     );
@@ -81,9 +82,10 @@ interface IGRAI is IERC20, IERC1046 {
     function mint(address asset, uint256 amount) external payable returns (uint256 graiOut);
     function burn(uint256 graiAmount) external;
     function allocate(address asset, address custody, uint256 amount) external;
+    function deallocate(address asset, uint256 amount) external payable;
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    function nav() external view returns (uint256 total);
+    function seniorNav() external view returns (uint256 total);
     function usdValue(address asset, uint256 amount) external view returns (uint256);
     function getAssets() external view returns (address[] memory);
     function getVaults() external view returns (VaultSnapshot[] memory);

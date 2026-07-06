@@ -270,6 +270,27 @@ contract GRAI is
         juniorVault.withdraw(asset, custody, amount);
     }
 
+    function deallocate(address asset, uint256 amount) external payable {
+        IGRAI.AssetConfig storage a = assets[asset];
+        require(a.exists, "unknown asset");
+        require(amount > 0, "amount=0");
+        require(allocatedAmount[msg.sender][asset] >= amount, "insufficient allocation");
+        require(a.activeAmount >= amount, "insufficient active");
+
+        allocatedAmount[msg.sender][asset] -= amount;
+        a.activeAmount -= amount;
+        emit Deallocate(asset, msg.sender, amount);
+
+        if (asset == address(0)) {
+            require(msg.value == amount, "value mismatch");
+            seniorVault.deposit{value: amount}(address(0), amount);
+        } else {
+            require(msg.value == 0, "unexpected value");
+            IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+            seniorVault.deposit(asset, amount);
+        }
+    }
+
     function distribute(address asset, uint256 yieldAmount) external payable {
         IGRAI.AssetConfig storage a = assets[asset];
         require(a.exists, "unknown asset");
@@ -302,7 +323,7 @@ contract GRAI is
         }
     }
 
-    function nav() external view returns (uint256 total) {
+    function seniorNav() external view returns (uint256 total) {
         uint256 len = assetList.length;
         for (uint256 i; i < len; ++i) {
             address asset = assetList[i];

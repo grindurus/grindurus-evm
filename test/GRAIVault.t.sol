@@ -67,6 +67,40 @@ contract GRAIVaultTest is GRAIFixture {
         assertEq(grai.allocatedAmount(custody, address(usdc)), 50e6);
     }
 
+    function test_DeallocateReturnsPrincipalToSenior() public {
+        _mint(alice, usdc, 100e6);
+
+        vm.prank(admin);
+        grai.allocate(address(usdc), custody, 50e6);
+
+        uint256 seniorBefore = grai.seniorVault().balance(address(usdc));
+        uint256 custodyBefore = usdc.balanceOf(custody);
+
+        vm.startPrank(custody);
+        usdc.approve(address(grai), 30e6);
+        grai.deallocate(address(usdc), 30e6);
+        vm.stopPrank();
+
+        assertEq(grai.allocatedAmount(custody, address(usdc)), 20e6);
+        (,,,,, uint256 activeAmount) = grai.assets(address(usdc));
+        assertEq(activeAmount, 20e6);
+        assertEq(grai.seniorVault().balance(address(usdc)), seniorBefore + 30e6);
+        assertEq(usdc.balanceOf(custody), custodyBefore - 30e6);
+    }
+
+    function test_DeallocateRevertsWhenExceedsAllocation() public {
+        _mint(alice, usdc, 100e6);
+
+        vm.prank(admin);
+        grai.allocate(address(usdc), custody, 50e6);
+
+        vm.startPrank(custody);
+        usdc.approve(address(grai), 60e6);
+        vm.expectRevert(bytes("insufficient allocation"));
+        grai.deallocate(address(usdc), 60e6);
+        vm.stopPrank();
+    }
+
     function test_DistributeRaisesNavAndPaysTreasury() public {
         _mint(alice, usdc, 100e6); // NAV $100
         vm.prank(admin);
@@ -120,7 +154,7 @@ contract GRAIVaultTest is GRAIFixture {
     function test_NavViewPricesSeniorIdle() public {
         _mint(alice, usdc, 100e6); // senior idle 50 USDC = $50
         _mint(alice, weth, 1e18); // senior idle 0.5 WETH = $1000
-        assertEq(grai.nav(), 50e18 + 1000e18);
+        assertEq(grai.seniorNav(), 50e18 + 1000e18);
     }
 
     function test_GetVaultsSnapshot() public {
