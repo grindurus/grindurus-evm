@@ -9,14 +9,13 @@ import {IPyth, PythStructs} from "./interfaces/IPyth.sol";
 
 /// Unified upgradeable oracle router: maps each asset to a Chainlink, Pyth, or custom feed.
 contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgradeable {
-    uint256 public maxStaleness;
-
-    bytes32 public constant FEED_CHAINLINK = keccak256("FEED_CHAINLINK");
-    bytes32 public constant FEED_PYTH = keccak256("FEED_PYTH");
-    bytes32 public constant FEED_CUSTOM = keccak256("FEED_CUSTOM");
+    uint8 internal constant NONE = 0;
+    uint8 internal constant CUSTOM = 1;
+    uint8 internal constant CHAINLINK = 2;
+    uint8 internal constant PYTH = 3;
 
     struct Feed {
-        bytes32 feedType;
+        uint8 feedType;
         address source;
         bytes32 data;
         uint8 decimals;
@@ -24,15 +23,17 @@ contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgrad
         uint256 storedUpdatedAt;
     }
 
+    uint256 public maxStaleness;
+
     mapping(address asset => Feed) public feeds;
 
     /// @dev Storage gap for future upgrades.
     uint256[48] private __gap;
 
-    event FeedAdd(address indexed asset, bytes32 feedType);
+    event FeedAdd(address indexed asset, uint8 feedType);
+    event MaxStalenessUpdate(uint256 maxStaleness);
     event CustomOracleUpdate(address indexed asset, address indexed oracle);
     event CustomPriceSet(address indexed asset, int256 price, uint256 updatedAt);
-    event MaxStalenessUpdate(uint256 maxStaleness);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -52,51 +53,51 @@ contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgrad
         emit MaxStalenessUpdate(newMaxStaleness);
     }
 
-    function addChainlinkFeed(address asset, address aggregator) external onlyOwner {
-        require(aggregator != address(0), "aggregator=0");
-        require(feeds[asset].feedType == bytes32(0), "exists");
-        feeds[asset] = Feed({
-            feedType: FEED_CHAINLINK,
-            source: aggregator,
-            data: bytes32(0),
-            decimals: 0,
-            storedPrice: 0,
-            storedUpdatedAt: 0
-        });
-        emit FeedAdd(asset, FEED_CHAINLINK);
-    }
-
-    function addPythFeed(address asset, address pyth, bytes32 priceId) external onlyOwner {
-        require(pyth != address(0), "pyth=0");
-        require(priceId != bytes32(0), "id=0");
-        require(feeds[asset].feedType == bytes32(0), "exists");
-        feeds[asset] = Feed({
-            feedType: FEED_PYTH,
-            source: pyth,
-            data: priceId,
-            decimals: 0,
-            storedPrice: 0,
-            storedUpdatedAt: 0
-        });
-        emit FeedAdd(asset, FEED_PYTH);
-    }
-
     function addCustomFeed(address asset, uint8 decimals, address oracle) external onlyOwner {
         require(oracle != address(0), "oracle=0");
-        require(feeds[asset].feedType == bytes32(0), "exists");
+        require(feeds[asset].feedType == NONE, "exists");
         feeds[asset] = Feed({
-            feedType: FEED_CUSTOM,
+            feedType: CUSTOM,
             source: oracle,
             data: bytes32(0),
             decimals: decimals,
             storedPrice: 0,
             storedUpdatedAt: 0
         });
-        emit FeedAdd(asset, FEED_CUSTOM);
+        emit FeedAdd(asset, CUSTOM);
+    }
+
+    function addChainlinkFeed(address asset, address aggregator) external onlyOwner {
+        require(aggregator != address(0), "aggregator=0");
+        require(feeds[asset].feedType == NONE, "exists");
+        feeds[asset] = Feed({
+            feedType: CHAINLINK,
+            source: aggregator,
+            data: bytes32(0),
+            decimals: 0,
+            storedPrice: 0,
+            storedUpdatedAt: 0
+        });
+        emit FeedAdd(asset, CHAINLINK);
+    }
+
+    function addPythFeed(address asset, address pyth, bytes32 priceId) external onlyOwner {
+        require(pyth != address(0), "pyth=0");
+        require(priceId != bytes32(0), "id=0");
+        require(feeds[asset].feedType == NONE, "exists");
+        feeds[asset] = Feed({
+            feedType: PYTH,
+            source: pyth,
+            data: priceId,
+            decimals: 0,
+            storedPrice: 0,
+            storedUpdatedAt: 0
+        });
+        emit FeedAdd(asset, PYTH);
     }
 
     function setCustomOracle(address asset, address oracle) external onlyOwner {
-        require(feeds[asset].feedType == FEED_CUSTOM, "not custom");
+        require(feeds[asset].feedType == CUSTOM, "not custom");
         require(oracle != address(0), "oracle=0");
         feeds[asset].source = oracle;
         emit CustomOracleUpdate(asset, oracle);
@@ -104,7 +105,7 @@ contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgrad
 
     function setCustomPrice(address asset, int256 price) external {
         Feed storage f = feeds[asset];
-        require(f.feedType == FEED_CUSTOM, "not custom");
+        require(f.feedType == CUSTOM, "not custom");
         require(msg.sender == f.source, "not oracle");
         require(price > 0, "bad price");
         f.storedPrice = price;
@@ -114,11 +115,18 @@ contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgrad
 
     function getPrice(address asset) public view returns (uint256 price, uint8 priceDecimals) {
         Feed storage f = feeds[asset];
-        bytes32 feedType = f.feedType;
-        if (feedType == FEED_CHAINLINK) return _chainlink(f.source);
-        if (feedType == FEED_PYTH) return _pyth(f.source, f.data);
-        if (feedType == FEED_CUSTOM) return _custom(f);
-        revert("unknown asset");
+        uint8 feedType = f.feedType;
+        if (feedType == CUSTOM) return _custom(f);
+        if (feedType == CHAINLINK) return _chainlink(f.source);
+        if (feedType == PYTH) return _pyth(f.source, f.data);
+        revert("unknown feed type");
+    }
+
+    function _custom(Feed storage f) internal view returns (uint256 price, uint8 priceDecimals) {
+        require(f.storedPrice > 0, "bad price");
+        require(f.storedUpdatedAt != 0, "round incomplete");
+        require(block.timestamp - f.storedUpdatedAt <= maxStaleness, "stale price");
+        return (uint256(f.storedPrice), f.decimals);
     }
 
     function _chainlink(address aggregator) internal view returns (uint256 price, uint8 priceDecimals) {
@@ -137,13 +145,6 @@ contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgrad
         require(p.publishTime != 0, "round incomplete");
         require(block.timestamp - p.publishTime <= maxStaleness, "stale price");
         return (uint256(int256(p.price)), priceDecimals);
-    }
-
-    function _custom(Feed storage f) internal view returns (uint256 price, uint8 priceDecimals) {
-        require(f.storedPrice > 0, "bad price");
-        require(f.storedUpdatedAt != 0, "round incomplete");
-        require(block.timestamp - f.storedUpdatedAt <= maxStaleness, "stale price");
-        return (uint256(f.storedPrice), f.decimals);
     }
 
     function _decimalsFromExpo(int32 expo) internal pure returns (uint8) {
