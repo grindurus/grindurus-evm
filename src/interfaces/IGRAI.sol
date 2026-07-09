@@ -8,7 +8,29 @@ import {IPriceOracleRouter} from "./IPriceOracleRouter.sol";
 import {SeniorVault} from "../SeniorVault.sol";
 import {JuniorVault} from "../JuniorVault.sol";
 
-interface IGRAI is IERC20, IERC1046 {
+interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
+    error ZeroAddress();
+    error TreasuryZero();
+    error AssetExists();
+    error AssetUnknown();
+    error BpsTooHigh();
+    error NotPaused();
+    error BadHint();
+    error HintMismatch();
+    error ToZero();
+    error AmountZero();
+    error EthTransferFailed();
+    error MintingPaused();
+    error ValueZero();
+    error GraiZero();
+    error ValueMismatch();
+    error UnexpectedValue();
+    error NoSupply();
+    error AmountExceedsSupply();
+    error CustodyZero();
+    error InsufficientAllocation();
+    error InsufficientActive();
+
     struct AssetConfig {
         bool exists;
         uint16 mintSplit;
@@ -47,8 +69,8 @@ interface IGRAI is IERC20, IERC1046 {
     function DEFAULT_MINT_SPLIT() external view returns (uint16);
     function DEFAULT_YIELD_SPLIT() external view returns (uint16);
     function ADMIN_ROLE() external view returns (bytes32);
+    function ORACLE_ROLE() external view returns (bytes32);
 
-    function oracle() external view returns (IPriceOracleRouter);
     function seniorVault() external view returns (SeniorVault);
     function juniorVault() external view returns (JuniorVault);
     function allocatedAmount(address custody, address asset) external view returns (uint256);
@@ -70,7 +92,7 @@ interface IGRAI is IERC20, IERC1046 {
     function totalValue() external view returns (uint256);
     function treasury() external view returns (address);
 
-    function setTokenURI(string calldata tokenURI) external;
+    function setTokenURI(string calldata tokenUri) external;
     function setTreasury(address newTreasury) external;
     function addAsset(address asset, uint16 mintSplit, uint16 yieldSplit) external;
     function removeAsset(address asset, uint256 hintId) external;
@@ -85,9 +107,6 @@ interface IGRAI is IERC20, IERC1046 {
     function deallocate(address asset, uint256 amount) external payable;
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    function seniorNav() external view returns (uint256 total);
     function usdValue(address asset, uint256 amount) external view returns (uint256);
-    function getAssets() external view returns (address[] memory);
-    function getVaults() external view returns (VaultSnapshot[] memory);
-    function assetCount() external view returns (uint256);
+    function getVaultsData() external view returns (VaultSnapshot[] memory);
 }

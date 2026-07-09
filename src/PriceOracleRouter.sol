@@ -1,158 +1,102 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {IPriceOracleRouter} from "./interfaces/IPriceOracleRouter.sol";
 import {IPyth, PythStructs} from "./interfaces/IPyth.sol";
 
-/// Unified upgradeable oracle router: maps each asset to a Chainlink, Pyth, or custom feed.
-contract PriceOracleRouter is IPriceOracleRouter, OwnableUpgradeable, UUPSUpgradeable {
-    uint8 internal constant NONE = 0;
-    uint8 internal constant CUSTOM = 1;
-    uint8 internal constant CHAINLINK = 2;
-    uint8 internal constant PYTH = 3;
-
-    struct Feed {
-        uint8 feedType;
-        address source;
-        bytes32 data;
-        uint8 decimals;
-        int256 storedPrice;
-        uint256 storedUpdatedAt;
-    }
-
-    uint256 public maxStaleness;
+/// @title PriceOracleRouter
+/// @notice Asset-keyed oracle router for Chainlink, Pyth, and custom on-chain price feeds.
+/// @dev Registers one feed per asset via `setFeed`; re-registration reverts. Each feed carries its own
+///      `maxStaleness` and must return a positive price with a fresh timestamp. Feed types: `1` custom,
+///      `2` Chainlink (`source` = aggregator), `3` Pyth (`source` = Pyth contract, `data` = price id).
+///      Custom feed call shape is documented on `_custom`.
+contract PriceOracleRouter is IPriceOracleRouter {
+    uint8 internal constant FEED_NONE = 0;
+    uint8 internal constant FEED_CUSTOM = 1;
+    uint8 internal constant FEED_CHAINLINK = 2;
+    uint8 internal constant FEED_PYTH = 3;
 
     mapping(address asset => Feed) public feeds;
 
-    /// @dev Storage gap for future upgrades.
-    uint256[48] private __gap;
-
-    event FeedAdd(address indexed asset, uint8 feedType);
-    event MaxStalenessUpdate(uint256 maxStaleness);
-    event CustomOracleUpdate(address indexed asset, address indexed oracle);
-    event CustomPriceSet(address indexed asset, int256 price, uint256 updatedAt);
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
-    }
-
-    function initialize(address owner) external initializer {
-        require(owner != address(0), "admin=0");
-        __Ownable_init(owner);
-        __UUPSUpgradeable_init();
-        maxStaleness = 1 hours;
-    }
-
-    function setMaxStaleness(uint256 newMaxStaleness) external onlyOwner {
-        require(newMaxStaleness > 0, "staleness=0");
-        maxStaleness = newMaxStaleness;
-        emit MaxStalenessUpdate(newMaxStaleness);
-    }
-
-    function addCustomFeed(address asset, uint8 decimals, address oracle) external onlyOwner {
-        require(oracle != address(0), "oracle=0");
-        require(feeds[asset].feedType == NONE, "exists");
-        feeds[asset] = Feed({
-            feedType: CUSTOM,
-            source: oracle,
-            data: bytes32(0),
-            decimals: decimals,
-            storedPrice: 0,
-            storedUpdatedAt: 0
-        });
-        emit FeedAdd(asset, CUSTOM);
-    }
-
-    function addChainlinkFeed(address asset, address aggregator) external onlyOwner {
-        require(aggregator != address(0), "aggregator=0");
-        require(feeds[asset].feedType == NONE, "exists");
-        feeds[asset] = Feed({
-            feedType: CHAINLINK,
-            source: aggregator,
-            data: bytes32(0),
-            decimals: 0,
-            storedPrice: 0,
-            storedUpdatedAt: 0
-        });
-        emit FeedAdd(asset, CHAINLINK);
-    }
-
-    function addPythFeed(address asset, address pyth, bytes32 priceId) external onlyOwner {
-        require(pyth != address(0), "pyth=0");
-        require(priceId != bytes32(0), "id=0");
-        require(feeds[asset].feedType == NONE, "exists");
-        feeds[asset] = Feed({
-            feedType: PYTH,
-            source: pyth,
-            data: priceId,
-            decimals: 0,
-            storedPrice: 0,
-            storedUpdatedAt: 0
-        });
-        emit FeedAdd(asset, PYTH);
-    }
-
-    function setCustomOracle(address asset, address oracle) external onlyOwner {
-        require(feeds[asset].feedType == CUSTOM, "not custom");
-        require(oracle != address(0), "oracle=0");
-        feeds[asset].source = oracle;
-        emit CustomOracleUpdate(asset, oracle);
-    }
-
-    function setCustomPrice(address asset, int256 price) external {
-        Feed storage f = feeds[asset];
-        require(f.feedType == CUSTOM, "not custom");
-        require(msg.sender == f.source, "not oracle");
-        require(price > 0, "bad price");
-        f.storedPrice = price;
-        f.storedUpdatedAt = block.timestamp;
-        emit CustomPriceSet(asset, price, block.timestamp);
+    function setFeed(address asset, Feed calldata feed) public virtual {
+        if (feed.feedType == FEED_NONE) revert FeedTypeZero();
+        if (feed.feedType > FEED_PYTH) revert UnknownFeedType();
+        if (feeds[asset].feedType != FEED_NONE) revert FeedExists();
+        if (feed.source == address(0)) revert SourceZero();
+        if (feed.maxStaleness == 0) revert StalenessZero();
+        if (feed.feedType == FEED_PYTH && feed.data == bytes32(0)) revert PriceIdZero();
+        if (feed.feedType == FEED_CUSTOM && feed.data == bytes32(0)) revert FeedDataZero();
+        if (feed.asset != asset) revert AssetMismatch();
+        feeds[asset] = feed;
+        emit FeedAdd(asset, feed.feedType);
     }
 
     function getPrice(address asset) public view returns (uint256 price, uint8 priceDecimals) {
         Feed storage f = feeds[asset];
         uint8 feedType = f.feedType;
-        if (feedType == CUSTOM) return _custom(f);
-        if (feedType == CHAINLINK) return _chainlink(f.source);
-        if (feedType == PYTH) return _pyth(f.source, f.data);
-        revert("unknown feed type");
+        if (feedType == FEED_CUSTOM) return _custom(f);
+        if (feedType == FEED_CHAINLINK) return _chainlink(f);
+        if (feedType == FEED_PYTH) return _pyth(f);
+        revert UnknownFeedType();
     }
 
+    /// @dev Custom feed: staticcall to `source` with selector `bytes4(data)` and `asset` as the only argument.
+    ///
+    /// Register via `setFeed`:
+    ///   feedType = FEED_CUSTOM (1)
+    ///   source   = custom oracle contract address
+    ///   data     = bytes32(functionSelector) — e.g. bytes32(IOracle.getPrice.selector)
+    ///   asset    = address passed as the call argument (must equal the mapping key)
+    ///   maxStaleness = max age of `updatedAt` in seconds
+    ///
+    /// Oracle must implement a view/pure function `fn(address asset)` returning ABI-encoded:
+    ///   (uint256 price, uint8 priceDecimals, uint256 updatedAt)
+    ///
+    /// Example oracle:
+    ///   function getPrice(address asset) external view returns (uint256, uint8, uint256);
+    ///
+    /// Example registration:
+    ///   setFeed(TOKEN, Feed({
+    ///       feedType: 1,
+    ///       asset: TOKEN,
+    ///       source: address(customOracle),
+    ///       data: bytes32(customOracle.getPrice.selector),
+    ///       decimals: 0,
+    ///       storedPrice: 0,
+    ///       storedUpdatedAt: 0,
+    ///       maxStaleness: 1 hours
+    ///   }));
     function _custom(Feed storage f) internal view returns (uint256 price, uint8 priceDecimals) {
-        require(f.storedPrice > 0, "bad price");
-        require(f.storedUpdatedAt != 0, "round incomplete");
-        require(block.timestamp - f.storedUpdatedAt <= maxStaleness, "stale price");
-        return (uint256(f.storedPrice), f.decimals);
+        (bool ok, bytes memory ret) = f.source.staticcall(abi.encodeWithSelector(bytes4(f.data), f.asset));
+        if (!ok || ret.length < 96) revert BadCall();
+        uint256 updatedAt;
+        (price, priceDecimals, updatedAt) = abi.decode(ret, (uint256, uint8, uint256));
+        if (price == 0) revert BadPrice();
+        if (updatedAt == 0) revert RoundIncomplete();
+        if (block.timestamp - updatedAt > f.maxStaleness) revert StalePrice();
     }
 
-    function _chainlink(address aggregator) internal view returns (uint256 price, uint8 priceDecimals) {
-        AggregatorV3Interface agg = AggregatorV3Interface(aggregator);
+    function _chainlink(Feed storage f) internal view returns (uint256 price, uint8 priceDecimals) {
+        AggregatorV3Interface agg = AggregatorV3Interface(f.source);
         (, int256 answer,, uint256 updatedAt,) = agg.latestRoundData();
-        require(answer > 0, "bad price");
-        require(updatedAt != 0, "round incomplete");
-        require(block.timestamp - updatedAt <= maxStaleness, "stale price");
+        if (answer <= 0) revert BadPrice();
+        if (updatedAt == 0) revert RoundIncomplete();
+        if (block.timestamp - updatedAt > f.maxStaleness) revert StalePrice();
+        // forge-lint: disable-next-line(unsafe-typecast)
         return (uint256(answer), agg.decimals());
     }
 
-    function _pyth(address pyth, bytes32 priceId) internal view returns (uint256 price, uint8 priceDecimals) {
-        PythStructs.Price memory p = IPyth(pyth).getPriceUnsafe(priceId);
-        require(p.price > 0, "bad price");
-        priceDecimals = _decimalsFromExpo(p.expo);
-        require(p.publishTime != 0, "round incomplete");
-        require(block.timestamp - p.publishTime <= maxStaleness, "stale price");
+    function _pyth(Feed storage f) internal view returns (uint256 price, uint8 priceDecimals) {
+        PythStructs.Price memory p = IPyth(f.source).getPriceUnsafe(f.data);
+        if (p.price <= 0) revert BadPrice();
+        if (p.expo > 0) revert BadExpo();
+        uint256 decimals = uint256(uint32(-p.expo));
+        if (decimals > 18) revert ExpoTooLarge();
+        // forge-lint: disable-next-line(unsafe-typecast)
+        priceDecimals = uint8(decimals);
+        if (p.publishTime == 0) revert RoundIncomplete();
+        if (block.timestamp - p.publishTime > f.maxStaleness) revert StalePrice();
         return (uint256(int256(p.price)), priceDecimals);
     }
-
-    function _decimalsFromExpo(int32 expo) internal pure returns (uint8) {
-        require(expo <= 0, "bad expo");
-        uint256 d = uint256(uint32(-expo));
-        require(d <= 18, "expo>18");
-        return uint8(d);
-    }
-
-    function _authorizeUpgrade(address) internal override onlyOwner {}
 }

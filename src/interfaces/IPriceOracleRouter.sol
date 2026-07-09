@@ -2,19 +2,35 @@
 pragma solidity ^0.8.24;
 
 interface IPriceOracleRouter {
-    function maxStaleness() external view returns (uint256);
+    error FeedTypeZero();
+    error UnknownFeedType();
+    error FeedExists();
+    error SourceZero();
+    error StalenessZero();
+    error PriceIdZero();
+    error FeedDataZero();
+    error AssetMismatch();
+    error BadCall();
+    error BadPrice();
+    error RoundIncomplete();
+    error StalePrice();
+    error BadExpo();
+    error ExpoTooLarge();
 
-    function setMaxStaleness(uint256 maxStaleness) external;
+    struct Feed {
+        uint8 feedType;
+        address asset;
+        address source;
+        bytes32 data;
+        uint8 decimals;
+        int256 storedPrice;
+        uint256 storedUpdatedAt;
+        uint256 maxStaleness;
+    }
 
-    function addChainlinkFeed(address asset, address aggregator) external;
+    event FeedAdd(address indexed asset, uint8 feedType);
 
-    function addPythFeed(address asset, address pyth, bytes32 priceId) external;
-
-    function addCustomFeed(address asset, uint8 decimals, address oracle) external;
-
-    function setCustomOracle(address asset, address oracle) external;
-
-    function setCustomPrice(address asset, int256 price) external;
+    function setFeed(address asset, Feed calldata feed) external;
 
     function getPrice(address asset) external view returns (uint256 price, uint8 priceDecimals);
 }
