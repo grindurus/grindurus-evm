@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {ForkFixture} from "./ForkFixture.sol";
 import {PriceOracleRouter} from "../../src/PriceOracleRouter.sol";
+import {IPriceOracleRouter} from "../../src/interfaces/IPriceOracleRouter.sol";
 import {AggregatorV3Interface} from "../../src/interfaces/AggregatorV3Interface.sol";
 
 /// Fork tests that read *live* Chainlink aggregators through the asset-keyed router.
@@ -24,6 +25,8 @@ contract ChainlinkForkTest is ForkFixture {
         uint8 dec = agg.decimals();
         assertEq(dec, 8, "chainlink usd feeds report 8 decimals");
 
+        // casting to 'uint256' is safe: Chainlink answer is positive (assertGt above)
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint256 usd = uint256(answer) / (10 ** dec);
         assertGe(usd, minUsd, "price below sane floor");
         assertLe(usd, maxUsd, "price above sane ceiling");
@@ -37,11 +40,12 @@ contract ChainlinkForkTest is ForkFixture {
     function _routeIfFresh(address asset, address aggregator) internal {
         (,,, uint256 updatedAt,) = AggregatorV3Interface(aggregator).latestRoundData();
         PriceOracleRouter router = _newRouter();
-        if (block.timestamp - updatedAt > router.maxStaleness()) {
+        _setChainlinkFeed(router, asset, aggregator);
+        (,,,,,,, uint256 maxStaleness) = router.feeds(asset);
+        if (block.timestamp - updatedAt > maxStaleness) {
             emit log("skipping router leg: chainlink round is stale on this fork block");
             vm.skip(true);
         }
-        router.addChainlinkFeed(asset, aggregator);
         (uint256 price, uint8 dec) = router.getPrice(asset);
         assertEq(dec, 8);
         assertGt(price, 0);
@@ -81,10 +85,11 @@ contract ChainlinkForkTest is ForkFixture {
         _forkEthereum();
         PriceOracleRouter router = _newRouter();
         address asset = makeAddr("eth-usd-stale");
-        router.addChainlinkFeed(asset, ETH_ETHUSD);
+        _setChainlinkFeed(router, asset, ETH_ETHUSD);
 
-        vm.warp(block.timestamp + router.maxStaleness() + 1);
-        vm.expectRevert(bytes("stale price"));
+        (,,,,,,, uint256 maxStaleness) = router.feeds(asset);
+        vm.warp(block.timestamp + maxStaleness + 1);
+        vm.expectRevert(IPriceOracleRouter.StalePrice.selector);
         router.getPrice(asset);
     }
 }

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
+import {IGRAI} from "../src/interfaces/IGRAI.sol";
 
 contract GRAITokenTest is GRAIFixture {
     function test_TokenMetadata() public view {
@@ -18,7 +19,7 @@ contract GRAITokenTest is GRAIFixture {
     }
 
     function test_MintRequiresRegisteredAsset() public {
-        vm.expectRevert(bytes("unknown asset"));
+        vm.expectRevert(IGRAI.AssetUnknown.selector);
         vm.prank(alice);
         grai.mint(alice, 1e18);
     }

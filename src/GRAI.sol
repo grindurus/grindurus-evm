@@ -8,8 +8,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {SeniorVault} from "./SeniorVault.sol";
-import {JuniorVault} from "./JuniorVault.sol";
+import {Vault} from "./Vault.sol";
 import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 import {IGRAI} from "./interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "./interfaces/IPriceOracleRouter.sol";
@@ -40,8 +39,8 @@ contract GRAI is
     uint256 public totalValue;
     address public treasury;
 
-    SeniorVault public seniorVault;
-    JuniorVault public juniorVault;
+    Vault public seniorVault;
+    Vault public juniorVault;
 
     /// custody => asset => cumulative units allocated to that custody.
     mapping(address custody => mapping(address asset => uint256)) public allocatedAmount;
@@ -71,10 +70,8 @@ contract GRAI is
         treasury = treasury_;
         _tokenUri = "https://grindurus.xyz/metadata.json";
 
-        SeniorVault s = new SeniorVault(address(this));
-        JuniorVault j = new JuniorVault(address(this));
-        seniorVault = s;
-        juniorVault = j;
+        seniorVault = new Vault(address(this));
+        juniorVault = new Vault(address(this));
     }
 
     receive() external payable {}

@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {IGRAI} from "./IGRAI.sol";
+
+interface ITreasury {
+    error ZeroAddress();
+    error OwnerZero();
+    error AmountZero();
+    error ToZero();
+    error EthTransferFailed();
+    error UnknownCustodyKind(bytes32 custodyKind);
+    error CustodyKindMismatch(bytes32 expected, bytes32 actual);
+
+    event CustodyImplementationUpdated(bytes32 indexed custodyKind, address implementation);
+    event CustodyDeployed(
+        bytes32 indexed custodyKind,
+        address indexed custody,
+        address indexed owner,
+        address baseAsset,
+        address quoteAsset
+    );
+    event Withdraw(address indexed asset, address indexed to, uint256 amount);
+
+    function grai() external view returns (IGRAI);
+
+    function custodyImplementations(bytes32 custodyKind) external view returns (address);
+
+    function custodians(uint256 custodianId) external view returns (address);
+
+    function nextCustodianId() external view returns (uint256);
+
+    function initialize(IGRAI grai_, address owner_) external;
+
+    function balance(address asset) external view returns (uint256);
+
+    function setCustodyImplementation(bytes32 custodyKind, address implementation) external;
+
+    function mint(bytes32 custodyKind, address owner_, IERC20 baseAsset_, IERC20 quoteAsset_)
+        external
+        returns (address custody);
+
+    function withdraw(address asset, address to, uint256 amount) external;
+}

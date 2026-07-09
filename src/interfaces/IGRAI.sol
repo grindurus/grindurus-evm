@@ -5,8 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC1046} from "./IERC1046.sol";
 import {IPriceOracleRouter} from "./IPriceOracleRouter.sol";
 
-import {SeniorVault} from "../SeniorVault.sol";
-import {JuniorVault} from "../JuniorVault.sol";
+import {Vault} from "../Vault.sol";
 
 interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error ZeroAddress();
@@ -71,8 +70,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     function ADMIN_ROLE() external view returns (bytes32);
     function ORACLE_ROLE() external view returns (bytes32);
 
-    function seniorVault() external view returns (SeniorVault);
-    function juniorVault() external view returns (JuniorVault);
+    function seniorVault() external view returns (Vault);
+    function juniorVault() external view returns (Vault);
     function allocatedAmount(address custody, address asset) external view returns (uint256);
     function yieldGenerated(address custody, address asset) external view returns (uint256);
 

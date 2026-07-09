@@ -21,9 +21,10 @@ contract PythForkTest is ForkFixture {
         assertGt(raw.publishTime, 0, "missing publish time");
 
         PriceOracleRouter router = _newRouter();
-        router.addPythFeed(asset, pyth, id);
+        _setPythFeed(router, asset, pyth, id);
 
-        if (block.timestamp - raw.publishTime > router.maxStaleness()) {
+        (,,,,,,, uint256 maxStaleness) = router.feeds(asset);
+        if (block.timestamp - raw.publishTime > maxStaleness) {
             emit log("skipping router leg: on-chain pyth price is stale on this fork block");
             vm.skip(true);
         }
@@ -45,11 +46,11 @@ contract PythForkTest is ForkFixture {
     function _routeIfFresh(address asset, address pyth, bytes32 id) internal {
         PythStructs.Price memory raw = IPyth(pyth).getPriceUnsafe(id);
         PriceOracleRouter router = _newRouter();
-        if (block.timestamp - raw.publishTime > router.maxStaleness()) {
+        if (block.timestamp - raw.publishTime > DEFAULT_MAX_STALENESS) {
             emit log("skipping router leg: on-chain pyth price is stale on this fork block");
             vm.skip(true);
         }
-        router.addPythFeed(asset, pyth, id);
+        _setPythFeed(router, asset, pyth, id);
         (uint256 price, uint8 dec) = router.getPrice(asset);
         assertGt(price, 0);
         assertGt(dec, 0);

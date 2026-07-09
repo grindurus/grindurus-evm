@@ -5,7 +5,8 @@ import {Script, console2} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAI} from "../src/GRAI.sol";
-import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
+import {Treasury} from "../src/Treasury.sol";
+import {IGRAI} from "../src/interfaces/IGRAI.sol";
 
 /// @dev Nick's deterministic deployment proxy - same address on most EVM chains.
 library Create2Factory {
@@ -13,6 +14,7 @@ library Create2Factory {
 
     error FactoryNotDeployed();
     error DeploymentFailed(address expected);
+    error AdminKeyRequired();
 
     function isAvailable() internal view returns (bool) {
         return DEPLOYER.code.length > 0;
@@ -50,18 +52,19 @@ library DeployPlanLib {
     struct Plan {
         address admin;
         address treasury;
-        bytes32 saltOracleImpl;
-        bytes32 saltOracleProxy;
+        bool deployTreasury;
         bytes32 saltGraiImpl;
         bytes32 saltGraiProxy;
-        bytes oracleImplCode;
-        bytes oracleProxyCode;
+        bytes32 saltTreasuryImpl;
+        bytes32 saltTreasuryProxy;
         bytes graiImplCode;
         bytes graiProxyCode;
-        address oracleImpl;
-        address oracleProxy;
+        bytes treasuryImplCode;
+        bytes treasuryProxyCode;
         address graiImpl;
         address graiProxy;
+        address treasuryImpl;
+        address treasuryProxy;
         address seniorVault;
         address juniorVault;
     }
@@ -70,27 +73,39 @@ library DeployPlanLib {
         return keccak256(abi.encodePacked("grindurus/", tag, "/", label));
     }
 
-    function build(address admin, address treasury, string memory saltTag) internal pure returns (Plan memory plan) {
+    function build(address admin, address treasuryOverride, string memory saltTag) internal pure returns (Plan memory plan) {
         plan.admin = admin;
-        plan.treasury = treasury;
-        plan.saltOracleImpl = salt("PriceOracleRouter/impl", saltTag);
         plan.saltGraiImpl = salt("GRAI/impl", saltTag);
-        plan.saltOracleProxy = salt("PriceOracleRouter/proxy", saltTag);
         plan.saltGraiProxy = salt("GRAI/proxy", saltTag);
-
-        plan.oracleImplCode = type(PriceOracleRouter).creationCode;
-        plan.oracleImpl = Create2Factory.computeAddress(plan.saltOracleImpl, plan.oracleImplCode);
-
-        plan.oracleProxyCode = proxyCreationCode(
-            plan.oracleImpl, abi.encodeCall(PriceOracleRouter.initialize, (admin))
-        );
-        plan.oracleProxy = Create2Factory.computeAddress(plan.saltOracleProxy, plan.oracleProxyCode);
+        plan.saltTreasuryImpl = salt("Treasury/impl", saltTag);
+        plan.saltTreasuryProxy = salt("Treasury/proxy", saltTag);
 
         plan.graiImplCode = type(GRAI).creationCode;
         plan.graiImpl = Create2Factory.computeAddress(plan.saltGraiImpl, plan.graiImplCode);
 
+        if (treasuryOverride == address(0)) {
+            plan.deployTreasury = true;
+            plan.treasuryImplCode = type(Treasury).creationCode;
+            plan.treasuryImpl = Create2Factory.computeAddress(plan.saltTreasuryImpl, plan.treasuryImplCode);
+
+            // Bootstrap GRAI with admin as treasury so the proxy address does not depend on Treasury.
+            plan.graiProxyCode = proxyCreationCode(
+                plan.graiImpl, abi.encodeCall(GRAI.initialize, (admin, admin))
+            );
+            plan.graiProxy = Create2Factory.computeAddress(plan.saltGraiProxy, plan.graiProxyCode);
+
+            plan.treasuryProxyCode = proxyCreationCode(
+                plan.treasuryImpl, abi.encodeCall(Treasury.initialize, (IGRAI(plan.graiProxy), admin))
+            );
+            plan.treasuryProxy = Create2Factory.computeAddress(plan.saltTreasuryProxy, plan.treasuryProxyCode);
+            plan.treasury = plan.treasuryProxy;
+            return plan;
+        }
+
+        plan.deployTreasury = false;
+        plan.treasury = treasuryOverride;
         plan.graiProxyCode = proxyCreationCode(
-            plan.graiImpl, abi.encodeCall(GRAI.initialize, (admin, plan.oracleProxy, treasury))
+            plan.graiImpl, abi.encodeCall(GRAI.initialize, (admin, treasuryOverride))
         );
         plan.graiProxy = Create2Factory.computeAddress(plan.saltGraiProxy, plan.graiProxyCode);
     }
@@ -107,27 +122,30 @@ library DeployPlanLib {
 }
 
 /// @title Grindurus CREATE2 deploy
-/// @notice Deploys GRAI + PriceOracleRouter at the same addresses on every chain that hosts
-///         Nick's CREATE2 factory (`0x4e59...4956C`) with identical bytecode and init params.
+/// @notice Deploys GRAI (embedded oracle) and Treasury at deterministic addresses on every chain
+///         that hosts Nick's CREATE2 factory (`0x4e59...4956C`) with identical bytecode and init params.
+///
+/// Default: deploys Treasury proxy + GRAI proxy. GRAI is initialized with `admin` as bootstrap treasury,
+/// then `setTreasury` is called in the same run (requires `ADMIN_PRIVATE_KEY` or `PRIVATE_KEY` = ADMIN).
+/// Set `TREASURY=0x...` to skip Treasury CREATE2 and point GRAI at an existing treasury.
 ///
 /// Requirements for cross-chain address parity:
-///   - Same `ADMIN` and `TREASURY` addresses on every chain (use a CREATE2 Safe or fixed EOA).
-///     Omit `TREASURY` or set `TREASURY=0x000...000` to reuse `ADMIN`.
+///   - Same `ADMIN` on every chain (CREATE2 Safe or fixed EOA).
 ///   - Same `CREATE2_SALT_TAG` (default `v1`) and unchanged contract bytecode.
 ///   - Deploy in one run per chain; do not change optimizer settings between chains.
 ///
-/// Usage - predict addresses (no broadcast, no key required):
-///   ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
+/// Usage - predict addresses (no broadcast):
+///   ADMIN=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
 ///
-/// Usage - deploy:
-///   ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol:Deploy \
-///     --rpc-url $RPC_URL --broadcast
+/// Usage - deploy GRAI + Treasury:
+///   ADMIN=0x... forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
 ///
-/// After deploy, register feeds and assets (see comments at the bottom of this file).
+/// Usage - deploy GRAI only (external treasury):
+///   ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
 contract Deploy is Script {
     using DeployPlanLib for DeployPlanLib.Plan;
 
-    function predict() external {
+    function predict() external view {
         DeployPlanLib.Plan memory plan = _plan();
         plan = plan.withVaults(
             vm.computeCreateAddress(plan.graiProxy, 0), vm.computeCreateAddress(plan.graiProxy, 1)
@@ -135,7 +153,7 @@ contract Deploy is Script {
         _logPlan(plan, Create2Factory.isAvailable());
     }
 
-    function run() external returns (GRAI grai, PriceOracleRouter oracle) {
+    function run() external returns (GRAI grai, Treasury treasury) {
         DeployPlanLib.Plan memory plan = _plan();
         plan = plan.withVaults(
             vm.computeCreateAddress(plan.graiProxy, 0), vm.computeCreateAddress(plan.graiProxy, 1)
@@ -144,44 +162,79 @@ contract Deploy is Script {
 
         if (_dryRun()) {
             console2.log("DRY_RUN=1 - skipping broadcast");
-            return (GRAI(payable(plan.graiProxy)), PriceOracleRouter(plan.oracleProxy));
+            return (GRAI(payable(plan.graiProxy)), Treasury(payable(plan.treasuryProxy)));
         }
 
         require(Create2Factory.isAvailable(), "CREATE2 factory missing on this chain");
 
         vm.startBroadcast();
 
-        address oracleImpl = Create2Factory.deploy(plan.saltOracleImpl, plan.oracleImplCode);
-        require(oracleImpl == plan.oracleImpl, "oracle impl address mismatch");
-
-        address oracleProxy = Create2Factory.deploy(plan.saltOracleProxy, plan.oracleProxyCode);
-        require(oracleProxy == plan.oracleProxy, "oracle proxy address mismatch");
-
         address graiImpl = Create2Factory.deploy(plan.saltGraiImpl, plan.graiImplCode);
         require(graiImpl == plan.graiImpl, "grai impl address mismatch");
 
-        address graiProxy = Create2Factory.deploy(plan.saltGraiProxy, plan.graiProxyCode);
-        require(graiProxy == plan.graiProxy, "grai proxy address mismatch");
+        if (plan.deployTreasury) {
+            address treasuryImpl = Create2Factory.deploy(plan.saltTreasuryImpl, plan.treasuryImplCode);
+            require(treasuryImpl == plan.treasuryImpl, "treasury impl address mismatch");
+
+            address graiProxy = Create2Factory.deploy(plan.saltGraiProxy, plan.graiProxyCode);
+            require(graiProxy == plan.graiProxy, "grai proxy address mismatch");
+
+            address treasuryProxy = Create2Factory.deploy(plan.saltTreasuryProxy, plan.treasuryProxyCode);
+            require(treasuryProxy == plan.treasuryProxy, "treasury proxy address mismatch");
+
+            treasury = Treasury(payable(treasuryProxy));
+            grai = GRAI(payable(graiProxy));
+        } else {
+            address graiProxy = Create2Factory.deploy(plan.saltGraiProxy, plan.graiProxyCode);
+            require(graiProxy == plan.graiProxy, "grai proxy address mismatch");
+
+            grai = GRAI(payable(graiProxy));
+            treasury = Treasury(payable(address(0)));
+        }
 
         vm.stopBroadcast();
-
-        grai = GRAI(payable(graiProxy));
-        oracle = PriceOracleRouter(oracleProxy);
 
         require(address(grai.seniorVault()) == plan.seniorVault, "senior vault address mismatch");
         require(address(grai.juniorVault()) == plan.juniorVault, "junior vault address mismatch");
 
+        if (plan.deployTreasury) {
+            require(address(treasury.grai()) == address(grai), "treasury grai mismatch");
+            _wireTreasury(grai, plan.treasuryProxy);
+            require(grai.treasury() == plan.treasury, "treasury address mismatch");
+        } else {
+            require(grai.treasury() == plan.treasury, "treasury address mismatch");
+        }
+
         console2.log("Deploy complete.");
     }
 
-    function _plan() internal returns (DeployPlanLib.Plan memory plan) {
+    function _wireTreasury(GRAI grai, address treasuryProxy) internal {
+        uint256 adminKey = _adminPrivateKey();
+        vm.startBroadcast(adminKey);
+        grai.setTreasury(treasuryProxy);
+        vm.stopBroadcast();
+    }
+
+    function _adminPrivateKey() internal view returns (uint256 key) {
         address admin = vm.envAddress("ADMIN");
-        address treasury = vm.envOr("TREASURY", admin);
-        if (treasury == address(0)) {
-            treasury = admin;
+        try vm.envUint("ADMIN_PRIVATE_KEY") returns (uint256 adminKey) {
+            require(vm.addr(adminKey) == admin, "ADMIN_PRIVATE_KEY mismatch");
+            return adminKey;
+        } catch {
+            try vm.envUint("PRIVATE_KEY") returns (uint256 deployerKey) {
+                require(vm.addr(deployerKey) == admin, "PRIVATE_KEY must match ADMIN to wire treasury");
+                return deployerKey;
+            } catch {
+                revert Create2Factory.AdminKeyRequired();
+            }
         }
+    }
+
+    function _plan() internal view returns (DeployPlanLib.Plan memory plan) {
+        address admin = vm.envAddress("ADMIN");
+        address treasuryOverride = vm.envOr("TREASURY", address(0));
         string memory saltTag = vm.envOr("CREATE2_SALT_TAG", string("v1"));
-        plan = DeployPlanLib.build(admin, treasury, saltTag);
+        plan = DeployPlanLib.build(admin, treasuryOverride, saltTag);
     }
 
     function _dryRun() internal view returns (bool) {
@@ -195,23 +248,26 @@ contract Deploy is Script {
     function _logPlan(DeployPlanLib.Plan memory plan, bool factoryAvailable) internal pure {
         console2.log("CREATE2 factory available:", factoryAvailable);
         console2.log("ADMIN:", plan.admin);
+        console2.log("Deploy Treasury:", plan.deployTreasury);
         console2.log("TREASURY:", plan.treasury);
-        console2.log("PriceOracleRouter impl:", plan.oracleImpl);
-        console2.log("PriceOracleRouter proxy:", plan.oracleProxy);
         console2.log("GRAI impl:", plan.graiImpl);
         console2.log("GRAI proxy:", plan.graiProxy);
+        if (plan.deployTreasury) {
+            console2.log("Treasury impl:", plan.treasuryImpl);
+            console2.log("Treasury proxy:", plan.treasuryProxy);
+        }
         console2.log("SeniorVault:", plan.seniorVault);
         console2.log("JuniorVault:", plan.juniorVault);
     }
 }
 
-// After deploy, register each asset feed on the oracle router, then add it to GRAI:
+// After deploy, register each asset feed on GRAI, then add it to the asset registry:
 //   Chainlink (mainnet):
-//     oracle.addChainlinkFeed(USDC, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6);
+//     grai.setFeed(USDC, chainlinkFeed(0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6));
 //     grai.addAsset(USDC, mintSplit, yieldSplit);
 //   Pyth:
-//     oracle.addPythFeed(WETH, PYTH, WETH_USD_ID);
+//     grai.setFeed(WETH, pythFeed(PYTH, WETH_USD_ID));
 //     grai.addAsset(WETH, mintSplit, yieldSplit);
 //   Custom:
-//     oracle.addCustomFeed(TOKEN, 8, oracleSigner);
+//     grai.setFeed(TOKEN, customFeed(8, oracleSigner));
 //     grai.addAsset(TOKEN, mintSplit, yieldSplit);

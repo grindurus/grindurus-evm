@@ -2,10 +2,12 @@
 pragma solidity ^0.8.24;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
+import {IGRAI} from "../src/interfaces/IGRAI.sol";
+import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 
 contract GRAIVaultTest is GRAIFixture {
     function test_AddAssetRegistersAsset() public view {
-        assertEq(grai.assetCount(), 2);
+        assertEq(grai.getVaultsData().length, 2);
         (bool exists,,,,,) = grai.assets(address(usdc));
         assertTrue(exists);
         assertEq(grai.seniorVault().PROPRIETOR(), address(grai));
@@ -14,7 +16,7 @@ contract GRAIVaultTest is GRAIFixture {
 
     function test_AddAssetDuplicateReverts() public {
         vm.prank(admin);
-        vm.expectRevert(bytes("exists"));
+        vm.expectRevert(IGRAI.AssetExists.selector);
         grai.addAsset(address(usdc), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
     }
 
@@ -37,7 +39,7 @@ contract GRAIVaultTest is GRAIFixture {
 
         vm.startPrank(alice);
         usdc.approve(address(grai), 100e6);
-        vm.expectRevert(bytes("paused"));
+        vm.expectRevert(IGRAI.MintingPaused.selector);
         grai.mint(address(usdc), 100e6);
         vm.stopPrank();
     }
@@ -96,7 +98,7 @@ contract GRAIVaultTest is GRAIFixture {
 
         vm.startPrank(custody);
         usdc.approve(address(grai), 60e6);
-        vm.expectRevert(bytes("insufficient allocation"));
+        vm.expectRevert(IGRAI.InsufficientAllocation.selector);
         grai.deallocate(address(usdc), 60e6);
         vm.stopPrank();
     }
@@ -154,7 +156,14 @@ contract GRAIVaultTest is GRAIFixture {
     function test_NavViewPricesSeniorIdle() public {
         _mint(alice, usdc, 100e6); // senior idle 50 USDC = $50
         _mint(alice, weth, 1e18); // senior idle 0.5 WETH = $1000
-        assertEq(grai.seniorNav(), 50e18 + 1000e18);
+        IGRAI.VaultSnapshot[] memory vaults = grai.getVaultsData();
+        uint256 total;
+        for (uint256 i; i < vaults.length; ++i) {
+            if (vaults[i].seniorBalance > 0) {
+                total += grai.usdValue(vaults[i].asset, vaults[i].seniorBalance);
+            }
+        }
+        assertEq(total, 50e18 + 1000e18);
     }
 
     function test_GetVaultsSnapshot() public {
@@ -167,7 +176,7 @@ contract GRAIVaultTest is GRAIFixture {
         vm.warp(block.timestamp + 2 hours);
         vm.startPrank(alice);
         usdc.approve(address(grai), 100e6);
-        vm.expectRevert(bytes("stale price"));
+        vm.expectRevert(IPriceOracleRouter.StalePrice.selector);
         grai.mint(address(usdc), 100e6);
         vm.stopPrank();
     }
@@ -176,7 +185,7 @@ contract GRAIVaultTest is GRAIFixture {
         usdcFeed.setAnswer(-1);
         vm.startPrank(alice);
         usdc.approve(address(grai), 100e6);
-        vm.expectRevert(bytes("bad price"));
+        vm.expectRevert(IPriceOracleRouter.BadPrice.selector);
         grai.mint(address(usdc), 100e6);
         vm.stopPrank();
     }
@@ -189,14 +198,14 @@ contract GRAIVaultTest is GRAIFixture {
         grai.removeAsset(address(usdc), 0);
         vm.stopPrank();
 
-        assertEq(grai.assetCount(), 1);
+        assertEq(grai.getVaultsData().length, 1);
         // both tranche balances swept to admin
         assertEq(usdc.balanceOf(admin), 100e6);
     }
 
     function test_MintWithEther() public {
         vm.startPrank(admin);
-        oracle.addChainlinkFeed(address(0), address(wethFeed));
+        _setChainlinkFeed(address(0), address(wethFeed));
         grai.addAsset(address(0), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         vm.stopPrank();
 
@@ -212,7 +221,7 @@ contract GRAIVaultTest is GRAIFixture {
 
     function test_BurnRedeemsEther() public {
         vm.startPrank(admin);
-        oracle.addChainlinkFeed(address(0), address(wethFeed));
+        _setChainlinkFeed(address(0), address(wethFeed));
         grai.addAsset(address(0), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         vm.stopPrank();
 

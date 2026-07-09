@@ -2,9 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-
 import {PriceOracleRouter} from "../../src/PriceOracleRouter.sol";
+import {IPriceOracleRouter} from "../../src/interfaces/IPriceOracleRouter.sol";
 
 /// Base fixture for live-network fork tests.
 ///
@@ -15,6 +14,7 @@ import {PriceOracleRouter} from "../../src/PriceOracleRouter.sol";
 ///     export ARBITRUM_RPC_URL="https://arb-mainnet.g.alchemy.com/v2/<key>"
 ///     forge test --match-path "test/fork/*"
 abstract contract ForkFixture is Test {
+    uint256 internal constant DEFAULT_MAX_STALENESS = 1 hours;
     uint256 internal constant ETHEREUM_CHAIN_ID = 1;
     uint256 internal constant ARBITRUM_CHAIN_ID = 42_161;
 
@@ -39,12 +39,39 @@ abstract contract ForkFixture is Test {
         assertEq(block.chainid, ARBITRUM_CHAIN_ID, "expected arbitrum one fork");
     }
 
-    function _newRouter() internal returns (PriceOracleRouter router) {
-        PriceOracleRouter impl = new PriceOracleRouter();
-        router = PriceOracleRouter(
-            address(
-                new ERC1967Proxy(address(impl), abi.encodeCall(PriceOracleRouter.initialize, (address(this))))
-            )
+    function _setChainlinkFeed(PriceOracleRouter router, address asset, address aggregator) internal {
+        router.setFeed(
+            asset,
+            IPriceOracleRouter.Feed({
+                feedType: 2,
+                asset: asset,
+                source: aggregator,
+                data: bytes32(0),
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: DEFAULT_MAX_STALENESS
+            })
         );
+    }
+
+    function _setPythFeed(PriceOracleRouter router, address asset, address pyth, bytes32 priceId) internal {
+        router.setFeed(
+            asset,
+            IPriceOracleRouter.Feed({
+                feedType: 3,
+                asset: asset,
+                source: pyth,
+                data: priceId,
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: DEFAULT_MAX_STALENESS
+            })
+        );
+    }
+
+    function _newRouter() internal returns (PriceOracleRouter router) {
+        router = new PriceOracleRouter();
     }
 }

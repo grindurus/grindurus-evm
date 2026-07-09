@@ -4,13 +4,13 @@ pragma solidity ^0.8.24;
 import {AggregatorV3Interface} from "../../src/interfaces/AggregatorV3Interface.sol";
 
 contract MockAggregator is AggregatorV3Interface {
-    uint8 private immutable _decimals;
+    uint8 private immutable _DECIMALS;
     int256 private _answer;
     uint256 private _updatedAt;
     uint80 private _roundId;
 
     constructor(uint8 decimals_, int256 answer_) {
-        _decimals = decimals_;
+        _DECIMALS = decimals_;
         _answer = answer_;
         _updatedAt = block.timestamp;
         _roundId = 1;
@@ -27,7 +27,7 @@ contract MockAggregator is AggregatorV3Interface {
     }
 
     function decimals() external view returns (uint8) {
-        return _decimals;
+        return _DECIMALS;
     }
 
     function description() external pure returns (string memory) {

@@ -15,6 +15,7 @@ out/
 docs/
 
 # Dotenv file
+.cursorignore
 .env
 .env.*
 !.env.example

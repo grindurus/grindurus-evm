@@ -3,32 +3,79 @@ pragma solidity ^0.8.24;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockCustomOracle} from "./mocks/MockCustomOracle.sol";
+import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 
 contract CustomPriceFeedTest is GRAIFixture {
     function test_CustomPriceFeedWorksThroughRouter() public {
-        address oracleSigner = makeAddr("oracleSigner");
         MockERC20 mock = new MockERC20("Mock", "MOCK", 18);
+        MockCustomOracle custom = new MockCustomOracle();
+        custom.setPrice(address(mock), 5e8, 8);
 
-        vm.startPrank(admin);
-        oracle.addCustomFeed(address(mock), 8, oracleSigner);
-        vm.stopPrank();
+        vm.prank(admin);
+        grai.setFeed(
+            address(mock),
+            IPriceOracleRouter.Feed({
+                feedType: 1,
+                asset: address(mock),
+                source: address(custom),
+                data: bytes32(MockCustomOracle.getPrice.selector),
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: DEFAULT_MAX_STALENESS
+            })
+        );
 
-        vm.prank(oracleSigner);
-        oracle.setCustomPrice(address(mock), 5e8); // $5
-
-        (uint256 price, uint8 dec) = oracle.getPrice(address(mock));
+        (uint256 price, uint8 dec) = grai.getPrice(address(mock));
         assertEq(price, 5e8);
         assertEq(dec, 8);
     }
 
-    function test_CustomPriceFeedAclEnforced() public {
+    function test_CustomPriceFeedStaleReverts() public {
+        MockERC20 mock = new MockERC20("Mock", "MOCK", 18);
+        MockCustomOracle custom = new MockCustomOracle();
+        custom.setPrice(address(mock), 5e8, 8);
+
+        vm.prank(admin);
+        grai.setFeed(
+            address(mock),
+            IPriceOracleRouter.Feed({
+                feedType: 1,
+                asset: address(mock),
+                source: address(custom),
+                data: bytes32(MockCustomOracle.getPrice.selector),
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: DEFAULT_MAX_STALENESS
+            })
+        );
+
+        vm.warp(block.timestamp + DEFAULT_MAX_STALENESS + 1);
+        vm.expectRevert(IPriceOracleRouter.StalePrice.selector);
+        grai.getPrice(address(mock));
+    }
+
+    function test_CustomPriceFeedBadCallReverts() public {
         MockERC20 mock = new MockERC20("Mock", "MOCK", 18);
 
         vm.prank(admin);
-        oracle.addCustomFeed(address(mock), 8, makeAddr("oracleSigner"));
+        grai.setFeed(
+            address(mock),
+            IPriceOracleRouter.Feed({
+                feedType: 1,
+                asset: address(mock),
+                source: makeAddr("noCode"),
+                data: bytes32(uint256(1)),
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: DEFAULT_MAX_STALENESS
+            })
+        );
 
-        vm.expectRevert(bytes("not oracle"));
-        vm.prank(alice);
-        oracle.setCustomPrice(address(mock), 5e8);
+        vm.expectRevert(IPriceOracleRouter.BadCall.selector);
+        grai.getPrice(address(mock));
     }
 }

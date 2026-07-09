@@ -5,7 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAI} from "../src/GRAI.sol";
-import {PriceOracleRouter} from "../src/PriceOracleRouter.sol";
+import {IGRAI} from "../src/interfaces/IGRAI.sol";
+import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
@@ -18,7 +19,6 @@ abstract contract GRAIFixture is Test {
     address custody = makeAddr("custody");
 
     GRAI grai;
-    PriceOracleRouter oracle;
 
     MockERC20 usdc; // 6 decimals
     MockERC20 weth; // 18 decimals
@@ -28,17 +28,11 @@ abstract contract GRAIFixture is Test {
     uint16 constant BPS = 10_000;
     uint16 constant DEFAULT_MINT_SPLIT = 5_000;
     uint16 constant DEFAULT_YIELD_SPLIT = 8_000;
+    uint256 constant DEFAULT_MAX_STALENESS = 1 hours;
 
     function setUp() public virtual {
-        PriceOracleRouter oracleImpl = new PriceOracleRouter();
-        oracle = PriceOracleRouter(
-            address(
-                new ERC1967Proxy(address(oracleImpl), abi.encodeCall(PriceOracleRouter.initialize, (admin)))
-            )
-        );
-
         GRAI impl = new GRAI();
-        bytes memory init = abi.encodeCall(GRAI.initialize, (admin, address(oracle), treasury));
+        bytes memory init = abi.encodeCall(GRAI.initialize, (admin, treasury));
         grai = GRAI(payable(address(new ERC1967Proxy(address(impl), init))));
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
@@ -47,8 +41,8 @@ abstract contract GRAIFixture is Test {
         wethFeed = new MockAggregator(8, 2000e8);
 
         vm.startPrank(admin);
-        oracle.addChainlinkFeed(address(usdc), address(usdcFeed));
-        oracle.addChainlinkFeed(address(weth), address(wethFeed));
+        _setChainlinkFeed(address(usdc), address(usdcFeed));
+        _setChainlinkFeed(address(weth), address(wethFeed));
         grai.addAsset(address(usdc), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         grai.addAsset(address(weth), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
         vm.stopPrank();
@@ -59,6 +53,39 @@ abstract contract GRAIFixture is Test {
         weth.mint(alice, 100e18);
     }
 
+    function _setChainlinkFeed(address asset, address aggregator) internal {
+        grai.setFeed(asset, _chainlinkFeed(asset, aggregator));
+    }
+
+    function _setPythFeed(address asset, address pyth, bytes32 priceId) internal {
+        grai.setFeed(
+            asset,
+            IPriceOracleRouter.Feed({
+                feedType: 3,
+                asset: asset,
+                source: pyth,
+                data: priceId,
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: DEFAULT_MAX_STALENESS
+            })
+        );
+    }
+
+    function _chainlinkFeed(address asset, address aggregator) internal pure returns (IPriceOracleRouter.Feed memory) {
+        return IPriceOracleRouter.Feed({
+            feedType: 2,
+            asset: asset,
+            source: aggregator,
+            data: bytes32(0),
+            decimals: 0,
+            storedPrice: 0,
+            storedUpdatedAt: 0,
+            maxStaleness: DEFAULT_MAX_STALENESS
+        });
+    }
+
     function _mint(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
         vm.startPrank(user);
         token.approve(address(grai), amount);
@@ -66,15 +93,15 @@ abstract contract GRAIFixture is Test {
         vm.stopPrank();
     }
 
-    function _getVaultSnapshots() internal view returns (GRAI.VaultSnapshot[] memory) {
-        return grai.getVaults();
+    function _getVaultSnapshots() internal view returns (IGRAI.VaultSnapshot[] memory) {
+        return grai.getVaultsData();
     }
 
     function _assertFirstVaultSnapshot(address expectedAsset, uint256 expectedSenior, uint256 expectedJunior)
         internal
         view
     {
-        GRAI.VaultSnapshot[] memory snap = _getVaultSnapshots();
+        IGRAI.VaultSnapshot[] memory snap = _getVaultSnapshots();
         assertEq(snap.length, 2);
         assertEq(snap[0].asset, expectedAsset);
         assertEq(snap[0].seniorBalance, expectedSenior);
