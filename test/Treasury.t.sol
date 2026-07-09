@@ -23,7 +23,7 @@ contract TreasuryTest is GRAIFixture {
             payable(
                 address(
                     new ERC1967Proxy(
-                        address(impl), abi.encodeCall(Treasury.initialize, (grai, admin))
+                        address(impl), abi.encodeCall(Treasury.initialize, (admin, address(grai)))
                     )
                 )
             )
@@ -48,14 +48,15 @@ contract TreasuryTest is GRAIFixture {
     }
 
     function test_ReceivesYieldFromDistribute() public {
+        vm.prank(admin);
+        address custodyWallet = treasuryContract.mint(cowKind, grinder, usdc, weth);
+
         _mint(alice, usdc, 100e6);
         vm.prank(admin);
-        grai.allocate(address(usdc), custody, 50e6);
+        grai.allocate(address(usdc), custodyWallet, 50e6);
 
-        vm.prank(custody);
-        usdc.approve(address(grai), 20e6);
-        vm.prank(custody);
-        grai.distribute(address(usdc), 20e6);
+        vm.prank(grinder);
+        CoWCustodian(payable(custodyWallet)).distribute(address(usdc), 20e6);
 
         assertEq(usdc.balanceOf(address(treasuryContract)), 4e6);
     }
@@ -98,11 +99,13 @@ contract TreasuryTest is GRAIFixture {
         assertEq(custodyWallet.custodianId(), 0);
         assertEq(custodyWallet.custodyKind(), cowKind);
         assertEq(treasuryContract.custodians(0), address(custodyWallet));
+        assertEq(treasuryContract.custodianIds(address(custodyWallet)), 0);
+        assertTrue(treasuryContract.isCustody(address(custodyWallet)));
         assertTrue(treasuryContract.custodyImplementations(cowKind) != address(0));
         assertEq(treasuryContract.ownerOf(0), grinder);
         assertEq(treasuryContract.balanceOf(grinder), 1);
         assertEq(treasuryContract.tokenOfOwnerByIndex(grinder, 0), 0);
-        assertEq(treasuryContract.nextCustodianId(), 1);
+        assertEq(treasuryContract.totalSupply(), 1);
     }
 
     function test_MintLiFiCustodian() public {
@@ -204,7 +207,7 @@ contract TreasuryTest is GRAIFixture {
         vm.prank(admin);
         treasuryContract.upgradeToAndCall(address(implV2), "");
 
-        assertEq(address(treasuryContract.grai()), address(grai));
+        assertEq(treasuryContract.grai(), address(grai));
         assertEq(treasuryContract.owner(), admin);
         assertEq(treasuryContract.custodyImplementations(cowKind), cowImpl);
         assertEq(treasuryContract.custodyImplementations(lifiKind), lifiImpl);

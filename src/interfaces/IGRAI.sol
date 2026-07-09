@@ -27,6 +27,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error NoSupply();
     error AmountExceedsSupply();
     error CustodyZero();
+    error UnknownCustodian();
     error InsufficientAllocation();
     error InsufficientActive();
 

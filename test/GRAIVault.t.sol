@@ -69,6 +69,15 @@ contract GRAIVaultTest is GRAIFixture {
         assertEq(grai.allocatedAmount(custody, address(usdc)), 50e6);
     }
 
+    function test_Allocate_revertsUnknownCustodian() public {
+        _mint(alice, usdc, 100e6);
+
+        address unknown = makeAddr("unknownCustody");
+        vm.prank(admin);
+        vm.expectRevert(IGRAI.UnknownCustodian.selector);
+        grai.allocate(address(usdc), unknown, 50e6);
+    }
+
     function test_DeallocateReturnsPrincipalToSenior() public {
         _mint(alice, usdc, 100e6);
 

@@ -7,11 +7,9 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {CoWCustodian, GPv2Order} from "../src/custodies/CoWCustodian.sol";
 import {Custodian} from "../src/Custodian.sol";
-import {MockTreasuryNFT} from "./mocks/MockTreasuryNFT.sol";
 
 contract CustodyCowTest is GRAIFixture {
     CoWCustodian custodyWallet;
-    MockTreasuryNFT treasuryNft;
 
     uint256 ownerKey;
     address owner;
@@ -20,8 +18,6 @@ contract CustodyCowTest is GRAIFixture {
         super.setUp();
         (owner, ownerKey) = makeAddrAndKey("custodyOwner");
 
-        treasuryNft = new MockTreasuryNFT();
-        treasuryNft.setGrai(grai);
         treasuryNft.setOwner(1, owner);
 
         CoWCustodian impl = new CoWCustodian();
@@ -37,6 +33,7 @@ contract CustodyCowTest is GRAIFixture {
                 )
             )
         );
+        treasuryNft.setCustodian(address(custodyWallet), 1);
     }
 
     function _swapParams(uint32 validTo) internal view returns (CoWCustodian.SwapParams memory) {

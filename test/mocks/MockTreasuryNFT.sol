@@ -1,19 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IGRAI} from "../../src/interfaces/IGRAI.sol";
-
-/// @dev Minimal treasury stand-in for custodian tests: exposes IERC721.ownerOf and grai().
+/// @dev Minimal treasury stand-in for custodian tests: ownerOf, grai, custodianIds/custodians.
 contract MockTreasuryNFT {
-    IGRAI public grai;
+    address public grai;
+    mapping(uint256 => address) public custodians;
+    mapping(address => uint256) public custodianIds;
     mapping(uint256 => address) private _owners;
 
-    function setGrai(IGRAI grai_) external {
+    function setGrai(address grai_) external {
         grai = grai_;
     }
 
     function setOwner(uint256 tokenId, address owner) external {
         _owners[tokenId] = owner;
+    }
+
+    function setCustodian(address custody, uint256 custodianId) external {
+        custodians[custodianId] = custody;
+        custodianIds[custody] = custodianId;
+    }
+
+    function isCustody(address custody) external view returns (bool) {
+        return custodians[custodianIds[custody]] == custody;
     }
 
     function ownerOf(uint256 tokenId) external view returns (address) {

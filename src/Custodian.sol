@@ -72,8 +72,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     function grai() public view virtual returns (IGRAI) {
         if (treasury == address(0)) return IGRAI(address(0));
-        try ITreasury(treasury).grai() returns (IGRAI grai_) {
-            return grai_;
+        try ITreasury(treasury).grai() returns (address grai_) {
+            return IGRAI(grai_);
         } catch {
             return IGRAI(address(0));
         }

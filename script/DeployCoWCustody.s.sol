@@ -6,7 +6,6 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {CoWCustodian} from "../src/custodies/CoWCustodian.sol";
-import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {ITreasury} from "../src/interfaces/ITreasury.sol";
 import {MockTreasuryNFT} from "../test/mocks/MockTreasuryNFT.sol";
 
@@ -37,13 +36,6 @@ contract DeployCoWCustodian is Script {
         address treasury = vm.envOr("TREASURY", address(0));
         uint256 custodianId = vm.envOr("CUSTODIAN_ID", uint256(0));
 
-        if (treasury == address(0)) {
-            MockTreasuryNFT mockTreasury = new MockTreasuryNFT();
-            mockTreasury.setGrai(IGRAI(grai));
-            mockTreasury.setOwner(custodianId, owner);
-            treasury = address(mockTreasury);
-        }
-
         _logConfig(owner, grai, baseAsset, quoteAsset, treasury, custodianId);
 
         if (_dryRun()) {
@@ -59,7 +51,7 @@ contract DeployCoWCustodian is Script {
                 address(impl),
                 abi.encodeCall(
                     CoWCustodian.initialize,
-                    (treasury, custodianId, IERC20(baseAsset), IERC20(quoteAsset))
+                    (owner, custodianId, IERC20(baseAsset), IERC20(quoteAsset))
                 )
             )
         );
@@ -69,7 +61,6 @@ contract DeployCoWCustodian is Script {
         custody = CoWCustodian(payable(proxy));
 
         require(custody.owner() == owner, "owner mismatch");
-        require(address(custody.grai()) == address(ITreasury(treasury).grai()), "grai mismatch");
         require(address(custody.baseAsset()) == baseAsset, "base mismatch");
         require(address(custody.quoteAsset()) == quoteAsset, "quote mismatch");
         require(custody.treasury() == treasury, "treasury mismatch");

@@ -10,15 +10,17 @@ import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
+import {MockTreasuryNFT} from "./mocks/MockTreasuryNFT.sol";
 
 abstract contract GRAIFixture is Test {
     address admin = makeAddr("admin");
-    address treasury = makeAddr("treasury");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
     address custody = makeAddr("custody");
 
     GRAI grai;
+    MockTreasuryNFT treasuryNft;
+    address treasury;
 
     MockERC20 usdc; // 6 decimals
     MockERC20 weth; // 18 decimals
@@ -32,8 +34,16 @@ abstract contract GRAIFixture is Test {
 
     function setUp() public virtual {
         GRAI impl = new GRAI();
-        bytes memory init = abi.encodeCall(GRAI.initialize, (admin, treasury));
+        bytes memory init = abi.encodeCall(GRAI.initialize, (admin));
         grai = GRAI(payable(address(new ERC1967Proxy(address(impl), init))));
+
+        treasuryNft = new MockTreasuryNFT();
+        treasury = address(treasuryNft);
+        treasuryNft.setGrai(address(grai));
+        treasuryNft.setCustodian(custody, 0);
+
+        vm.prank(admin);
+        grai.setTreasury(treasury);
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
         weth = new MockERC20("Wrapped Ether", "WETH", 18);

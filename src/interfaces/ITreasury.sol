@@ -3,8 +3,6 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import {IGRAI} from "./IGRAI.sol";
-
 interface ITreasury {
     error ZeroAddress();
     error OwnerZero();
@@ -24,15 +22,17 @@ interface ITreasury {
     );
     event Withdraw(address indexed asset, address indexed to, uint256 amount);
 
-    function grai() external view returns (IGRAI);
+    function grai() external view returns (address);
 
     function custodyImplementations(bytes32 custodyKind) external view returns (address);
 
     function custodians(uint256 custodianId) external view returns (address);
 
-    function nextCustodianId() external view returns (uint256);
+    function custodianIds(address custody) external view returns (uint256);
 
-    function initialize(IGRAI grai_, address owner_) external;
+    function isCustody(address custody) external view returns (bool);
+
+    function initialize(address owner_, address grai_) external;
 
     function balance(address asset) external view returns (uint256);
 

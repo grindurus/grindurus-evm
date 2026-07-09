@@ -9,7 +9,6 @@ import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/t
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {Custodian} from "./Custodian.sol";
-import {IGRAI} from "./interfaces/IGRAI.sol";
 import {ITreasury} from "./interfaces/ITreasury.sol";
 
 /// @title Treasury (implementation)
@@ -18,13 +17,12 @@ import {ITreasury} from "./interfaces/ITreasury.sol";
 contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
-    IGRAI public grai;
+    address public grai;
 
     mapping(bytes32 => address) public custodyImplementations;
 
     mapping(uint256 => address) public custodians;
-
-    uint256 public nextCustodianId;
+    mapping(address => uint256) public custodianIds;
 
     /// @dev Storage gap for future upgrades.
     uint256[46] private _gap;
@@ -36,8 +34,8 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
 
     receive() external payable {}
 
-    function initialize(IGRAI grai_, address owner_) external initializer {
-        if (address(grai_) == address(0) || owner_ == address(0)) revert ZeroAddress();
+    function initialize(address owner_, address grai_) public initializer {
+        if (owner_ == address(0) || grai_ == address(0)) revert ZeroAddress();
 
         __Ownable_init(owner_);
         __UUPSUpgradeable_init();
@@ -47,12 +45,16 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
         grai = grai_;
     }
 
-    function balance(address asset) external view returns (uint256) {
+    function balance(address asset) public view returns (uint256) {
         if (asset == address(0)) return address(this).balance;
         return IERC20(asset).balanceOf(address(this));
     }
 
-    function setCustodyImplementation(bytes32 custodyKind, address implementation) external onlyOwner {
+    function isCustody(address custody) public view returns (bool) {
+        return custodians[custodianIds[custody]] == custody;
+    }
+
+    function setCustodyImplementation(bytes32 custodyKind, address implementation) public onlyOwner {
         if (implementation == address(0)) revert ZeroAddress();
         bytes32 implKind = Custodian(payable(implementation)).custodyKind();
         if (implKind != custodyKind) revert CustodyKindMismatch(custodyKind, implKind);
@@ -62,7 +64,7 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
 
     /// @notice Deploy a custodian proxy for `owner_`, mint its NFT (`tokenId = custodianId`), and register it.
     function mint(bytes32 custodyKind, address owner_, IERC20 baseAsset_, IERC20 quoteAsset_)
-        external
+        public
         onlyOwner
         returns (address custody)
     {
@@ -73,7 +75,7 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
         bytes32 implKind = Custodian(payable(impl)).custodyKind();
         if (implKind != custodyKind) revert CustodyKindMismatch(custodyKind, implKind);
 
-        uint256 custodianId = nextCustodianId++;
+        uint256 custodianId = totalSupply();
 
         _mint(owner_, custodianId);
 
@@ -88,12 +90,13 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
         );
 
         custodians[custodianId] = custody;
+        custodianIds[custody] = custodianId;
 
         emit CustodyDeployed(custodyKind, custody, owner_, address(baseAsset_), address(quoteAsset_));
     }
 
     /// @notice Withdraw ETH or ERC20 held by the treasury.
-    function withdraw(address asset, address to, uint256 amount) external onlyOwner {
+    function withdraw(address asset, address to, uint256 amount) public onlyOwner {
         if (to == address(0)) revert ToZero();
         if (amount == 0) revert AmountZero();
 

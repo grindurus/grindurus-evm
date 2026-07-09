@@ -11,6 +11,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Vault} from "./Vault.sol";
 import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 import {IGRAI} from "./interfaces/IGRAI.sol";
+import {ITreasury} from "./interfaces/ITreasury.sol";
 import {IPriceOracleRouter} from "./interfaces/IPriceOracleRouter.sol";
 
 /// @title GRAI (implementation)
@@ -58,8 +59,8 @@ contract GRAI is
         _disableInitializers();
     }
 
-    function initialize(address admin, address treasury_) external initializer {
-        if (admin == address(0) || treasury_ == address(0)) revert ZeroAddress();
+    function initialize(address admin) external initializer {
+        if (admin == address(0)) revert ZeroAddress();
         __ERC20_init("Grinders Artificial Index", "GRAI");
         __AccessControl_init();
         __UUPSUpgradeable_init();
@@ -67,7 +68,7 @@ contract GRAI is
         _grantRole(ADMIN_ROLE, admin);
         _grantRole(ORACLE_ROLE, admin);
 
-        treasury = treasury_;
+        treasury = admin;
         _tokenUri = "https://grindurus.xyz/metadata.json";
 
         seniorVault = new Vault(address(this));
@@ -260,6 +261,11 @@ contract GRAI is
         if (!a.exists) revert AssetUnknown();
         if (custody == address(0)) revert CustodyZero();
         if (amount == 0) revert AmountZero();
+        try ITreasury(treasury).isCustody(custody) returns (bool ok) {
+            if (!ok) revert UnknownCustodian();
+        } catch { 
+            // any custody
+        }
 
         a.activeAmount += amount;
         allocatedAmount[custody][asset] += amount;
