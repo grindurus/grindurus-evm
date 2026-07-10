@@ -70,18 +70,38 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         __Custodian_init(treasury_, custodianId_, baseAsset_, quoteAsset_);
     }
 
-    function grai() public view virtual returns (IGRAI) {
-        if (treasury == address(0)) return IGRAI(address(0));
+    // forge-lint: disable-next-line(mixed-case-function)
+    function __Custodian_init(
+        address treasury_,
+        uint256 custodianId_,
+        IERC20 baseAsset_,
+        IERC20 quoteAsset_
+    ) internal onlyInitializing {
+        if (treasury_ == address(0)) revert TreasuryZero();
+
+        __UUPSUpgradeable_init();
+
+        treasury = treasury_;
+        custodianId = custodianId_;
+        _setTradingAssets(baseAsset_, quoteAsset_);
+    }
+
+    function grai() public view virtual returns (address) {
+        if (treasury.code.length == 0) return address(0);
         try ITreasury(treasury).grai() returns (address grai_) {
-            return IGRAI(grai_);
+            return grai_;
         } catch {
-            return IGRAI(address(0));
+            return address(0);
         }
     }
 
     function owner() public view virtual returns (address) {
-        if (treasury == address(0)) return treasury;
-        return IERC721(treasury).ownerOf(custodianId);
+        if (treasury.code.length == 0) return treasury;
+        try IERC721(treasury).ownerOf(custodianId) returns (address owner_) {
+            return owner_;
+        } catch {
+            return treasury;
+        }
     }
 
     /// @notice Stable identifier for unambiguous custodian routing on Treasury and off-chain backends.
@@ -91,7 +111,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     ///      - existing proxies keep their impl until the NFT owner runs `upgradeTo`
     ///      - bump the string only when storage/API breaks (new kind = new registry entry)
     ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
-    function custodyKind() public view virtual returns (bytes32);
+    function custodianKind() public view virtual returns (bytes32);
 
     function balance(address asset) public view returns (uint256) {
         if (asset == address(0)) return address(this).balance;
@@ -108,24 +128,24 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     function deallocate(address asset, uint256 amount) public {
         _onlyOwner();
         if (amount == 0) revert AmountZero();
-        IGRAI grai_ = grai();
+        address grai_ = grai();
         if (asset == address(0)) {
-            grai_.deallocate{value: amount}(asset, amount);
+            IGRAI(grai_).deallocate{value: amount}(asset, amount);
         } else {
-            IERC20(asset).forceApprove(address(grai_), amount);
-            grai_.deallocate(asset, amount);
+            IERC20(asset).forceApprove(grai_, amount);
+            IGRAI(grai_).deallocate(asset, amount);
         }
     }
 
     function distribute(address asset, uint256 yieldAmount) public {
         _onlyOwner();
         if (yieldAmount == 0) revert AmountZero();
-        IGRAI grai_ = grai();
+        address grai_ = grai();
         if (asset == address(0)) {
-            grai_.distribute{value: yieldAmount}(asset, yieldAmount);
+            IGRAI(grai_).distribute{value: yieldAmount}(asset, yieldAmount);
         } else {
-            IERC20(asset).forceApprove(address(grai_), yieldAmount);
-            grai_.distribute(asset, yieldAmount);
+            IERC20(asset).forceApprove(grai_, yieldAmount);
+            IGRAI(grai_).distribute(asset, yieldAmount);
         }
     }
 
@@ -182,21 +202,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
             emergencyWithdrawDisableScheduledAt = uint48(block.timestamp + DISABLE_DELAY);
             emit EmergencyWithdrawReenableScheduled(emergencyWithdrawDisableScheduledAt);
         }
-    }
-
-    function __Custodian_init(
-        address treasury_,
-        uint256 custodianId_,
-        IERC20 baseAsset_,
-        IERC20 quoteAsset_
-    ) internal onlyInitializing {
-        if (treasury_ == address(0)) revert TreasuryZero();
-
-        __UUPSUpgradeable_init();
-
-        treasury = treasury_;
-        custodianId = custodianId_;
-        _setTradingAssets(baseAsset_, quoteAsset_);
     }
 
     function _setTradingAssets(IERC20 baseAsset_, IERC20 quoteAsset_) internal {
