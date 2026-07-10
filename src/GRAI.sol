@@ -43,11 +43,11 @@ contract GRAI is
     Vault public seniorVault;
     Vault public juniorVault;
 
-    /// custody => asset => cumulative units allocated to that custody.
-    mapping(address custody => mapping(address asset => uint256)) public allocatedAmount;
+    /// custodian => asset => cumulative units allocated to that custodian.
+    mapping(address custodian => mapping(address asset => uint256)) public allocatedAmount;
 
-    /// custody => asset => cumulative yield units returned by that custody.
-    mapping(address custody => mapping(address asset => uint256)) public yieldGenerated;
+    /// custodian => asset => cumulative yield units returned by that custodian.
+    mapping(address custodian => mapping(address asset => uint256)) public yieldGenerated;
 
     string private _tokenUri;
 
@@ -256,42 +256,45 @@ contract GRAI is
         }
     }
 
-    function allocate(address asset, address custody, uint256 amount) external onlyRole(ADMIN_ROLE) {
+    function allocate(address asset, address custodian, uint256 amount) external onlyRole(ADMIN_ROLE) {
         IGRAI.AssetConfig storage a = assets[asset];
         if (!a.exists) revert AssetUnknown();
-        if (custody == address(0)) revert CustodyZero();
+        if (custodian == address(0)) revert CustodyZero();
         if (amount == 0) revert AmountZero();
-        try ITreasury(treasury).isCustody(custody) returns (bool ok) {
-            if (!ok) revert UnknownCustodian();
-        } catch { 
-            // any custody
+        if (treasury.code.length > 0) {
+            try ITreasury(treasury).isCustody(custodian) returns (bool ok) {
+                if (!ok) revert UnknownCustodian();
+            } catch { 
+                if (custodian != treasury) revert UnknownCustodian();
+            }
+        } else {
+            if (custodian != treasury) revert UnknownCustodian();
         }
-
         a.activeAmount += amount;
-        allocatedAmount[custody][asset] += amount;
-        emit Allocate(asset, custody, amount);
+        allocatedAmount[custodian][asset] += amount;
+        emit Allocate(asset, custodian, amount);
 
-        juniorVault.withdraw(asset, custody, amount);
+        juniorVault.withdraw(asset, custodian, amount);
     }
 
     function deallocate(address asset, uint256 amount) external payable {
-        address custody = msg.sender;
+        address custodian = msg.sender;
         IGRAI.AssetConfig storage a = assets[asset];
         if (!a.exists) revert AssetUnknown();
         if (amount == 0) revert AmountZero();
-        if (allocatedAmount[custody][asset] < amount) revert InsufficientAllocation();
+        if (allocatedAmount[custodian][asset] < amount) revert InsufficientAllocation();
         if (a.activeAmount < amount) revert InsufficientActive();
 
-        allocatedAmount[custody][asset] -= amount;
+        allocatedAmount[custodian][asset] -= amount;
         a.activeAmount -= amount;
-        emit Deallocate(asset, custody, amount);
+        emit Deallocate(asset, custodian, amount);
 
         if (asset == address(0)) {
             if (msg.value != amount) revert ValueMismatch();
             seniorVault.deposit{value: amount}(address(0), amount);
         } else {
             if (msg.value != 0) revert UnexpectedValue();
-            IERC20(asset).safeTransferFrom(custody, address(this), amount);
+            IERC20(asset).safeTransferFrom(custodian, address(this), amount);
             seniorVault.deposit(asset, amount);
         }
     }
