@@ -13,17 +13,23 @@ import {Custodian} from "./Custodian.sol";
 import {ITreasury} from "./interfaces/ITreasury.sol";
 import {GrinderArt} from "./GrinderArt.sol";
 
-/// @title GrindersTreasury (implementation)
-/// @notice Protocol treasury that receives GRAI yield, mints custodian NFTs, and deploys custody wallets.
-/// @dev Use the ERC1967Proxy address only, not the implementation.
-contract GrindersTreasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable, UUPSUpgradeable {
+/// @title Treasury (implementation)
+/// @notice Grinders' treasury: ERC721 seats for grinders, each bound to a custody wallet, plus the sink for GRAI yield.
+/// @dev Mechanics:
+///      - Owner registers custody implementations by `custodyKind` (`setCustodyImplementation`).
+///      - Owner `mint`s a grinder NFT and deploys an ERC1967 custody proxy for that token; NFT owner controls the custody.
+///      - `tokenURI` is on-chain GrinderArt pixel metadata keyed by tokenId / custody / kind.
+///      - GRAI `distribute` sends the protocol's treasury yield share here; owner `withdraw`s ETH/ERC20.
+///      - `isCustody` is the registry GRAI uses when allocating junior capital to grinders.
+///      Interact only via the ERC1967Proxy, not this implementation.
+contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
     address public grai;
 
-    mapping(bytes32 => address) public custodyImplementations;
+    mapping(bytes32 custodianKind => address) public custodyImplementations;
 
-    mapping(uint256 => address) public custodians;
-    mapping(address => uint256) public custodianIds;
+    mapping(uint256 custodianId => address) public custodians;
+    mapping(address custodian => uint256) public custodianIds;
 
     /// @dev Storage gap for future upgrades.
     uint256[46] private _gap;
@@ -67,7 +73,8 @@ contract GrindersTreasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgr
 
     function _custodianKind(address custody) internal view returns (bytes32 kind) {
         if (custody == address(0)) return kind;
-        try Custodian(payable(custody)).custodyKind() returns (bytes32 k) {
+        if (custody.code.length == 0) return bytes32(0);
+        try Custodian(payable(custody)).custodianKind() returns (bytes32 k) {
             return k;
         } catch {
             return kind;
@@ -76,7 +83,7 @@ contract GrindersTreasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgr
 
     function setCustodyImplementation(bytes32 custodyKind, address implementation) public onlyOwner {
         if (implementation == address(0)) revert ZeroAddress();
-        bytes32 implKind = Custodian(payable(implementation)).custodyKind();
+        bytes32 implKind = Custodian(payable(implementation)).custodianKind();
         if (implKind != custodyKind) revert CustodyKindMismatch(custodyKind, implKind);
         custodyImplementations[custodyKind] = implementation;
         emit CustodyImplementationUpdated(custodyKind, implementation);
@@ -92,7 +99,7 @@ contract GrindersTreasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgr
 
         address impl = custodyImplementations[custodyKind];
         if (impl == address(0)) revert UnknownCustodyKind(custodyKind);
-        bytes32 implKind = Custodian(payable(impl)).custodyKind();
+        bytes32 implKind = Custodian(payable(impl)).custodianKind();
         if (implKind != custodyKind) revert CustodyKindMismatch(custodyKind, implKind);
 
         uint256 custodianId = totalSupply();

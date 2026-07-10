@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
-/// @title On-chain Grindurus logo pixel art (from brand mark) for GrindersTreasury NFTs.
+/// @title On-chain Grindurus logo pixel art (from brand mark) for Treasury NFTs.
 /// @dev Fresh 24×24 quantization of logo.png: bg / navy / white / pink + seed palettes.
 library GrinderArt {
     using Strings for uint256;
@@ -14,7 +14,7 @@ library GrinderArt {
 
     /// @dev 24×24, 2 bits/px row-major: 0=bg, 1=body, 2=white, 3=pink accent.
     bytes private constant MASK =
-        hex"000a800000a0002aa00002a800aaa00002a802aa800002ac02aaaa8002a802aaa5aa02a801aa5ea6aaa80005562e95aa000957959a000025555680000815555bae00285775560820285d755608a09c7d7f54aab08c75555000008c76956000008c36954000004336a50000000375a500000000d5a96aaa8000356a6aa800000d6a5aa00000005a950000000000a00000";
+        hex"00000000001800000000006800aaa40001a802aa900006ac02aaaa901aa002aaa5aa1a8001aa5ea6aa800005562e95aa000957959a000025555680000815555bae00285775560820285d755608a09c7d7f54aab08c75555000008c76956000008c36954000004336a50000000375a500000000d5a96aaa8000356a6aa800000d6a5aa00000005a950000000000a00000";
 
     bytes private constant BG = hex"0000000a06121a0a221408280e10200c1830184020201850";
     bytes private constant BODY = hex"1c24441a20381e28501c2a48142238101830141c40182038";
