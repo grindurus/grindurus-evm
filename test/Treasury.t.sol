@@ -4,13 +4,13 @@ pragma solidity ^0.8.24;
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAIFixture} from "./GRAIFixture.sol";
-import {GrindersTreasury} from "../src/GrindersTreasury.sol";
+import {Treasury} from "../src/Treasury.sol";
 import {ITreasury} from "../src/interfaces/ITreasury.sol";
 import {CoWCustodian} from "../src/custodies/CoWCustodian.sol";
 import {LiFiCustodian} from "../src/custodies/LiFiCustodian.sol";
 
-contract GrindersTreasuryTest is GRAIFixture {
-    GrindersTreasury treasuryContract;
+contract TreasuryTest is GRAIFixture {
+    Treasury treasuryContract;
     address grinder = makeAddr("grinder");
     bytes32 cowKind;
     bytes32 lifiKind;
@@ -18,12 +18,12 @@ contract GrindersTreasuryTest is GRAIFixture {
     function setUp() public override {
         super.setUp();
 
-        GrindersTreasury impl = new GrindersTreasury();
-        treasuryContract = GrindersTreasury(
+        Treasury impl = new Treasury();
+        treasuryContract = Treasury(
             payable(
                 address(
                     new ERC1967Proxy(
-                        address(impl), abi.encodeCall(GrindersTreasury.initialize, (admin, address(grai)))
+                        address(impl), abi.encodeCall(Treasury.initialize, (admin, address(grai)))
                     )
                 )
             )
@@ -33,8 +33,8 @@ contract GrindersTreasuryTest is GRAIFixture {
         grai.setTreasury(address(treasuryContract));
         CoWCustodian cowImpl = new CoWCustodian();
         LiFiCustodian lifiImpl = new LiFiCustodian();
-        cowKind = cowImpl.custodyKind();
-        lifiKind = lifiImpl.custodyKind();
+        cowKind = cowImpl.custodianKind();
+        lifiKind = lifiImpl.custodianKind();
         treasuryContract.setCustodyImplementation(cowKind, address(cowImpl));
         treasuryContract.setCustodyImplementation(lifiKind, address(lifiImpl));
         vm.stopPrank();
@@ -90,14 +90,14 @@ contract GrindersTreasuryTest is GRAIFixture {
         );
 
         assertEq(custodyWallet.owner(), grinder);
-        assertEq(address(custodyWallet.grai()), address(grai));
+        assertEq(custodyWallet.grai(), address(grai));
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(weth));
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
         assertEq(weth.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
         assertEq(custodyWallet.treasury(), address(treasuryContract));
         assertEq(custodyWallet.custodianId(), 0);
-        assertEq(custodyWallet.custodyKind(), cowKind);
+        assertEq(custodyWallet.custodianKind(), cowKind);
         assertEq(treasuryContract.custodians(0), address(custodyWallet));
         assertEq(treasuryContract.custodianIds(address(custodyWallet)), 0);
         assertTrue(treasuryContract.isCustody(address(custodyWallet)));
@@ -126,12 +126,12 @@ contract GrindersTreasuryTest is GRAIFixture {
         );
 
         assertEq(custodyWallet.owner(), grinder);
-        assertEq(address(custodyWallet.grai()), address(grai));
+        assertEq(custodyWallet.grai(), address(grai));
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(weth));
         assertEq(custodyWallet.treasury(), address(treasuryContract));
         assertEq(custodyWallet.custodianId(), 0);
-        assertEq(custodyWallet.custodyKind(), lifiKind);
+        assertEq(custodyWallet.custodianKind(), lifiKind);
         assertTrue(treasuryContract.custodyImplementations(lifiKind) != address(0));
     }
 
@@ -212,7 +212,7 @@ contract GrindersTreasuryTest is GRAIFixture {
         treasuryContract.mint(lifiKind, grinder, usdc, weth);
         address lifiImpl = treasuryContract.custodyImplementations(lifiKind);
 
-        GrindersTreasury implV2 = new GrindersTreasury();
+        Treasury implV2 = new Treasury();
         vm.prank(admin);
         treasuryContract.upgradeToAndCall(address(implV2), "");
 
