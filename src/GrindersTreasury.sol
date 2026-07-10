@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
@@ -10,13 +11,13 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 
 import {Custodian} from "./Custodian.sol";
 import {ITreasury} from "./interfaces/ITreasury.sol";
+import {GrinderArt} from "./GrinderArt.sol";
 
-/// @title Treasury (implementation)
+/// @title GrindersTreasury (implementation)
 /// @notice Protocol treasury that receives GRAI yield, mints custodian NFTs, and deploys custody wallets.
 /// @dev Use the ERC1967Proxy address only, not the implementation.
-contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable, UUPSUpgradeable {
+contract GrindersTreasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
-
     address public grai;
 
     mapping(bytes32 => address) public custodyImplementations;
@@ -39,7 +40,7 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
 
         __Ownable_init(owner_);
         __UUPSUpgradeable_init();
-        __ERC721_init("Grindurus Custodians", "GRINDURUS-CUSTODIANS");
+        __ERC721_init("Grinders Treasury", "GRINDERS");
         __ERC721Enumerable_init();
 
         grai = grai_;
@@ -52,6 +53,25 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
 
     function isCustody(address custody) public view returns (bool) {
         return custodians[custodianIds[custody]] == custody;
+    }
+
+    /// @notice On-chain Grindurus logo pixel art metadata for the custodian NFT.
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        _requireOwned(tokenId);
+        address custody = custodians[tokenId];
+        return string.concat(
+            "data:application/json;base64,",
+            Base64.encode(bytes(GrinderArt.tokenJson(tokenId, custody, _custodianKind(custody))))
+        );
+    }
+
+    function _custodianKind(address custody) internal view returns (bytes32 kind) {
+        if (custody == address(0)) return kind;
+        try Custodian(payable(custody)).custodyKind() returns (bytes32 k) {
+            return k;
+        } catch {
+            return kind;
+        }
     }
 
     function setCustodyImplementation(bytes32 custodyKind, address implementation) public onlyOwner {

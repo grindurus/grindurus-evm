@@ -4,13 +4,13 @@ pragma solidity ^0.8.24;
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAIFixture} from "./GRAIFixture.sol";
-import {Treasury} from "../src/Treasury.sol";
+import {GrindersTreasury} from "../src/GrindersTreasury.sol";
 import {ITreasury} from "../src/interfaces/ITreasury.sol";
 import {CoWCustodian} from "../src/custodies/CoWCustodian.sol";
 import {LiFiCustodian} from "../src/custodies/LiFiCustodian.sol";
 
-contract TreasuryTest is GRAIFixture {
-    Treasury treasuryContract;
+contract GrindersTreasuryTest is GRAIFixture {
+    GrindersTreasury treasuryContract;
     address grinder = makeAddr("grinder");
     bytes32 cowKind;
     bytes32 lifiKind;
@@ -18,12 +18,12 @@ contract TreasuryTest is GRAIFixture {
     function setUp() public override {
         super.setUp();
 
-        Treasury impl = new Treasury();
-        treasuryContract = Treasury(
+        GrindersTreasury impl = new GrindersTreasury();
+        treasuryContract = GrindersTreasury(
             payable(
                 address(
                     new ERC1967Proxy(
-                        address(impl), abi.encodeCall(Treasury.initialize, (admin, address(grai)))
+                        address(impl), abi.encodeCall(GrindersTreasury.initialize, (admin, address(grai)))
                     )
                 )
             )
@@ -106,6 +106,15 @@ contract TreasuryTest is GRAIFixture {
         assertEq(treasuryContract.balanceOf(grinder), 1);
         assertEq(treasuryContract.tokenOfOwnerByIndex(grinder, 0), 0);
         assertEq(treasuryContract.totalSupply(), 1);
+
+        string memory uri = treasuryContract.tokenURI(0);
+        assertTrue(bytes(uri).length > 100);
+        assertEq(bytes(uri)[0], "d"); // data:...
+    }
+
+    function test_TokenURI_revertsForUnknown() public {
+        vm.expectRevert();
+        treasuryContract.tokenURI(999);
     }
 
     function test_MintLiFiCustodian() public {
@@ -203,7 +212,7 @@ contract TreasuryTest is GRAIFixture {
         treasuryContract.mint(lifiKind, grinder, usdc, weth);
         address lifiImpl = treasuryContract.custodyImplementations(lifiKind);
 
-        Treasury implV2 = new Treasury();
+        GrindersTreasury implV2 = new GrindersTreasury();
         vm.prank(admin);
         treasuryContract.upgradeToAndCall(address(implV2), "");
 
