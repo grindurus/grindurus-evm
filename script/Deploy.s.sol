@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -13,7 +13,6 @@ library Create2Factory {
 
     error FactoryNotDeployed();
     error DeploymentFailed(address expected);
-    error AdminKeyRequired();
 
     function isAvailable() internal view returns (bool) {
         return DEPLOYER.code.length > 0;
@@ -51,7 +50,6 @@ library DeployPlanLib {
     struct Plan {
         address admin;
         address treasury;
-        bool deployTreasury;
         bytes32 saltGraiImpl;
         bytes32 saltGraiProxy;
         bytes32 saltTreasuryImpl;
@@ -72,7 +70,7 @@ library DeployPlanLib {
         return keccak256(abi.encodePacked("grindurus/", tag, "/", label));
     }
 
-    function build(address admin, address treasuryOverride, string memory saltTag) internal pure returns (Plan memory plan) {
+    function build(address admin, string memory saltTag) internal pure returns (Plan memory plan) {
         plan.admin = admin;
         plan.saltGraiImpl = salt("GRAI/impl", saltTag);
         plan.saltGraiProxy = salt("GRAI/proxy", saltTag);
@@ -86,21 +84,14 @@ library DeployPlanLib {
         plan.graiProxyCode = proxyCreationCode(plan.graiImpl, abi.encodeCall(GRAI.initialize, (admin)));
         plan.graiProxy = Create2Factory.computeAddress(plan.saltGraiProxy, plan.graiProxyCode);
 
-        if (treasuryOverride == address(0)) {
-            plan.deployTreasury = true;
-            plan.treasuryImplCode = type(Treasury).creationCode;
-            plan.treasuryImpl = Create2Factory.computeAddress(plan.saltTreasuryImpl, plan.treasuryImplCode);
+        plan.treasuryImplCode = type(Treasury).creationCode;
+        plan.treasuryImpl = Create2Factory.computeAddress(plan.saltTreasuryImpl, plan.treasuryImplCode);
 
-            plan.treasuryProxyCode = proxyCreationCode(
-                plan.treasuryImpl, abi.encodeCall(Treasury.initialize, (admin, plan.graiProxy))
-            );
-            plan.treasuryProxy = Create2Factory.computeAddress(plan.saltTreasuryProxy, plan.treasuryProxyCode);
-            plan.treasury = plan.treasuryProxy;
-            return plan;
-        }
-
-        plan.deployTreasury = false;
-        plan.treasury = treasuryOverride;
+        plan.treasuryProxyCode = proxyCreationCode(
+            plan.treasuryImpl, abi.encodeCall(Treasury.initialize, (admin, plan.graiProxy))
+        );
+        plan.treasuryProxy = Create2Factory.computeAddress(plan.saltTreasuryProxy, plan.treasuryProxyCode);
+        plan.treasury = plan.treasuryProxy;
     }
 
     function withVaults(Plan memory plan, address seniorVault, address juniorVault) internal pure returns (Plan memory) {
@@ -119,32 +110,28 @@ library DeployPlanLib {
 ///         Nick's CREATE2 factory (`0x4e59...4956C`) with identical bytecode and init params.
 ///
 /// Default order:
-///   1. GRAI proxy — `initialize(admin)` (treasury unset)
+///   1. GRAI proxy — `initialize(admin)` where admin = `vm.addr(PRIVATE_KEY)`
 ///   2. Treasury proxy — `initialize(admin, grai)`
-///   3. `grai.setTreasury(treasury)` — requires ADMIN key
-///
-/// Set `TREASURY=0x...` to skip Treasury CREATE2 and only wire GRAI via `setTreasury`.
+///   3. `grai.setTreasury(treasury)` — same broadcaster as deploy (PRIVATE_KEY)
+///   4. Optional `OPS_MULTISIG` — `grantRole(ADMIN)` + revoke deployer; `UPGRADE_MULTISIG` — `transferOwnership` (Safe accepts)
 ///
 /// Requirements for cross-chain address parity:
-///   - Same `ADMIN` on every chain (CREATE2 Safe or fixed EOA).
+///   - Same `PRIVATE_KEY` (admin) on every chain.
 ///   - Same `CREATE2_SALT_TAG` (default `v1`) and unchanged contract bytecode.
 ///   - Deploy in one run per chain; do not change optimizer settings between chains.
 ///
 /// Usage - predict addresses (no broadcast):
-///   ADMIN=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
+///   PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
 ///
 /// Usage - deploy GRAI + Treasury:
-///   ADMIN=0x... forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
-///
-/// Usage - deploy GRAI only (external treasury):
-///   ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
+///   PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast
 contract Deploy is Script {
     using DeployPlanLib for DeployPlanLib.Plan;
 
     function predict() external view {
         DeployPlanLib.Plan memory plan = _plan();
         plan = plan.withVaults(
-            vm.computeCreateAddress(plan.graiProxy, 0), vm.computeCreateAddress(plan.graiProxy, 1)
+            vm.computeCreateAddress(plan.graiProxy, 1), vm.computeCreateAddress(plan.graiProxy, 2)
         );
         _logPlan(plan, Create2Factory.isAvailable());
     }
@@ -152,7 +139,7 @@ contract Deploy is Script {
     function run() external returns (GRAI grai, Treasury treasury) {
         DeployPlanLib.Plan memory plan = _plan();
         plan = plan.withVaults(
-            vm.computeCreateAddress(plan.graiProxy, 0), vm.computeCreateAddress(plan.graiProxy, 1)
+            vm.computeCreateAddress(plan.graiProxy, 1), vm.computeCreateAddress(plan.graiProxy, 2)
         );
         _logPlan(plan, Create2Factory.isAvailable());
 
@@ -163,7 +150,8 @@ contract Deploy is Script {
 
         require(Create2Factory.isAvailable(), "CREATE2 factory missing on this chain");
 
-        vm.startBroadcast();
+        uint256 adminKey = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(adminKey);
 
         address graiImpl = Create2Factory.deploy(plan.saltGraiImpl, plan.graiImplCode);
         require(graiImpl == plan.graiImpl, "grai impl address mismatch");
@@ -172,60 +160,39 @@ contract Deploy is Script {
         require(graiProxy == plan.graiProxy, "grai proxy address mismatch");
         grai = GRAI(payable(graiProxy));
 
-        if (plan.deployTreasury) {
-            address treasuryImpl = Create2Factory.deploy(plan.saltTreasuryImpl, plan.treasuryImplCode);
-            require(treasuryImpl == plan.treasuryImpl, "treasury impl address mismatch");
+        address treasuryImpl = Create2Factory.deploy(plan.saltTreasuryImpl, plan.treasuryImplCode);
+        require(treasuryImpl == plan.treasuryImpl, "treasury impl address mismatch");
 
-            address treasuryProxy = Create2Factory.deploy(plan.saltTreasuryProxy, plan.treasuryProxyCode);
-            require(treasuryProxy == plan.treasuryProxy, "treasury proxy address mismatch");
+        address treasuryProxy = Create2Factory.deploy(plan.saltTreasuryProxy, plan.treasuryProxyCode);
+        require(treasuryProxy == plan.treasuryProxy, "treasury proxy address mismatch");
+        treasury = Treasury(payable(treasuryProxy));
 
-            treasury = Treasury(payable(treasuryProxy));
-        } else {
-            treasury = Treasury(payable(address(0)));
+        grai.setTreasury(plan.treasury);
+
+        address opsMultisig = vm.envOr("OPS_MULTISIG", address(0));
+        address upgradeMultisig = vm.envOr("UPGRADE_MULTISIG", address(0));
+        if (opsMultisig != address(0)) {
+            grai.grantRole(grai.ADMIN_ROLE(), opsMultisig);
+            grai.revokeRole(grai.ADMIN_ROLE(), plan.admin);
+        }
+        if (upgradeMultisig != address(0)) {
+            grai.transferOwnership(upgradeMultisig);
         }
 
         vm.stopBroadcast();
 
         require(address(grai.seniorVault()) == plan.seniorVault, "senior vault address mismatch");
         require(address(grai.juniorVault()) == plan.juniorVault, "junior vault address mismatch");
-
-        if (plan.deployTreasury) {
-            require(treasury.grai() == address(grai), "treasury grai mismatch");
-        }
-
-        _wireTreasury(grai, plan.treasury);
+        require(treasury.grai() == address(grai), "treasury grai mismatch");
         require(grai.treasury() == plan.treasury, "treasury address mismatch");
 
         console2.log("Deploy complete.");
     }
 
-    function _wireTreasury(GRAI grai, address treasuryProxy) internal {
-        uint256 adminKey = _adminPrivateKey();
-        vm.startBroadcast(adminKey);
-        grai.setTreasury(treasuryProxy);
-        vm.stopBroadcast();
-    }
-
-    function _adminPrivateKey() internal view returns (uint256 key) {
-        address admin = vm.envAddress("ADMIN");
-        try vm.envUint("ADMIN_PRIVATE_KEY") returns (uint256 adminKey) {
-            require(vm.addr(adminKey) == admin, "ADMIN_PRIVATE_KEY mismatch");
-            return adminKey;
-        } catch {
-            try vm.envUint("PRIVATE_KEY") returns (uint256 deployerKey) {
-                require(vm.addr(deployerKey) == admin, "PRIVATE_KEY must match ADMIN to wire treasury");
-                return deployerKey;
-            } catch {
-                revert Create2Factory.AdminKeyRequired();
-            }
-        }
-    }
-
     function _plan() internal view returns (DeployPlanLib.Plan memory plan) {
-        address admin = vm.envAddress("ADMIN");
-        address treasuryOverride = vm.envOr("TREASURY", address(0));
-        string memory saltTag = vm.envOr("CREATE2_SALT_TAG", string("v1"));
-        plan = DeployPlanLib.build(admin, treasuryOverride, saltTag);
+        address admin = vm.addr(vm.envUint("PRIVATE_KEY"));
+        string memory saltTag = vm.envOr("CREATE2_SALT_TAG", string("grindurus"));
+        plan = DeployPlanLib.build(admin, saltTag);
     }
 
     function _dryRun() internal view returns (bool) {
@@ -239,18 +206,30 @@ contract Deploy is Script {
     function _logPlan(DeployPlanLib.Plan memory plan, bool factoryAvailable) internal pure {
         console2.log("CREATE2 factory available:", factoryAvailable);
         console2.log("ADMIN:", plan.admin);
-        console2.log("Deploy Treasury:", plan.deployTreasury);
         console2.log("TREASURY:", plan.treasury);
         console2.log("GRAI impl:", plan.graiImpl);
         console2.log("GRAI proxy:", plan.graiProxy);
-        if (plan.deployTreasury) {
-            console2.log("Treasury impl:", plan.treasuryImpl);
-            console2.log("Treasury proxy:", plan.treasuryProxy);
-        }
+        console2.log("Treasury impl:", plan.treasuryImpl);
+        console2.log("Treasury proxy:", plan.treasuryProxy);
         console2.log("SeniorVault:", plan.seniorVault);
         console2.log("JuniorVault:", plan.juniorVault);
     }
 }
+
+/**
+    Shell note: use `#` for comments in terminal — `//` is NOT a shell comment and forge
+    will treat it as a script argument (`encode length mismatch: expected 0 types, got 1`).
+
+    Predict addresses (no broadcast):
+      $ forge script script/Deploy.s.sol:Deploy --sig "predict()"
+
+    Deploy on Arbitrum (broadcast + verify):
+      $ export ARBISCAN_API_KEY=...   # https://arbiscan.io/myapikey
+      $ export ARBITRUM_RPC_URL=https://rpc.nodeflare.app/arb/public
+      $ source .env   # PRIVATE_KEY; optional OPS_MULTISIG (grant ADMIN), UPGRADE_MULTISIG (transferOwnership)
+      $ forge script script/Deploy.s.sol:Deploy \
+          --rpc-url arbitrum --broadcast --verify --chain arbitrum
+ */
 
 // After deploy, register each asset feed on GRAI, then add it to the asset registry:
 //   Chainlink (mainnet):
