@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -12,7 +11,7 @@ import {ITreasury} from "./interfaces/ITreasury.sol";
 
 /// @title Custodian (base implementation)
 /// @notice Shared junior-capital custody: holds assets and routes principal/yield back to GRAI.
-/// @dev Grinder ownership is the Treasury custodian NFT (`treasury.ownerOf(custodianId)`).
+/// @dev Grinder ownership is the Treasury custodian NFT (`ITreasury.ownerOf(custodianId)`).
 ///      GRAI is read from `ITreasury(treasury).grai()`.
 abstract contract Custodian is Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
@@ -25,10 +24,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     error SameAsset();
     error NonZeroBalance();
     error EthTransferFailed();
-    error FeatureEnabled();
-    error FeatureScheduled();
     error FeatureDisabled();
     error FeatureDelay();
+    error GraiZero();
 
     uint48 public constant DISABLE_DELAY = 24 hours;
 
@@ -36,19 +34,19 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     IERC20 public quoteAsset;
     address public treasury;
     uint256 public custodianId;
-    bool public upgradesDisabled;
-    bool public emergencyWithdrawDisabled;
+    bool public isUpgradeableDisabled;
+    bool public isRescueDisabled;
     uint48 public upgradesDisableScheduledAt;
-    uint48 public emergencyWithdrawDisableScheduledAt;
+    uint48 public rescueDisableScheduledAt;
 
-    event EmergencyWithdraw(address indexed asset, address indexed to, uint256 amount);
+    event Rescued(address indexed asset, address indexed to, uint256 amount);
     event AssetsUpdated(address indexed baseAsset, address indexed quoteAsset);
     event UpgradesReenableScheduled(uint48 reenableAt);
     event UpgradesDisabled();
     event UpgradesReenabled();
-    event EmergencyWithdrawReenableScheduled(uint48 reenableAt);
-    event EmergencyWithdrawDisabled();
-    event EmergencyWithdrawReenabled();
+    event RescueReenableScheduled(uint48 reenableAt);
+    event RescueDisabled();
+    event RescueReenabled();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -97,7 +95,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     function owner() public view virtual returns (address) {
         if (treasury.code.length == 0) return treasury;
-        try IERC721(treasury).ownerOf(custodianId) returns (address owner_) {
+        try ITreasury(treasury).ownerOf(custodianId) returns (address owner_) {
             return owner_;
         } catch {
             return treasury;
@@ -118,7 +116,15 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         return IERC20(asset).balanceOf(address(this));
     }
 
-    function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public {
+    /// @notice USD NAV of `baseAsset` and `quoteAsset` balances (18 decimals).
+    function nav() public view returns (uint256) {
+        address grai_ = grai();
+        if (grai_ == address(0)) revert GraiZero();
+        return IGRAI(grai_).usdValue(address(baseAsset), balance(address(baseAsset)))
+            + IGRAI(grai_).usdValue(address(quoteAsset), balance(address(quoteAsset)));
+    }
+
+    function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public virtual {
         _onlyOwner();
         if (balance(address(baseAsset)) != 0 || balance(address(quoteAsset)) != 0) revert NonZeroBalance();
         _setTradingAssets(baseAsset_, quoteAsset_);
@@ -149,59 +155,63 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         }
     }
 
-    /// @notice Rescue assets to owner without going through GRAI accounting.
-    function emergencyWithdraw(address asset, uint256 amount) public {
+    /// @notice Rescue assets to treasury without going through GRAI accounting.
+    function rescue(address asset, uint256 amount) public {
         _onlyOwner();
-        _checkEmergencyWithdraw();
+        _checkRescue();
         if (amount == 0) revert AmountZero();
-        address to = owner();
+        address to = treasury;
         if (asset == address(0)) {
             (bool ok,) = to.call{value: amount}("");
             if (!ok) revert EthTransferFailed();
         } else {
             IERC20(asset).safeTransfer(to, amount);
         }
-        emit EmergencyWithdraw(asset, to, amount);
+        emit Rescued(asset, to, amount);
     }
 
-    /// @notice Toggle UUPS upgrades. `true`: lock instantly (cancels pending unlock schedule). `false`: schedule unlock.
-    function setUpgradesDisabled(bool isDisabled) public {
+    /// @notice Lock UUPS upgrades instantly, or schedule unlock after `DISABLE_DELAY` when already locked.
+    function toggleUpgradeable() public {
         _onlyOwner();
-        if (isDisabled) {
-            if (upgradesDisabled) {
-                upgradesDisableScheduledAt = type(uint48).max;
-                return;
-            }
-            upgradesDisabled = true;
+        if (_isFeatureUnlocked(isUpgradeableDisabled, upgradesDisableScheduledAt)) {
+            isUpgradeableDisabled = true;
             upgradesDisableScheduledAt = type(uint48).max;
             emit UpgradesDisabled();
-        } else {
-            if (!upgradesDisabled) revert FeatureEnabled();
-            if (upgradesDisableScheduledAt != type(uint48).max) revert FeatureScheduled();
-            upgradesDisabled = false;
+            return;
+        }
+        if (isUpgradeableDisabled) {
+            isUpgradeableDisabled = false;
             upgradesDisableScheduledAt = uint48(block.timestamp + DISABLE_DELAY);
             emit UpgradesReenableScheduled(upgradesDisableScheduledAt);
+            return;
         }
+        isUpgradeableDisabled = true;
+        upgradesDisableScheduledAt = type(uint48).max;
+        emit UpgradesDisabled();
     }
 
-    /// @notice Toggle `emergencyWithdraw`. `true`: lock instantly (cancels pending unlock schedule). `false`: schedule unlock.
-    function setEmergencyWithdrawDisabled(bool isDisabled) public {
+    /// @notice Lock `rescue` instantly, or schedule unlock after `DISABLE_DELAY` when already locked.
+    function toggleRescue() public {
         _onlyOwner();
-        if (isDisabled) {
-            if (emergencyWithdrawDisabled) {
-                emergencyWithdrawDisableScheduledAt = type(uint48).max;
-                return;
-            }
-            emergencyWithdrawDisabled = true;
-            emergencyWithdrawDisableScheduledAt = type(uint48).max;
-            emit EmergencyWithdrawDisabled();
-        } else {
-            if (!emergencyWithdrawDisabled) revert FeatureEnabled();
-            if (emergencyWithdrawDisableScheduledAt != type(uint48).max) revert FeatureScheduled();
-            emergencyWithdrawDisabled = false;
-            emergencyWithdrawDisableScheduledAt = uint48(block.timestamp + DISABLE_DELAY);
-            emit EmergencyWithdrawReenableScheduled(emergencyWithdrawDisableScheduledAt);
+        if (_isFeatureUnlocked(isRescueDisabled, rescueDisableScheduledAt)) {
+            isRescueDisabled = true;
+            rescueDisableScheduledAt = type(uint48).max;
+            emit RescueDisabled();
+            return;
         }
+        if (isRescueDisabled) {
+            isRescueDisabled = false;
+            rescueDisableScheduledAt = uint48(block.timestamp + DISABLE_DELAY);
+            emit RescueReenableScheduled(rescueDisableScheduledAt);
+            return;
+        }
+        isRescueDisabled = true;
+        rescueDisableScheduledAt = type(uint48).max;
+        emit RescueDisabled();
+    }
+
+    function _isFeatureUnlocked(bool isDisabled, uint48 disableScheduledAt) internal view returns (bool) {
+        return !isDisabled && block.timestamp > disableScheduledAt;
     }
 
     function _setTradingAssets(IERC20 baseAsset_, IERC20 quoteAsset_) internal {
@@ -211,21 +221,17 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
         baseAsset = baseAsset_;
         quoteAsset = quoteAsset_;
-
-        _onTradingAssetsSet();
     }
 
-    function _checkEmergencyWithdraw() internal view {
-        if (emergencyWithdrawDisabled) revert FeatureDisabled();
-        if (block.timestamp <= emergencyWithdrawDisableScheduledAt) revert FeatureDelay();
+    function _checkRescue() internal view {
+        if (isRescueDisabled) revert FeatureDisabled();
+        if (block.timestamp <= rescueDisableScheduledAt) revert FeatureDelay();
     }
-
-    function _onTradingAssetsSet() internal virtual {}
 
     function _authorizeUpgrade(address newImplementation) internal view override {
         _onlyOwner();
         newImplementation;
-        if (upgradesDisabled) revert FeatureDisabled();
+        if (isUpgradeableDisabled) revert FeatureDisabled();
         if (block.timestamp <= upgradesDisableScheduledAt) revert FeatureDelay();
     }
 }

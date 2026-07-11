@@ -20,10 +20,19 @@ import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 ///   TREASURY=0x... - Treasury ERC721 registry (defaults to a local MockTreasuryNFT)
 ///   DRY_RUN=1    - log params only, skip broadcast
 ///
+/// Update (upgrade existing proxy):
+///   CUSTODY_PROXY=0x... - deployed CoWCustodian proxy to upgrade
+///   PRIVATE_KEY must be the custodian owner (Treasury NFT holder)
+///
 /// Deploy:
 ///   PRIVATE_KEY=0x... GRAI=0x... BASE_ASSET=0x... QUOTE_ASSET=0x... \
 ///     forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
 ///     --rpc-url $RPC_URL --broadcast
+///
+/// Upgrade:
+///   PRIVATE_KEY=0x... CUSTODY_PROXY=0x... \
+///     forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
+///     --sig "update()" --rpc-url $RPC_URL --broadcast
 contract DeployCoWCustodian is Script {
     function run() external returns (CoWCustodian custody) {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -62,6 +71,39 @@ contract DeployCoWCustodian is Script {
         console2.log("Deploy complete.");
     }
 
+    function update() external returns (CoWCustodian custody) {
+        uint256 ownerPrivateKey = vm.envUint("PRIVATE_KEY");
+        address owner = vm.addr(ownerPrivateKey);
+        address proxy = vm.envAddress("CUSTODIAN_PROXY");
+
+        custody = CoWCustodian(payable(proxy));
+
+        console2.log("CUSTODY_OWNER (from PRIVATE_KEY):", owner);
+        console2.log("CoWCustodian proxy:", proxy);
+        console2.log("Current owner:", custody.owner());
+        console2.log("Current impl:", _implementation(proxy));
+
+        if (_dryRun()) {
+            console2.log("DRY_RUN=1 - skipping broadcast");
+            return custody;
+        }
+
+        vm.startBroadcast(ownerPrivateKey);
+
+        CoWCustodian impl = new CoWCustodian();
+        custody.upgradeToAndCall(address(impl), "");
+
+        vm.stopBroadcast();
+
+        console2.log("CoWCustodian new impl:", address(impl));
+        console2.log("Upgrade complete.");
+    }
+
+    function _implementation(address proxy) internal view returns (address impl) {
+        bytes32 slot = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+        impl = address(uint160(uint256(vm.load(proxy, slot))));
+    }
+
     function _dryRun() internal view returns (bool) {
         try vm.envBool("DRY_RUN") returns (bool value) {
             return value;
@@ -98,5 +140,9 @@ contract DeployCoWCustodian is Script {
     QUOTE_ASSET=0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9 \
     forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
     --rpc-url arbitrum --broadcast --verify --chain arbitrum
+
+    $ CUSTODY_PROXY=0x... \
+    forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
+    --sig "update()" --rpc-url arbitrum --broadcast --verify --chain arbitrum
  
  */

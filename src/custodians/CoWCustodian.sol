@@ -10,6 +10,7 @@ import {IGPv2Settlement} from "../interfaces/IGPv2Settlement.sol";
 import {Custodian} from "../Custodian.sol";
 
 /// @title Gnosis Protocol v2 Order Library (vendored from CoW Protocol)
+/// @dev https://github.com/cowprotocol/contracts/blob/main/src/contracts/libraries/GPv2Order.sol
 library GPv2Order {
     struct Data {
         IERC20 sellToken;
@@ -82,10 +83,11 @@ library GPv2Order {
 ///   always remain on this contract.
 /// - Principal exits only through `deallocate`; yield through `distribute` — both route via GRAI accounting,
 ///   not to an arbitrary owner wallet.
-/// - Owner **cannot** `emergencyWithdraw` to self while `emergencyWithdrawDisabled` is true.
-///   `setEmergencyWithdrawDisabled(true)` locks instantly; `false` schedules a 24h delay before unlock.
-/// - Owner **cannot** `upgradeTo` while `upgradesDisabled` is true or a re-enable delay is pending.
-///   `setUpgradesDisabled(true)` locks instantly; `false` schedules a 24h delay before upgrades resume.
+/// - Owner **cannot** `rescue` while `isRescueDisabled` is true.
+///   Funds route to treasury, not the NFT holder wallet.
+///   `toggleRescue()` locks instantly; call again while locked to schedule a 24h unlock delay.
+/// - Owner **cannot** `upgradeTo` while `isUpgradeableDisabled` is true or a re-enable delay is pending.
+///   `toggleUpgradeable()` locks instantly; call again while locked to schedule a 24h unlock delay.
 ///
 /// @dev Use the ERC1967Proxy address only, not the implementation.
 ///      VaultRelayer max-allowance for base/quote is set in `initialize` / `setAssets`.
@@ -115,6 +117,7 @@ contract CoWCustodian is Custodian, IERC1271 {
         IERC20 quoteAsset_
     ) public override initializer {
         __Custodian_init(treasury_, custodianId_, baseAsset_, quoteAsset_);
+        _approveVaultRelayer(baseAsset_, quoteAsset_);
     }
 
     /// @inheritdoc Custodian
@@ -125,7 +128,7 @@ contract CoWCustodian is Custodian, IERC1271 {
     /// @inheritdoc IERC1271
     /// @dev `hash` is the CoW order digest. `signature` is `abi.encode(bytes ecdsaSig, GPv2Order.Data order)`:
     ///      65-byte owner ECDSA over `hash`, plus the full order used to recompute and constrain the digest.
-    function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bytes4 magicValue) {
+    function isValidSignature(bytes32 hash, bytes memory signature) public view returns (bytes4 magicValue) {
         if (signature.length < 224) return bytes4(0xffffffff);
         (bytes memory ecdsaSig, GPv2Order.Data memory order) = decodeEip1271Signature(signature);
         if (ecdsaSig.length != 65) return bytes4(0xffffffff);
@@ -158,21 +161,26 @@ contract CoWCustodian is Custodian, IERC1271 {
 
     /// @notice Build the EIP-1271 `signature` bytes expected by CoW API for custody orders.
     function encodeEip1271Signature(bytes memory ecdsaSig, GPv2Order.Data calldata order)
-        external
+        public
         pure
         returns (bytes memory signature)
     {
         signature = abi.encode(ecdsaSig, order);
     }
 
-    function approve(IERC20 token, uint256 amount) external {
+    function approve(IERC20 token, uint256 amount) public {
         _onlyOwner();
         if (token != baseAsset && token != quoteAsset) revert NotTradingAsset();
         token.forceApprove(COW_VAULT_RELAYER, amount);
     }
 
-    function _onTradingAssetsSet() internal override {
-        baseAsset.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
-        quoteAsset.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
+    function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public override {
+        super.setAssets(baseAsset_, quoteAsset_);
+        _approveVaultRelayer(baseAsset_, quoteAsset_);
+    }
+
+    function _approveVaultRelayer(IERC20 base_, IERC20 quote_) internal {
+        base_.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
+        quote_.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
     }
 }
