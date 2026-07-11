@@ -11,8 +11,6 @@ import {Custodian} from "../Custodian.sol";
 
 /// @title Gnosis Protocol v2 Order Library (vendored from CoW Protocol)
 library GPv2Order {
-    error UidOverflow();
-
     struct Data {
         IERC20 sellToken;
         IERC20 buyToken;
@@ -28,18 +26,11 @@ library GPv2Order {
         bytes32 buyTokenBalance;
     }
 
+    /// @dev EIP-712 typehash for CoW `Order`:
+    ///      `keccak256("Order(address sellToken,address buyToken,address receiver,uint256 sellAmount,uint256 buyAmount,uint32 validTo,bytes32 appData,uint256 feeAmount,bytes32 kind,bool partiallyFillable,bytes32 sellTokenBalance,bytes32 buyTokenBalance)")`.
+    ///      Prepended to the ABI-encoded struct fields inside `hash()` to form the EIP-712 struct hash.
     bytes32 internal constant TYPE_HASH =
-        hex"d5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489";
-
-    bytes32 internal constant KIND_SELL =
-        hex"f3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775";
-
-    bytes32 internal constant BALANCE_ERC20 =
-        hex"5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9";
-
-    address internal constant RECEIVER_SAME_AS_OWNER = address(0);
-
-    uint256 internal constant UID_LENGTH = 56;
+        hex"d5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489"; // Order(...) per GPv2
 
     function hash(Data memory order, bytes32 domainSeparator) internal pure returns (bytes32 orderDigest) {
         bytes32 structHash;
@@ -60,19 +51,6 @@ library GPv2Order {
             orderDigest := keccak256(freeMemoryPointer, 66)
         }
     }
-
-    function packOrderUidParams(bytes memory orderUid, bytes32 orderDigest, address owner, uint32 validTo)
-        internal
-        pure
-    {
-        if (orderUid.length != UID_LENGTH) revert UidOverflow();
-        // solhint-disable-next-line no-inline-assembly
-        assembly {
-            mstore(add(orderUid, 56), validTo)
-            mstore(add(orderUid, 52), owner)
-            mstore(add(orderUid, 32), orderDigest)
-        }
-    }
 }
 
 /// @title CoWCustodian (implementation)
@@ -89,17 +67,25 @@ library GPv2Order {
 ///
 /// ## Flow
 /// - GRAI `allocate` → tokens on custody
-/// - Owner signs CoW order digest (EIP-1271) → POST to CoW API → solver settles
-/// - `deallocate` / `distribute` → funds return to GRAI
+/// - Owner signs CoW order digest, then API signature is `abi.encode(ecdsaSig, GPv2Order.Data)`
+/// - POST to CoW API → settlement calls `isValidSignature` → `deallocate` / `distribute`
 ///
 /// ## Trust model
-/// - Owner **can** sign any swap within signed order params (operational discretion).
-/// - Owner **cannot** pull allocated funds to self while `emergencyWithdrawDisabled` is true.
-///   `setEmergencyWithdrawDisabled(true)` locks instantly; `false` clears the flag and starts a 24h
-///   delay before `emergencyWithdraw` is allowed again.
-/// - Owner **can** upgrade while `upgradesDisabled` is false and no unlock delay is active.
-///   `setUpgradesDisabled(true)` locks instantly; `false` clears the flag and starts a 24h delay
-///   before `upgradeTo` is allowed again.
+/// - Owner (Treasury NFT holder) **can** swap only via CoW orders they signed as EIP-1271 maker.
+///   `isValidSignature` requires owner ECDSA, recomputes the digest, and enforces custody bounds:
+///   `receiver == address(this)`, sell/buy ∈ `{baseAsset, quoteAsset}`, and
+///   `GPv2Order.hash(order) == hash`. Bare ECDSA or a digest for another receiver cannot pass.
+/// - Other order fields (`kind`, `feeAmount`, `partiallyFillable`, `sellTokenBalance`, `buyTokenBalance`, …)
+///   are not constrained on-chain; the owner signs the exact params they accept.
+///   Custody security is receiver + asset bounds + digest binding.
+/// - Owner **chooses** signed amounts and prices within those bounds (operational discretion); proceeds
+///   always remain on this contract.
+/// - Principal exits only through `deallocate`; yield through `distribute` — both route via GRAI accounting,
+///   not to an arbitrary owner wallet.
+/// - Owner **cannot** `emergencyWithdraw` to self while `emergencyWithdrawDisabled` is true.
+///   `setEmergencyWithdrawDisabled(true)` locks instantly; `false` schedules a 24h delay before unlock.
+/// - Owner **cannot** `upgradeTo` while `upgradesDisabled` is true or a re-enable delay is pending.
+///   `setUpgradesDisabled(true)` locks instantly; `false` schedules a 24h delay before upgrades resume.
 ///
 /// @dev Use the ERC1967Proxy address only, not the implementation.
 ///      VaultRelayer max-allowance for base/quote is set in `initialize` / `setAssets`.
@@ -107,28 +93,20 @@ contract CoWCustodian is Custodian, IERC1271 {
     using SafeERC20 for IERC20;
 
     error NotTradingAsset();
-    error Expired();
-    error SellZero();
-    error BuyZero();
-    error SellAmountZero();
-    error BuyAmountZero();
 
     bytes4 private constant _EIP1271_MAGIC = 0x1626ba7e;
 
-    uint32 public constant DEFAULT_VALID_FOR = 2 minutes;
-
     IGPv2Settlement public constant COW_SETTLEMENT = IGPv2Settlement(0x9008D19f58AAbD9eD0D60971565AA8510560ab41);
     address public constant COW_VAULT_RELAYER = 0xC92E8bdf79f0507f65a392b0ab4667716BFE0110;
-    bytes32 public cowDomainSeparator;
-
-    struct SwapParams {
-        IERC20 sellToken;
-        IERC20 buyToken;
-        uint256 sellAmount;
-        uint256 buyAmount;
-        uint32 validTo;
-        bytes32 appData;
-    }
+    bytes32 public immutable COW_DOMAIN_SEPARATOR = keccak256(
+        abi.encode(
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+            keccak256("Gnosis Protocol"),
+            keccak256("v2"),
+            block.chainid,
+            address(COW_SETTLEMENT)
+        )
+    );
 
     function initialize(
         address treasury_,
@@ -137,44 +115,54 @@ contract CoWCustodian is Custodian, IERC1271 {
         IERC20 quoteAsset_
     ) public override initializer {
         __Custodian_init(treasury_, custodianId_, baseAsset_, quoteAsset_);
-        cowDomainSeparator = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256("Gnosis Protocol"),
-                keccak256("v2"),
-                block.chainid,
-                address(COW_SETTLEMENT)
-            )
-        );
     }
 
-    bytes32 private constant _CUSTODY_KIND =
-        0x1602c448053eaaee4bf933fb139377e430f7dc803b82baa89439240b33173fec; // keccak256("grindurus.custodian.cow")
-
     /// @inheritdoc Custodian
-    function custodyKind() public pure override returns (bytes32) {
-        return _CUSTODY_KIND;
+    function custodianKind() public pure override returns (bytes32) {
+        return keccak256("grindurus.custodian.cow");
     }
 
     /// @inheritdoc IERC1271
-    /// @dev `hash` is the CoW order digest. `signature` is the owner's 65-byte ECDSA signature over it.
+    /// @dev `hash` is the CoW order digest. `signature` is `abi.encode(bytes ecdsaSig, GPv2Order.Data order)`:
+    ///      65-byte owner ECDSA over `hash`, plus the full order used to recompute and constrain the digest.
     function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bytes4 magicValue) {
-        address signer = ECDSA.recover(hash, signature);
+        if (signature.length < 224) return bytes4(0xffffffff);
+        (bytes memory ecdsaSig, GPv2Order.Data memory order) = decodeEip1271Signature(signature);
+        if (ecdsaSig.length != 65) return bytes4(0xffffffff);
+        if (!_isConstrainedCustodyOrder(hash, order)) return bytes4(0xffffffff);
+        address signer = ECDSA.recover(hash, ecdsaSig);
         return signer == owner() ? _EIP1271_MAGIC : bytes4(0xffffffff);
     }
 
-    /// @notice CoW EIP-712 order digest for off-chain signing.
-    function orderDigest(SwapParams calldata params) external view returns (bytes32) {
-        uint32 validTo = _resolveValidTo(params.validTo);
-        return GPv2Order.hash(_buildOrder(params, validTo), cowDomainSeparator);
+    function _isConstrainedCustodyOrder(bytes32 hash, GPv2Order.Data memory order) internal view returns (bool) {
+        address sell = address(order.sellToken);
+        address buy = address(order.buyToken);
+        address base = address(baseAsset);
+        address quote = address(quoteAsset);
+        if (sell != base && sell != quote) return false;
+        if (buy != base && buy != quote) return false;
+        if (sell == buy) return false;
+        if (order.receiver != address(this)) return false;
+
+        return GPv2Order.hash(order, COW_DOMAIN_SEPARATOR) == hash;
     }
 
-    /// @notice GPv2 order UID for the given swap parameters.
-    function orderUid(SwapParams calldata params) external view returns (bytes memory uid) {
-        uint32 validTo = _resolveValidTo(params.validTo);
-        bytes32 digest = GPv2Order.hash(_buildOrder(params, validTo), cowDomainSeparator);
-        uid = new bytes(GPv2Order.UID_LENGTH);
-        GPv2Order.packOrderUidParams(uid, digest, address(this), validTo);
+    /// @notice Parse the EIP-1271 `signature` bytes produced for custody orders.
+    function decodeEip1271Signature(bytes memory signature)
+        public
+        pure
+        returns (bytes memory ecdsaSig, GPv2Order.Data memory order)
+    {
+        (ecdsaSig, order) = abi.decode(signature, (bytes, GPv2Order.Data));
+    }
+
+    /// @notice Build the EIP-1271 `signature` bytes expected by CoW API for custody orders.
+    function encodeEip1271Signature(bytes memory ecdsaSig, GPv2Order.Data calldata order)
+        external
+        pure
+        returns (bytes memory signature)
+    {
+        signature = abi.encode(ecdsaSig, order);
     }
 
     function approve(IERC20 token, uint256 amount) external {
@@ -186,32 +174,5 @@ contract CoWCustodian is Custodian, IERC1271 {
     function _onTradingAssetsSet() internal override {
         baseAsset.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
         quoteAsset.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
-    }
-
-    function _resolveValidTo(uint32 validTo) internal view returns (uint32 resolved) {
-        resolved = validTo == 0 ? uint32(block.timestamp + DEFAULT_VALID_FOR) : validTo;
-        if (resolved <= block.timestamp) revert Expired();
-    }
-
-    function _buildOrder(SwapParams calldata params, uint32 validTo) internal pure returns (GPv2Order.Data memory order) {
-        if (address(params.sellToken) == address(0)) revert SellZero();
-        if (address(params.buyToken) == address(0)) revert BuyZero();
-        if (params.sellAmount == 0) revert SellAmountZero();
-        if (params.buyAmount == 0) revert BuyAmountZero();
-
-        order = GPv2Order.Data({
-            sellToken: params.sellToken,
-            buyToken: params.buyToken,
-            receiver: GPv2Order.RECEIVER_SAME_AS_OWNER,
-            sellAmount: params.sellAmount,
-            buyAmount: params.buyAmount,
-            validTo: validTo,
-            appData: params.appData,
-            feeAmount: 0,
-            kind: GPv2Order.KIND_SELL,
-            partiallyFillable: false,
-            sellTokenBalance: GPv2Order.BALANCE_ERC20,
-            buyTokenBalance: GPv2Order.BALANCE_ERC20
-        });
     }
 }

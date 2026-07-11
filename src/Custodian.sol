@@ -165,9 +165,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     }
 
     /// @notice Toggle UUPS upgrades. `true`: lock instantly (cancels pending unlock schedule). `false`: schedule unlock.
-    function setUpgradesDisabled(bool disabled) public {
+    function setUpgradesDisabled(bool isDisabled) public {
         _onlyOwner();
-        if (disabled) {
+        if (isDisabled) {
             if (upgradesDisabled) {
                 upgradesDisableScheduledAt = type(uint48).max;
                 return;
@@ -185,9 +185,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     }
 
     /// @notice Toggle `emergencyWithdraw`. `true`: lock instantly (cancels pending unlock schedule). `false`: schedule unlock.
-    function setEmergencyWithdrawDisabled(bool disabled) public {
+    function setEmergencyWithdrawDisabled(bool isDisabled) public {
         _onlyOwner();
-        if (disabled) {
+        if (isDisabled) {
             if (emergencyWithdrawDisabled) {
                 emergencyWithdrawDisableScheduledAt = type(uint48).max;
                 return;
