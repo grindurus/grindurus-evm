@@ -26,6 +26,10 @@ contract Treasury is ITreasury, OwnableUpgradeable, ERC721EnumerableUpgradeable,
     using SafeERC20 for IERC20;
     address public grai;
 
+    /// @dev Registry key for a custodian implementation family. Each `Custodian` impl exposes
+    ///      `custodianKind()` as `keccak256("grindurus.custodian.<name>")` (e.g. `...cow`, `...lifi`);
+    ///      bump to `...<name>.v2` only when storage/API is incompatible. UUPS upgrades within
+    ///      the same kind reuse this key via `setCustodyImplementation`; `mint` looks up the impl here.
     mapping(bytes32 custodianKind => address) public custodyImplementations;
 
     mapping(uint256 custodianId => address) public custodians;
