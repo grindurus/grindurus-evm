@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
@@ -51,8 +51,11 @@ contract GRAI is
 
     string private _tokenUri;
 
+    address public pendingOwner;
+    address public currentOwner;
+
     /// @dev Storage gap for future upgrades.
-    uint256[39] private _gap;
+    uint256[38] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -70,12 +73,36 @@ contract GRAI is
 
         treasury = admin;
         _tokenUri = "https://grindurus.xyz/metadata.json";
+        currentOwner = admin;
 
         seniorVault = new Vault(address(this));
         juniorVault = new Vault(address(this));
     }
 
     receive() external payable {}
+
+    /// @notice Two-step handoff of `DEFAULT_ADMIN_ROLE` (upgrades + role admin).
+    /// @dev Current holder: `transferOwnership(recipient)` offers. Recipient: same call accepts.
+    function transferOwnership(address account) external {
+        if (account == address(0)) revert ZeroAddress();
+
+        if (pendingOwner == account && msg.sender == account) {
+            address from = currentOwner;
+            pendingOwner = address(0);
+            _grantRole(DEFAULT_ADMIN_ROLE, account);
+            if (from != account) {
+                _revokeRole(DEFAULT_ADMIN_ROLE, from);
+            }
+            currentOwner = account;
+            emit OwnershipAccepted(account);
+            return;
+        }
+
+        if (msg.sender != currentOwner) revert NotCurrentOwner();
+        if (pendingOwner != address(0)) revert OwnershipOfferPending();
+        pendingOwner = account;
+        emit OwnershipOffered(account);
+    }
 
     function setFeed(address asset, Feed calldata feed)
         public

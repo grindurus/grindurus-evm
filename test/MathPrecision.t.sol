@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
-import {Test} from "forge-std/Test.sol";
 import {GRAIFixture} from "./GRAIFixture.sol";
-import {IGRAI} from "../src/interfaces/IGRAI.sol";
 
 contract MathPrecisionProbe is GRAIFixture {
     /// Multi-asset micro-burns: burnValue>0 but every asset share floors to 0 →

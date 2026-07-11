@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 /// @dev Minimal treasury stand-in for custodian tests: ownerOf, grai, custodianIds/custodians.
 contract MockTreasuryNFT {
@@ -28,4 +28,6 @@ contract MockTreasuryNFT {
     function ownerOf(uint256 tokenId) external view returns (address) {
         return _owners[tokenId];
     }
+
+    receive() external payable {}
 }

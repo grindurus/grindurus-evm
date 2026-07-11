@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {ITreasury} from "../src/interfaces/ITreasury.sol";
-import {CoWCustodian} from "../src/custodies/CoWCustodian.sol";
-import {LiFiCustodian} from "../src/custodies/LiFiCustodian.sol";
+import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
+import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 
 contract TreasuryTest is GRAIFixture {
     Treasury treasuryContract;

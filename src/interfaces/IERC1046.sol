@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 /// @title ERC-1046 tokenURI Interoperability
 /// @notice https://eips.ethereum.org/EIPS/eip-1046

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC1046} from "./IERC1046.sol";
@@ -30,6 +30,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error UnknownCustodian();
     error InsufficientAllocation();
     error InsufficientActive();
+    error OwnershipOfferPending();
+    error NotCurrentOwner();
 
     struct AssetConfig {
         bool exists;
@@ -64,6 +66,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         address indexed asset, address indexed custody, uint256 yieldAmount, uint256 seniorYield, uint256 treasuryYield
     );
     event Sweep(address indexed asset, address indexed to, uint256 amount);
+    event OwnershipOffered(address indexed account);
+    event OwnershipAccepted(address indexed account);
 
     function BPS() external view returns (uint16);
     function DEFAULT_MINT_SPLIT() external view returns (uint16);
