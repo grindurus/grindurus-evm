@@ -29,7 +29,7 @@ contract SwapCustodian is Custodian {
     error ExceededPriceLimit();
 
     bytes32 private constant _CUSTODY_KIND =
-        0xdf5750e3581ea1f3c6fb441405f984edc814abec5663a6bc4271388cb11c01c9; // keccak256("grindurus.custodian.swap")
+        0xed402d39d17fde1cee5497b1836db076721aeed07c6337ad6f981559e69383ad; // keccak256("grindurus.custodian.explicit_swap")
 
     event Swap(
         address indexed target,
@@ -46,12 +46,11 @@ contract SwapCustodian is Custodian {
     }
 
     function initialize(
-        address treasury_,
-        uint256 custodianId_,
+        address juniorToken_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public override initializer {
-        __Custodian_init(treasury_, custodianId_, baseAsset_, quoteAsset_);
+        __Custodian_init(juniorToken_, baseAsset_, quoteAsset_);
     }
 
     /// @notice Execute a low-level call to `target` and enforce a post-trade price limit.

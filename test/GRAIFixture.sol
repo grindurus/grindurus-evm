@@ -5,22 +5,23 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAI} from "../src/GRAI.sol";
+import {SeniorToken} from "../src/SeniorToken.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
-import {MockTreasuryNFT} from "./mocks/MockTreasuryNFT.sol";
+import {MockJuniorToken} from "./mocks/MockJuniorToken.sol";
 
 abstract contract GRAIFixture is Test {
     address admin = makeAddr("admin");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
-    address custody = makeAddr("custody");
+    address custodian = makeAddr("custodian");
 
     GRAI grai;
-    MockTreasuryNFT treasuryNft;
-    address treasury;
+    MockJuniorToken juniorTokenNft;
+    address juniorToken;
 
     MockERC20 usdc; // 6 decimals
     MockERC20 weth; // 18 decimals
@@ -37,20 +38,15 @@ abstract contract GRAIFixture is Test {
         bytes memory init = abi.encodeCall(GRAI.initialize, (admin));
         grai = GRAI(payable(address(new ERC1967Proxy(address(impl), init))));
 
-        treasuryNft = new MockTreasuryNFT();
-        treasury = address(treasuryNft);
-        treasuryNft.setGrai(address(grai));
-        treasuryNft.setCustodian(custody, 0);
-
-        vm.prank(admin);
-        grai.setTreasury(treasury);
+        vm.startPrank(admin);
+        grai.setSeniorToken(_deployReserveVault(address(grai)));
+        _wireJuniorToken();
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         usdcFeed = new MockAggregator(8, 1e8);
         wethFeed = new MockAggregator(8, 2000e8);
 
-        vm.startPrank(admin);
         _setChainlinkFeed(address(usdc), address(usdcFeed));
         _setChainlinkFeed(address(weth), address(wethFeed));
         grai.addAsset(address(usdc), DEFAULT_MINT_SPLIT, DEFAULT_YIELD_SPLIT);
@@ -59,8 +55,28 @@ abstract contract GRAIFixture is Test {
 
         usdc.mint(alice, 1_000e6);
         usdc.mint(bob, 1_000e6);
-        usdc.mint(custody, 1_000e6); // for distribute
+        usdc.mint(custodian, 1_000e6); // for distribute
         weth.mint(alice, 100e18);
+    }
+
+    function _deployReserveVault(address grai_) internal returns (address) {
+        SeniorToken impl = new SeniorToken();
+        return address(
+            new ERC1967Proxy(address(impl), abi.encodeCall(SeniorToken.initialize, (grai_)))
+        );
+    }
+
+    function _wireJuniorToken() internal virtual {
+        juniorTokenNft = new MockJuniorToken();
+        juniorToken = address(juniorTokenNft);
+        juniorTokenNft.setGrai(address(grai));
+        juniorTokenNft.setCustodian(custodian, 0);
+        grai.setJuniorToken(juniorToken);
+    }
+
+    function _allocate(address asset, address custodian_, uint256 amount) internal {
+        vm.prank(admin);
+        juniorTokenNft.allocate(asset, custodian_, amount);
     }
 
     function _setChainlinkFeed(address asset, address aggregator) internal {

@@ -15,8 +15,8 @@ contract DeployCreate2Test is Test {
 
         assertEq(first.graiImpl, second.graiImpl);
         assertEq(first.graiProxy, second.graiProxy);
-        assertEq(first.treasuryImpl, second.treasuryImpl);
-        assertEq(first.treasuryProxy, second.treasuryProxy);
+        assertEq(first.juniorTokenImpl, second.juniorTokenImpl);
+        assertEq(first.juniorTokenProxy, second.juniorTokenProxy);
     }
 
     function test_SaltTagChangesAddresses() public {
@@ -24,15 +24,15 @@ contract DeployCreate2Test is Test {
         DeployPlanLib.Plan memory v2 = DeployPlanLib.build(ADMIN, "v2");
 
         assertTrue(v1.graiProxy != v2.graiProxy);
-        assertTrue(v1.treasuryProxy != v2.treasuryProxy);
+        assertTrue(v1.juniorTokenProxy != v2.juniorTokenProxy);
     }
 
     function test_CoupledProxiesReferenceEachOther() public {
         DeployPlanLib.Plan memory plan = DeployPlanLib.build(ADMIN, "v1");
 
         assertTrue(plan.graiProxy != address(0));
-        assertTrue(plan.treasuryProxy != address(0));
-        assertTrue(plan.graiProxy != plan.treasuryProxy);
+        assertTrue(plan.juniorTokenProxy != address(0));
+        assertTrue(plan.graiProxy != plan.juniorTokenProxy);
     }
 
     function test_Create2FactoryMatchesOpenZeppelin() public pure {
@@ -43,13 +43,5 @@ contract DeployCreate2Test is Test {
             Create2Factory.computeAddress(salt, hash),
             Create2.computeAddress(salt, hash, 0x4e59b44847b379578588920cA78FbF26c0B4956C)
         );
-    }
-
-    function test_VaultAddressesFollowGraiProxyNonce() public {
-        DeployPlanLib.Plan memory plan = DeployPlanLib.build(ADMIN, "v1");
-
-        // ERC1967 proxy init consumes nonce 0; Vaults deploy at nonces 1 and 2.
-        assertEq(vm.computeCreateAddress(plan.graiProxy, 1), vm.computeCreateAddress(plan.graiProxy, 1));
-        assertTrue(vm.computeCreateAddress(plan.graiProxy, 1) != vm.computeCreateAddress(plan.graiProxy, 2));
     }
 }

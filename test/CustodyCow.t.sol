@@ -18,8 +18,6 @@ contract CustodyCowTest is GRAIFixture {
         super.setUp();
         (owner, ownerKey) = makeAddrAndKey("custodyOwner");
 
-        treasuryNft.setOwner(1, owner);
-
         CoWCustodian impl = new CoWCustodian();
         custodyWallet = CoWCustodian(
             payable(
@@ -27,13 +25,14 @@ contract CustodyCowTest is GRAIFixture {
                     new ERC1967Proxy(
                         address(impl),
                         abi.encodeCall(
-                            CoWCustodian.initialize, (address(treasuryNft), 1, usdc, weth)
+                            CoWCustodian.initialize, (address(juniorTokenNft), usdc, weth)
                         )
                     )
                 )
             )
         );
-        treasuryNft.setCustodian(address(custodyWallet), 1);
+        juniorTokenNft.setCustodian(address(custodyWallet), 1);
+        juniorTokenNft.setCustodianOwner(address(custodyWallet), owner);
     }
 
     function _order(uint32 validTo) internal view returns (GPv2Order.Data memory) {
@@ -58,7 +57,7 @@ contract CustodyCowTest is GRAIFixture {
     }
 
     function test_InitializeApprovesVaultRelayer() public view {
-        assertEq(custodyWallet.treasury(), address(treasuryNft));
+        assertEq(custodyWallet.juniorToken(), address(juniorTokenNft));
         assertEq(custodyWallet.grai(), address(grai));
         assertEq(custodyWallet.custodianId(), 1);
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
@@ -69,7 +68,7 @@ contract CustodyCowTest is GRAIFixture {
         usdc.mint(address(custodyWallet), 100e6);
         weth.mint(address(custodyWallet), 1e18);
 
-        assertEq(custodyWallet.nav(), 100e18 + 2000e18);
+        assertEq(custodyWallet.nav(), 100e6 + 2000e6);
     }
 
     function test_IsValidSignature_acceptsOwner() public view {
@@ -157,28 +156,6 @@ contract CustodyCowTest is GRAIFixture {
         assertEq(custodyWallet.isValidSignature(digest, sig), bytes4(0xffffffff));
     }
 
-    function test_RescueERC20() public {
-        _mint(alice, usdc, 100e6);
-        vm.prank(admin);
-        grai.allocate(address(usdc), address(custodyWallet), 50e6);
-
-        vm.prank(owner);
-        custodyWallet.rescue(address(usdc), 20e6);
-
-        assertEq(usdc.balanceOf(address(treasuryNft)), 20e6);
-        assertEq(usdc.balanceOf(address(custodyWallet)), 30e6);
-    }
-
-    function test_RescueEther() public {
-        vm.deal(address(custodyWallet), 1 ether);
-
-        vm.prank(owner);
-        custodyWallet.rescue(address(0), 0.4 ether);
-
-        assertEq(address(treasuryNft).balance, 0.4 ether);
-        assertEq(address(custodyWallet).balance, 0.6 ether);
-    }
-
     function test_SetAssets() public {
         MockERC20 dai = new MockERC20("DAI", "DAI", 18);
 
@@ -264,48 +241,6 @@ contract CustodyCowTest is GRAIFixture {
 
         assertTrue(custodyWallet.isUpgradeableDisabled());
         assertEq(custodyWallet.upgradesDisableScheduledAt(), type(uint48).max);
-    }
-
-    function test_SetRescueDisabled_blocksRescue() public {
-        _mint(alice, usdc, 100e6);
-        vm.prank(admin);
-        grai.allocate(address(usdc), address(custodyWallet), 50e6);
-
-        vm.prank(owner);
-        custodyWallet.toggleRescue();
-        assertTrue(custodyWallet.isRescueDisabled());
-
-        vm.prank(owner);
-        vm.expectRevert(Custodian.FeatureDisabled.selector);
-        custodyWallet.rescue(address(usdc), 1e6);
-    }
-
-    function test_SetRescueDisabled_reenableAfterDelay() public {
-        _mint(alice, usdc, 100e6);
-        vm.prank(admin);
-        grai.allocate(address(usdc), address(custodyWallet), 50e6);
-
-        vm.startPrank(owner);
-        custodyWallet.toggleRescue();
-        custodyWallet.toggleRescue();
-        vm.warp(block.timestamp + 24 hours + 1);
-        custodyWallet.rescue(address(usdc), 1e6);
-        vm.stopPrank();
-
-        assertEq(usdc.balanceOf(address(treasuryNft)), 1e6);
-    }
-
-    function test_SetRescueDisabled_revertsReenableBeforeDelay() public {
-        _mint(alice, usdc, 100e6);
-        vm.prank(admin);
-        grai.allocate(address(usdc), address(custodyWallet), 50e6);
-
-        vm.startPrank(owner);
-        custodyWallet.toggleRescue();
-        custodyWallet.toggleRescue();
-        vm.expectRevert(Custodian.FeatureDelay.selector);
-        custodyWallet.rescue(address(usdc), 1e6);
-        vm.stopPrank();
     }
 
     function test_Approve_acceptsTradingAssets() public {

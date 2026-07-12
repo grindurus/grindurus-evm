@@ -6,7 +6,10 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 import {GRAI} from "../src/GRAI.sol";
+import {SeniorToken} from "../src/SeniorToken.sol";
+import {JuniorToken} from "../src/JuniorToken.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {MockMultisig} from "./mocks/MockMultisig.sol";
 
 /// @dev ADMIN via grant/revoke; DEFAULT_ADMIN via two-step `transferOwnership`.
@@ -102,21 +105,36 @@ contract GRAIRolesTest is Test {
     }
 
     function test_DeployerCannotCallAdminFunctions() public {
-        bytes32 adminRole = grai.ADMIN_ROLE();
+        bytes32 defaultAdminRole = grai.DEFAULT_ADMIN_ROLE();
 
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, DEPLOYER, adminRole)
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, DEPLOYER, defaultAdminRole)
         );
         vm.prank(DEPLOYER);
-        grai.setTreasury(makeAddr("treasury"));
+        grai.setJuniorToken(makeAddr("juniorToken"));
     }
 
     function test_OpsMultisigCanCallAdminFunctions() public {
-        address newTreasury = makeAddr("treasury");
+        address newJuniorToken = address(
+            new ERC1967Proxy(
+                address(new JuniorToken()),
+                abi.encodeCall(JuniorToken.initialize, (address(grai)))
+            )
+        );
+        SeniorToken tokenImpl = new SeniorToken();
+        SeniorToken newSeniorToken = SeniorToken(
+            payable(
+                address(
+                    new ERC1967Proxy(address(tokenImpl), abi.encodeCall(SeniorToken.initialize, (address(grai))))
+                )
+            )
+        );
 
-        _exec(address(opsMultisig), opsOwner, address(grai), abi.encodeCall(grai.setTreasury, (newTreasury)));
+        _exec(address(upgradeMultisig), upgradeOwner, address(grai), abi.encodeCall(grai.setJuniorToken, (newJuniorToken)));
+        _exec(address(upgradeMultisig), upgradeOwner, address(grai), abi.encodeCall(grai.setSeniorToken, (address(newSeniorToken))));
 
-        assertEq(grai.treasury(), newTreasury);
+        assertEq(address(grai.juniorToken()), newJuniorToken);
+        assertEq(address(grai.seniorToken()), address(newSeniorToken));
     }
 
     function test_DeployerCannotUpgrade() public {
@@ -195,7 +213,7 @@ contract GRAIRolesTest is Test {
 
     function test_NonOwnerCannotDriveOpsMultisig() public {
         vm.expectRevert("not owner");
-        _exec(address(opsMultisig), makeAddr("stranger"), address(grai), abi.encodeCall(grai.setTreasury, (makeAddr("t"))));
+        _exec(address(opsMultisig), makeAddr("stranger"), address(grai), abi.encodeCall(grai.setJuniorToken, (makeAddr("jv"))));
     }
 
     function _deployFreshGrai() internal returns (GRAI fresh) {

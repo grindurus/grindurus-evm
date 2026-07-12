@@ -8,7 +8,7 @@ contract GRAITokenTest is GRAIFixture {
     function test_TokenMetadata() public view {
         assertEq(grai.name(), "Grinders Artificial Index");
         assertEq(grai.symbol(), "GRAI");
-        assertEq(grai.decimals(), 18);
+        assertEq(grai.decimals(), 6);
     }
 
     function test_TokenURI() public {
@@ -27,8 +27,8 @@ contract GRAITokenTest is GRAIFixture {
     function test_SweepRecoversStrayERC20() public {
         usdc.mint(address(grai), 10e6);
         vm.prank(admin);
-        grai.sweep(address(usdc), treasury);
+        grai.sweep(address(usdc), juniorToken);
         assertEq(usdc.balanceOf(address(grai)), 0);
-        assertEq(usdc.balanceOf(treasury), 10e6);
+        assertEq(usdc.balanceOf(juniorToken), 10e6);
     }
 }

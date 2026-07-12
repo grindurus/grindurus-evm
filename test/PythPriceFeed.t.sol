@@ -33,7 +33,7 @@ contract PythPriceFeedTest is GRAIFixture {
 
         asset.mint(alice, 1e18);
         uint256 graiOut = _mint(alice, asset, 1e18); // 1 token @ $2000
-        assertEq(graiOut, 2000e18);
+        assertEq(graiOut, 2000e6);
     }
 
     function test_PythFeedHandlesDifferentExpo() public {

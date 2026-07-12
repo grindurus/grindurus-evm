@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAI} from "../src/GRAI.sol";
-import {Treasury} from "../src/Treasury.sol";
+import {JuniorToken} from "../src/JuniorToken.sol";
 import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
@@ -22,12 +22,12 @@ contract DumpGrinderArtTest is Test {
                 )
             )
         );
-        Treasury treasury = Treasury(
+        JuniorToken juniorToken = JuniorToken(
             payable(
                 address(
                     new ERC1967Proxy(
-                        address(new Treasury()),
-                        abi.encodeCall(Treasury.initialize, (admin, address(grai)))
+                        address(new JuniorToken()),
+                        abi.encodeCall(JuniorToken.initialize, (address(grai)))
                     )
                 )
             )
@@ -38,12 +38,12 @@ contract DumpGrinderArtTest is Test {
         CoWCustodian cow = new CoWCustodian();
 
         vm.startPrank(admin);
-        treasury.setCustodyImplementation(cow.custodianKind(), address(cow));
+        juniorToken.setCustodianImplementation(cow.custodianKind(), address(cow));
         for (uint256 i; i < 10; ++i) {
-            treasury.mint(cow.custodianKind(), admin, usdc, weth);
+            juniorToken.mintCustodian(cow.custodianKind(), admin, usdc, weth);
             // forge-lint: disable-next-line(unsafe-cheatcode)
             vm.writeFile(
-                string.concat("out/bull-tokenuri-", vm.toString(i), ".txt"), treasury.tokenURI(i)
+                string.concat("out/bull-tokenuri-", vm.toString(i), ".txt"), juniorToken.tokenURI(i)
             );
         }
         vm.stopPrank();

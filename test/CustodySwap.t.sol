@@ -46,7 +46,6 @@ contract CustodySwapTest is GRAIFixture {
 
     function setUp() public override {
         super.setUp();
-        treasuryNft.setOwner(1, owner);
         router = new MockSwapRouter();
 
         SwapCustodian impl = new SwapCustodian();
@@ -56,13 +55,14 @@ contract CustodySwapTest is GRAIFixture {
                     new ERC1967Proxy(
                         address(impl),
                         abi.encodeCall(
-                            SwapCustodian.initialize, (address(treasuryNft), 1, usdc, weth)
+                            SwapCustodian.initialize, (address(juniorTokenNft), usdc, weth)
                         )
                     )
                 )
             )
         );
-        treasuryNft.setCustodian(address(custodyWallet), 1);
+        juniorTokenNft.setCustodian(address(custodyWallet), 1);
+        juniorTokenNft.setCustodianOwner(address(custodyWallet), owner);
 
         usdc.mint(address(custodyWallet), 100e6);
         weth.mint(address(custodyWallet), 10e18);
