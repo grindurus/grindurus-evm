@@ -7,46 +7,37 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {IGRAI} from "./interfaces/IGRAI.sol";
-import {ITreasury} from "./interfaces/ITreasury.sol";
+import {IJuniorToken} from "./interfaces/IJuniorToken.sol";
 
 /// @title Custodian (base implementation)
 /// @notice Shared junior-capital custody: holds assets and routes principal/yield back to GRAI.
-/// @dev Grinder ownership is the Treasury custodian NFT (`ITreasury.ownerOf(custodianId)`).
-///      GRAI is read from `ITreasury(treasury).grai()`.
+/// @dev Grinder ownership is recorded on JuniorToken (`IJuniorToken.custodianOwners(custodian)`).
+///      GRAI is read from `IJuniorToken(juniorToken).grai()`.
 abstract contract Custodian is Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     error NotOwner(address caller);
-    error TreasuryZero();
+    error JuniorTokenZero();
     error AmountZero();
     error BaseZero();
     error QuoteZero();
     error SameAsset();
     error NonZeroBalance();
-    error EthTransferFailed();
     error FeatureDisabled();
     error FeatureDelay();
-    error GraiZero();
 
     uint48 public constant DISABLE_DELAY = 24 hours;
 
     IERC20 public baseAsset;
     IERC20 public quoteAsset;
-    address public treasury;
-    uint256 public custodianId;
+    address public juniorToken;
     bool public isUpgradeableDisabled;
-    bool public isRescueDisabled;
     uint48 public upgradesDisableScheduledAt;
-    uint48 public rescueDisableScheduledAt;
 
-    event Rescued(address indexed asset, address indexed to, uint256 amount);
     event AssetsUpdated(address indexed baseAsset, address indexed quoteAsset);
     event UpgradesReenableScheduled(uint48 reenableAt);
     event UpgradesDisabled();
     event UpgradesReenabled();
-    event RescueReenableScheduled(uint48 reenableAt);
-    event RescueDisabled();
-    event RescueReenabled();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -60,33 +51,39 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     receive() external payable {}
 
     function initialize(
-        address treasury_,
-        uint256 custodianId_,
+        address juniorToken_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public virtual initializer {
-        __Custodian_init(treasury_, custodianId_, baseAsset_, quoteAsset_);
+        __Custodian_init(juniorToken_, baseAsset_, quoteAsset_);
     }
 
     // forge-lint: disable-next-line(mixed-case-function)
     function __Custodian_init(
-        address treasury_,
-        uint256 custodianId_,
+        address juniorToken_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) internal onlyInitializing {
-        if (treasury_ == address(0)) revert TreasuryZero();
+        if (juniorToken_ == address(0)) revert JuniorTokenZero();
 
         __UUPSUpgradeable_init();
 
-        treasury = treasury_;
-        custodianId = custodianId_;
+        juniorToken = juniorToken_;
         _setTradingAssets(baseAsset_, quoteAsset_);
     }
 
+    function custodianId() public view returns (uint256) {
+        if (juniorToken.code.length == 0) return type(uint256).max;
+        try IJuniorToken(juniorToken).custodianIds(address(this)) returns (uint256 id) {
+            return id;
+        } catch {
+            return type(uint256).max;
+        }
+    }
+
     function grai() public view virtual returns (address) {
-        if (treasury.code.length == 0) return address(0);
-        try ITreasury(treasury).grai() returns (address grai_) {
+        if (juniorToken.code.length == 0) return address(0);
+        try IJuniorToken(juniorToken).grai() returns (address grai_) {
             return grai_;
         } catch {
             return address(0);
@@ -94,18 +91,18 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     }
 
     function owner() public view virtual returns (address) {
-        if (treasury.code.length == 0) return treasury;
-        try ITreasury(treasury).ownerOf(custodianId) returns (address owner_) {
+        if (juniorToken.code.length == 0) return juniorToken;
+        try IJuniorToken(juniorToken).ownerOf(custodianId()) returns (address owner_) {
             return owner_;
         } catch {
-            return treasury;
+            return juniorToken;
         }
     }
 
-    /// @notice Stable identifier for unambiguous custodian routing on Treasury and off-chain backends.
+    /// @notice Stable identifier for unambiguous custodian routing on JuniorToken and off-chain backends.
     /// @dev Returned as `keccak256("grindurus.custodian.<name>")` (optionally `...<name>.v2` for
     ///      incompatible families). The kind is intentionally **not** bumped on every UUPS upgrade:
-    ///      - same kind + `setCustodyImplementation` → new default impl for future `Treasury.mint`
+    ///      - same kind + `setCustodianImplementation` → new default impl for future `JuniorToken.mintCustodian`
     ///      - existing proxies keep their impl until the NFT owner runs `upgradeTo`
     ///      - bump the string only when storage/API breaks (new kind = new registry entry)
     ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
@@ -116,10 +113,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         return IERC20(asset).balanceOf(address(this));
     }
 
-    /// @notice USD NAV of `baseAsset` and `quoteAsset` balances (18 decimals).
+    /// @notice USD NAV of `baseAsset` and `quoteAsset` balances (6 decimals).
     function nav() public view returns (uint256) {
         address grai_ = grai();
-        if (grai_ == address(0)) revert GraiZero();
         return IGRAI(grai_).usdValue(address(baseAsset), balance(address(baseAsset)))
             + IGRAI(grai_).usdValue(address(quoteAsset), balance(address(quoteAsset)));
     }
@@ -134,18 +130,18 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     function deallocate(address asset, uint256 amount) public {
         _onlyOwner();
         if (amount == 0) revert AmountZero();
-        address grai_ = grai();
         if (asset == address(0)) {
-            IGRAI(grai_).deallocate{value: amount}(asset, amount);
+            IJuniorToken(juniorToken).deallocate{value: amount}(asset, amount);
         } else {
-            IERC20(asset).forceApprove(grai_, amount);
-            IGRAI(grai_).deallocate(asset, amount);
+            IERC20(asset).forceApprove(juniorToken, amount);
+            IJuniorToken(juniorToken).deallocate(asset, amount);
         }
     }
 
     function distribute(address asset, uint256 yieldAmount) public {
         _onlyOwner();
         if (yieldAmount == 0) revert AmountZero();
+        IJuniorToken(juniorToken).recordYield(address(this), asset, yieldAmount);
         address grai_ = grai();
         if (asset == address(0)) {
             IGRAI(grai_).distribute{value: yieldAmount}(asset, yieldAmount);
@@ -153,21 +149,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
             IERC20(asset).forceApprove(grai_, yieldAmount);
             IGRAI(grai_).distribute(asset, yieldAmount);
         }
-    }
-
-    /// @notice Rescue assets to treasury without going through GRAI accounting.
-    function rescue(address asset, uint256 amount) public {
-        _onlyOwner();
-        _checkRescue();
-        if (amount == 0) revert AmountZero();
-        address to = treasury;
-        if (asset == address(0)) {
-            (bool ok,) = to.call{value: amount}("");
-            if (!ok) revert EthTransferFailed();
-        } else {
-            IERC20(asset).safeTransfer(to, amount);
-        }
-        emit Rescued(asset, to, amount);
     }
 
     /// @notice Lock UUPS upgrades instantly, or schedule unlock after `DISABLE_DELAY` when already locked.
@@ -190,26 +171,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         emit UpgradesDisabled();
     }
 
-    /// @notice Lock `rescue` instantly, or schedule unlock after `DISABLE_DELAY` when already locked.
-    function toggleRescue() public {
-        _onlyOwner();
-        if (_isFeatureUnlocked(isRescueDisabled, rescueDisableScheduledAt)) {
-            isRescueDisabled = true;
-            rescueDisableScheduledAt = type(uint48).max;
-            emit RescueDisabled();
-            return;
-        }
-        if (isRescueDisabled) {
-            isRescueDisabled = false;
-            rescueDisableScheduledAt = uint48(block.timestamp + DISABLE_DELAY);
-            emit RescueReenableScheduled(rescueDisableScheduledAt);
-            return;
-        }
-        isRescueDisabled = true;
-        rescueDisableScheduledAt = type(uint48).max;
-        emit RescueDisabled();
-    }
-
     function _isFeatureUnlocked(bool isDisabled, uint48 disableScheduledAt) internal view returns (bool) {
         return !isDisabled && block.timestamp > disableScheduledAt;
     }
@@ -221,11 +182,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
         baseAsset = baseAsset_;
         quoteAsset = quoteAsset_;
-    }
-
-    function _checkRescue() internal view {
-        if (isRescueDisabled) revert FeatureDisabled();
-        if (block.timestamp <= rescueDisableScheduledAt) revert FeatureDelay();
     }
 
     function _authorizeUpgrade(address newImplementation) internal view override {

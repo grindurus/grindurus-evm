@@ -83,9 +83,6 @@ library GPv2Order {
 ///   always remain on this contract.
 /// - Principal exits only through `deallocate`; yield through `distribute` — both route via GRAI accounting,
 ///   not to an arbitrary owner wallet.
-/// - Owner **cannot** `rescue` while `isRescueDisabled` is true.
-///   Funds route to treasury, not the NFT holder wallet.
-///   `toggleRescue()` locks instantly; call again while locked to schedule a 24h unlock delay.
 /// - Owner **cannot** `upgradeTo` while `isUpgradeableDisabled` is true or a re-enable delay is pending.
 ///   `toggleUpgradeable()` locks instantly; call again while locked to schedule a 24h unlock delay.
 ///
@@ -111,17 +108,17 @@ contract CoWCustodian is Custodian, IERC1271 {
     );
 
     function initialize(
-        address treasury_,
-        uint256 custodianId_,
+        address juniorToken_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public override initializer {
-        __Custodian_init(treasury_, custodianId_, baseAsset_, quoteAsset_);
+        __Custodian_init(juniorToken_, baseAsset_, quoteAsset_);
         _approveVaultRelayer(baseAsset_, quoteAsset_);
     }
 
     /// @inheritdoc Custodian
     function custodianKind() public pure override returns (bytes32) {
+        // forge-lint: disable-next-line(asm-keccak256)
         return keccak256("grindurus.custodian.cow");
     }
 
