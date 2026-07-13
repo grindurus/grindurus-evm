@@ -7,17 +7,15 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {IGRAI} from "./interfaces/IGRAI.sol";
-import {IJuniorToken} from "./interfaces/IJuniorToken.sol";
 
 /// @title Custodian (base implementation)
 /// @notice Shared junior-capital custody: holds assets and routes principal/yield back to GRAI.
-/// @dev Grinder ownership is recorded on JuniorToken (`IJuniorToken.custodianOwners(custodian)`).
-///      GRAI is read from `IJuniorToken(juniorToken).grai()`.
+/// @dev Grinder ownership is recorded on GRAI (`IGRAI.ownerOf(custodianId)`).
 abstract contract Custodian is Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     error NotOwner(address caller);
-    error JuniorTokenZero();
+    error GraiZero();
     error AmountZero();
     error BaseZero();
     error QuoteZero();
@@ -28,9 +26,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     uint48 public constant DISABLE_DELAY = 24 hours;
 
+    address public grai;
     IERC20 public baseAsset;
     IERC20 public quoteAsset;
-    address public juniorToken;
     bool public isUpgradeableDisabled;
     uint48 public upgradesDisableScheduledAt;
 
@@ -51,58 +49,51 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     receive() external payable {}
 
     function initialize(
-        address juniorToken_,
+        address grai_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public virtual initializer {
-        __Custodian_init(juniorToken_, baseAsset_, quoteAsset_);
+        __Custodian_init(grai_, baseAsset_, quoteAsset_);
     }
 
     // forge-lint: disable-next-line(mixed-case-function)
     function __Custodian_init(
-        address juniorToken_,
+        address grai_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) internal onlyInitializing {
-        if (juniorToken_ == address(0)) revert JuniorTokenZero();
+        if (grai_ == address(0)) revert GraiZero();
 
         __UUPSUpgradeable_init();
 
-        juniorToken = juniorToken_;
+        grai = grai_;
         _setTradingAssets(baseAsset_, quoteAsset_);
     }
 
     function custodianId() public view returns (uint256) {
-        if (juniorToken.code.length == 0) return type(uint256).max;
-        try IJuniorToken(juniorToken).custodianIds(address(this)) returns (uint256 id) {
+        if (grai.code.length == 0) return type(uint256).max;
+        try IGRAI(grai).custodianIds(address(this)) returns (uint256 id) {
             return id;
         } catch {
             return type(uint256).max;
         }
     }
 
-    function grai() public view virtual returns (address) {
-        if (juniorToken.code.length == 0) return address(0);
-        try IJuniorToken(juniorToken).grai() returns (address grai_) {
-            return grai_;
-        } catch {
-            return address(0);
-        }
-    }
-
     function owner() public view virtual returns (address) {
-        if (juniorToken.code.length == 0) return juniorToken;
-        try IJuniorToken(juniorToken).ownerOf(custodianId()) returns (address owner_) {
+        if (grai.code.length == 0) return grai;
+        uint256 id = custodianId();
+        if (id == type(uint256).max) return grai;
+        try IGRAI(grai).ownerOf(id) returns (address owner_) {
             return owner_;
         } catch {
-            return juniorToken;
+            return grai;
         }
     }
 
-    /// @notice Stable identifier for unambiguous custodian routing on JuniorToken and off-chain backends.
+    /// @notice Stable identifier for unambiguous custodian routing on GRAI and off-chain backends.
     /// @dev Returned as `keccak256("grindurus.custodian.<name>")` (optionally `...<name>.v2` for
     ///      incompatible families). The kind is intentionally **not** bumped on every UUPS upgrade:
-    ///      - same kind + `setCustodianImplementation` → new default impl for future `JuniorToken.mintCustodian`
+    ///      - same kind + `setCustodianImplementation` → new default impl for future `GRAI.mint`
     ///      - existing proxies keep their impl until the NFT owner runs `upgradeTo`
     ///      - bump the string only when storage/API breaks (new kind = new registry entry)
     ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
@@ -115,9 +106,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     /// @notice USD NAV of `baseAsset` and `quoteAsset` balances (6 decimals).
     function nav() public view returns (uint256) {
-        address grai_ = grai();
-        return IGRAI(grai_).usdValue(address(baseAsset), balance(address(baseAsset)))
-            + IGRAI(grai_).usdValue(address(quoteAsset), balance(address(quoteAsset)));
+        return IGRAI(grai).usdValue(address(baseAsset), balance(address(baseAsset)))
+            + IGRAI(grai).usdValue(address(quoteAsset), balance(address(quoteAsset)));
     }
 
     function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public virtual {
@@ -131,23 +121,21 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         _onlyOwner();
         if (amount == 0) revert AmountZero();
         if (asset == address(0)) {
-            IJuniorToken(juniorToken).deallocate{value: amount}(asset, amount);
+            IGRAI(grai).deallocate{value: amount}(asset, amount);
         } else {
-            IERC20(asset).forceApprove(juniorToken, amount);
-            IJuniorToken(juniorToken).deallocate(asset, amount);
+            IERC20(asset).forceApprove(grai, amount);
+            IGRAI(grai).deallocate(asset, amount);
         }
     }
 
     function distribute(address asset, uint256 yieldAmount) public {
         _onlyOwner();
         if (yieldAmount == 0) revert AmountZero();
-        IJuniorToken(juniorToken).recordYield(address(this), asset, yieldAmount);
-        address grai_ = grai();
         if (asset == address(0)) {
-            IGRAI(grai_).distribute{value: yieldAmount}(asset, yieldAmount);
+            IGRAI(grai).distribute{value: yieldAmount}(asset, yieldAmount);
         } else {
-            IERC20(asset).forceApprove(grai_, yieldAmount);
-            IGRAI(grai_).distribute(asset, yieldAmount);
+            IERC20(asset).forceApprove(grai, yieldAmount);
+            IGRAI(grai).distribute(asset, yieldAmount);
         }
     }
 

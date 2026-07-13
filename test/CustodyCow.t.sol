@@ -25,14 +25,15 @@ contract CustodyCowTest is GRAIFixture {
                     new ERC1967Proxy(
                         address(impl),
                         abi.encodeCall(
-                            CoWCustodian.initialize, (address(juniorTokenNft), usdc, weth)
+                            CoWCustodian.initialize, (address(grai), usdc, weth)
                         )
                     )
                 )
             )
         );
-        juniorTokenNft.setCustodian(address(custodyWallet), 1);
-        juniorTokenNft.setCustodianOwner(address(custodyWallet), owner);
+        vm.startPrank(admin);
+        grai.register(address(custodyWallet), 1, owner);
+        vm.stopPrank();
     }
 
     function _order(uint32 validTo) internal view returns (GPv2Order.Data memory) {
@@ -57,7 +58,7 @@ contract CustodyCowTest is GRAIFixture {
     }
 
     function test_InitializeApprovesVaultRelayer() public view {
-        assertEq(custodyWallet.juniorToken(), address(juniorTokenNft));
+        assertEq(custodyWallet.grai(), address(grai));
         assertEq(custodyWallet.grai(), address(grai));
         assertEq(custodyWallet.custodianId(), 1);
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);

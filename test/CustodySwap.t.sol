@@ -55,14 +55,15 @@ contract CustodySwapTest is GRAIFixture {
                     new ERC1967Proxy(
                         address(impl),
                         abi.encodeCall(
-                            SwapCustodian.initialize, (address(juniorTokenNft), usdc, weth)
+                            SwapCustodian.initialize, (address(grai), usdc, weth)
                         )
                     )
                 )
             )
         );
-        juniorTokenNft.setCustodian(address(custodyWallet), 1);
-        juniorTokenNft.setCustodianOwner(address(custodyWallet), owner);
+        vm.startPrank(admin);
+        grai.register(address(custodyWallet), 1, owner);
+        vm.stopPrank();
 
         usdc.mint(address(custodyWallet), 100e6);
         weth.mint(address(custodyWallet), 10e18);
