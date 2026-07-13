@@ -6,16 +6,17 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
+import {IGrinders} from "./interfaces/IGrinders.sol";
 import {IGRAI} from "./interfaces/IGRAI.sol";
 
 /// @title Custodian (base implementation)
-/// @notice Shared junior-capital custody: holds assets and routes principal/yield back to GRAI.
-/// @dev Grinder ownership is recorded on GRAI (`IGRAI.ownerOf(custodianId)`).
+/// @notice Shared junior-capital custody: holds assets and routes principal/yield back to Grinders.
+/// @dev Grinder ownership is recorded on Grinders (`IGrinders.ownerOf(custodianId)`).
 abstract contract Custodian is Initializable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     error NotOwner(address caller);
-    error GraiZero();
+    error GrindersZero();
     error AmountZero();
     error BaseZero();
     error QuoteZero();
@@ -26,7 +27,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     uint48 public constant DISABLE_DELAY = 24 hours;
 
-    address public grai;
+    address public grinders;
     IERC20 public baseAsset;
     IERC20 public quoteAsset;
     bool public isUpgradeableDisabled;
@@ -49,30 +50,30 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     receive() external payable {}
 
     function initialize(
-        address grai_,
+        address grinders_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public virtual initializer {
-        __Custodian_init(grai_, baseAsset_, quoteAsset_);
+        __Custodian_init(grinders_, baseAsset_, quoteAsset_);
     }
 
     // forge-lint: disable-next-line(mixed-case-function)
     function __Custodian_init(
-        address grai_,
+        address grinders_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) internal onlyInitializing {
-        if (grai_ == address(0)) revert GraiZero();
+        if (grinders_ == address(0)) revert GrindersZero();
 
         __UUPSUpgradeable_init();
 
-        grai = grai_;
+        grinders = grinders_;
         _setTradingAssets(baseAsset_, quoteAsset_);
     }
 
     function custodianId() public view returns (uint256) {
-        if (grai.code.length == 0) return type(uint256).max;
-        try IGRAI(grai).custodianIds(address(this)) returns (uint256 id) {
+        if (grinders.code.length == 0) return type(uint256).max;
+        try IGrinders(grinders).custodianIds(address(this)) returns (uint256 id) {
             return id;
         } catch {
             return type(uint256).max;
@@ -80,20 +81,20 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     }
 
     function owner() public view virtual returns (address) {
-        if (grai.code.length == 0) return grai;
+        if (grinders.code.length == 0) return grinders;
         uint256 id = custodianId();
-        if (id == type(uint256).max) return grai;
-        try IGRAI(grai).ownerOf(id) returns (address owner_) {
+        if (id == type(uint256).max) return grinders;
+        try IGrinders(grinders).ownerOf(id) returns (address owner_) {
             return owner_;
         } catch {
-            return grai;
+            return grinders;
         }
     }
 
-    /// @notice Stable identifier for unambiguous custodian routing on GRAI and off-chain backends.
+    /// @notice Stable identifier for unambiguous custodian routing on Grinders and off-chain backends.
     /// @dev Returned as `keccak256("grindurus.custodian.<name>")` (optionally `...<name>.v2` for
     ///      incompatible families). The kind is intentionally **not** bumped on every UUPS upgrade:
-    ///      - same kind + `setCustodianImplementation` → new default impl for future `GRAI.mint`
+    ///      - same kind + `setCustodianImplementation` → new default impl for future `Grinders.mint`
     ///      - existing proxies keep their impl until the NFT owner runs `upgradeTo`
     ///      - bump the string only when storage/API breaks (new kind = new registry entry)
     ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
@@ -106,8 +107,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     /// @notice USD NAV of `baseAsset` and `quoteAsset` balances (6 decimals).
     function nav() public view returns (uint256) {
-        return IGRAI(grai).usdValue(address(baseAsset), balance(address(baseAsset)))
-            + IGRAI(grai).usdValue(address(quoteAsset), balance(address(quoteAsset)));
+        IGRAI token = IGrinders(grinders).grai();
+        return token.usdValue(address(baseAsset), balance(address(baseAsset)))
+            + token.usdValue(address(quoteAsset), balance(address(quoteAsset)));
     }
 
     function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public virtual {
@@ -121,10 +123,10 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         _onlyOwner();
         if (amount == 0) revert AmountZero();
         if (asset == address(0)) {
-            IGRAI(grai).deallocate{value: amount}(asset, amount);
+            IGrinders(grinders).deallocate{value: amount}(asset, amount);
         } else {
-            IERC20(asset).forceApprove(grai, amount);
-            IGRAI(grai).deallocate(asset, amount);
+            IERC20(asset).forceApprove(grinders, amount);
+            IGrinders(grinders).deallocate(asset, amount);
         }
     }
 
@@ -132,10 +134,10 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         _onlyOwner();
         if (yieldAmount == 0) revert AmountZero();
         if (asset == address(0)) {
-            IGRAI(grai).distribute{value: yieldAmount}(asset, yieldAmount);
+            IGrinders(grinders).distribute{value: yieldAmount}(asset, yieldAmount);
         } else {
-            IERC20(asset).forceApprove(grai, yieldAmount);
-            IGRAI(grai).distribute(asset, yieldAmount);
+            IERC20(asset).forceApprove(grinders, yieldAmount);
+            IGrinders(grinders).distribute(asset, yieldAmount);
         }
     }
 

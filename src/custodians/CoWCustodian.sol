@@ -108,11 +108,11 @@ contract CoWCustodian is Custodian, IERC1271 {
     );
 
     function initialize(
-        address grai_,
+        address grinders_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public override initializer {
-        __Custodian_init(grai_, baseAsset_, quoteAsset_);
+        __Custodian_init(grinders_, baseAsset_, quoteAsset_);
         _approveVaultRelayer(baseAsset_, quoteAsset_);
     }
 
