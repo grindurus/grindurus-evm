@@ -33,4 +33,6 @@ interface IPriceOracleRouter {
     function setFeed(address asset, Feed calldata feed) external;
 
     function getPrice(address asset) external view returns (uint256 price, uint8 priceDecimals);
+
+    function usdValue(address asset, uint256 amount) external view returns (uint256);
 }
