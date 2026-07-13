@@ -46,11 +46,11 @@ contract SwapCustodian is Custodian {
     }
 
     function initialize(
-        address juniorToken_,
+        address grai_,
         IERC20 baseAsset_,
         IERC20 quoteAsset_
     ) public override initializer {
-        __Custodian_init(juniorToken_, baseAsset_, quoteAsset_);
+        __Custodian_init(grai_, baseAsset_, quoteAsset_);
     }
 
     /// @notice Execute a low-level call to `target` and enforce a post-trade price limit.
