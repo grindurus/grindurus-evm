@@ -10,6 +10,7 @@ interface IPriceOracleRouter {
     error PriceIdZero();
     error FeedDataZero();
     error AssetMismatch();
+    error FeedNotSet();
     error BadCall();
     error BadPrice();
     error RoundIncomplete();

@@ -133,11 +133,13 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     function distribute(address asset, uint256 yieldAmount) public {
         _onlyOwner();
         if (yieldAmount == 0) revert AmountZero();
+
+        IGRAI grai_ = IGrinders(grinders).grai();
         if (asset == address(0)) {
-            IGrinders(grinders).distribute{value: yieldAmount}(asset, yieldAmount);
+            grai_.distribute{value: yieldAmount}(asset, yieldAmount);
         } else {
-            IERC20(asset).forceApprove(grinders, yieldAmount);
-            IGrinders(grinders).distribute(asset, yieldAmount);
+            IERC20(asset).forceApprove(address(grai_), yieldAmount);
+            grai_.distribute(asset, yieldAmount);
         }
     }
 

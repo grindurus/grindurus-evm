@@ -4,15 +4,15 @@ pragma solidity ^0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
+import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
-import {SeniorToken} from "../src/SeniorToken.sol";
-import {JuniorToken} from "../src/JuniorToken.sol";
-import {IGRAI} from "../src/interfaces/IGRAI.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
+import {MockAggregator} from "./mocks/MockAggregator.sol";
 import {MockMultisig} from "./mocks/MockMultisig.sol";
 
-/// @dev ADMIN via grant/revoke; DEFAULT_ADMIN via two-step `transferOwnership`.
+/// @dev GRAI: ADMIN/ORACLE/DEFAULT_ADMIN via AccessControl; Grinders: Ownable owner.
 contract GRAIRolesTest is Test {
     address internal constant DEPLOYER = address(0xA11CE);
     address internal opsOwner = makeAddr("opsOwner");
@@ -20,7 +20,8 @@ contract GRAIRolesTest is Test {
 
     MockMultisig internal opsMultisig;
     MockMultisig internal upgradeMultisig;
-    GRAI internal grai;
+    Grinders internal grai;
+    GRAI internal graiToken;
 
     function setUp() public {
         address[] memory opsOwners = new address[](1);
@@ -31,127 +32,106 @@ contract GRAIRolesTest is Test {
         upgradeOwners[0] = upgradeOwner;
         upgradeMultisig = new MockMultisig(upgradeOwners, 1);
 
-        GRAI impl = new GRAI();
-        grai = GRAI(
+        GRAI tokenImpl = new GRAI();
+        graiToken = GRAI(
             payable(
                 address(
-                    new ERC1967Proxy(address(impl), abi.encodeCall(GRAI.initialize, (DEPLOYER)))
+                    new ERC1967Proxy(address(tokenImpl), abi.encodeCall(GRAI.initialize, (DEPLOYER)))
                 )
             )
         );
 
-        bytes32 adminRole = grai.ADMIN_ROLE();
+        Grinders impl = new Grinders();
+        grai = Grinders(
+            payable(
+                address(
+                    new ERC1967Proxy(
+                        address(impl), abi.encodeCall(Grinders.initialize, (DEPLOYER, address(graiToken)))
+                    )
+                )
+            )
+        );
+
+        bytes32 adminRole = graiToken.ADMIN_ROLE();
+        bytes32 defaultAdminRole = graiToken.DEFAULT_ADMIN_ROLE();
 
         vm.startPrank(DEPLOYER);
-        grai.grantRole(adminRole, address(opsMultisig));
-        grai.revokeRole(adminRole, DEPLOYER);
+        graiToken.toggleGrinders(address(grai));
+        graiToken.grantRole(adminRole, address(opsMultisig));
+        graiToken.revokeRole(adminRole, DEPLOYER);
+        graiToken.grantRole(defaultAdminRole, address(upgradeMultisig));
+        graiToken.revokeRole(defaultAdminRole, DEPLOYER);
         grai.transferOwnership(address(upgradeMultisig));
         vm.stopPrank();
-
-        _exec(
-            address(upgradeMultisig),
-            upgradeOwner,
-            address(grai),
-            abi.encodeCall(grai.transferOwnership, (address(upgradeMultisig)))
-        );
     }
 
-    function test_OwnershipRequiresAccept() public {
-        GRAI fresh = _deployFreshGrai();
+    function test_OwnershipTransferIsImmediate() public {
+        Grinders fresh = _deployFreshGrinders();
+
+        assertEq(fresh.owner(), DEPLOYER);
 
         vm.prank(DEPLOYER);
         fresh.transferOwnership(address(upgradeMultisig));
 
-        assertFalse(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), address(upgradeMultisig)));
-        assertEq(fresh.pendingOwner(), address(upgradeMultisig));
-
-        _exec(
-            address(upgradeMultisig),
-            upgradeOwner,
-            address(fresh),
-            abi.encodeCall(fresh.transferOwnership, (address(upgradeMultisig)))
-        );
-
-        assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), address(upgradeMultisig)));
-        assertEq(fresh.pendingOwner(), address(0));
-    }
-
-    function test_OwnershipTransferIsExclusiveOnAccept() public {
-        bytes32 defaultAdminRole = grai.DEFAULT_ADMIN_ROLE();
-        GRAI fresh = _deployFreshGrai();
-
-        assertTrue(fresh.hasRole(defaultAdminRole, DEPLOYER));
-
-        vm.prank(DEPLOYER);
-        fresh.transferOwnership(address(upgradeMultisig));
-
-        _exec(
-            address(upgradeMultisig),
-            upgradeOwner,
-            address(fresh),
-            abi.encodeCall(fresh.transferOwnership, (address(upgradeMultisig)))
-        );
-
-        assertTrue(fresh.hasRole(defaultAdminRole, address(upgradeMultisig)));
-        assertFalse(fresh.hasRole(defaultAdminRole, DEPLOYER));
+        assertEq(fresh.owner(), address(upgradeMultisig));
     }
 
     function test_RoleSplitMatchesReadme() public view {
-        assertFalse(grai.hasRole(grai.ADMIN_ROLE(), DEPLOYER));
-        assertTrue(grai.hasRole(grai.ADMIN_ROLE(), address(opsMultisig)));
-        assertFalse(grai.hasRole(grai.DEFAULT_ADMIN_ROLE(), DEPLOYER));
-        assertTrue(grai.hasRole(grai.DEFAULT_ADMIN_ROLE(), address(upgradeMultisig)));
-        assertTrue(grai.hasRole(grai.ORACLE_ROLE(), DEPLOYER));
+        assertFalse(graiToken.hasRole(graiToken.ADMIN_ROLE(), DEPLOYER));
+        assertTrue(graiToken.hasRole(graiToken.ADMIN_ROLE(), address(opsMultisig)));
+        assertFalse(graiToken.hasRole(graiToken.DEFAULT_ADMIN_ROLE(), DEPLOYER));
+        assertTrue(graiToken.hasRole(graiToken.DEFAULT_ADMIN_ROLE(), address(upgradeMultisig)));
+        assertTrue(graiToken.hasRole(graiToken.ORACLE_ROLE(), DEPLOYER));
+        assertEq(grai.owner(), address(upgradeMultisig));
     }
 
     function test_DeployerCannotCallAdminFunctions() public {
-        bytes32 defaultAdminRole = grai.DEFAULT_ADMIN_ROLE();
+        bytes32 adminRole = graiToken.ADMIN_ROLE();
 
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, DEPLOYER, defaultAdminRole)
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, DEPLOYER, adminRole)
         );
         vm.prank(DEPLOYER);
-        grai.setJuniorToken(makeAddr("juniorToken"));
+        graiToken.setPaused(address(0), true);
     }
 
     function test_OpsMultisigCanCallAdminFunctions() public {
-        address newJuniorToken = address(
-            new ERC1967Proxy(
-                address(new JuniorToken()),
-                abi.encodeCall(JuniorToken.initialize, (address(grai)))
-            )
+        address asset = makeAddr("opsAsset");
+        MockAggregator feed = new MockAggregator(8, 1e8);
+        vm.prank(DEPLOYER);
+        graiToken.setFeed(
+            asset,
+            IPriceOracleRouter.Feed({
+                feedType: 2,
+                asset: asset,
+                source: address(feed),
+                data: bytes32(0),
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: 1 hours
+            })
         );
-        SeniorToken tokenImpl = new SeniorToken();
-        SeniorToken newSeniorToken = SeniorToken(
-            payable(
-                address(
-                    new ERC1967Proxy(address(tokenImpl), abi.encodeCall(SeniorToken.initialize, (address(grai))))
-                )
-            )
+        _exec(
+            address(opsMultisig),
+            opsOwner,
+            address(graiToken),
+            abi.encodeCall(graiToken.addAsset, (asset, 8_000))
         );
-
-        _exec(address(upgradeMultisig), upgradeOwner, address(grai), abi.encodeCall(grai.setJuniorToken, (newJuniorToken)));
-        _exec(address(upgradeMultisig), upgradeOwner, address(grai), abi.encodeCall(grai.setSeniorToken, (address(newSeniorToken))));
-
-        assertEq(address(grai.juniorToken()), newJuniorToken);
-        assertEq(address(grai.seniorToken()), address(newSeniorToken));
+        (bool exists,,) = graiToken.assets(asset);
+        assertTrue(exists);
     }
 
-    function test_DeployerCannotUpgrade() public {
-        GRAI newImpl = new GRAI();
-        bytes32 defaultAdminRole = grai.DEFAULT_ADMIN_ROLE();
+    function test_DeployerCannotUpgradeGrinders() public {
+        Grinders newImpl = new Grinders();
 
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, DEPLOYER, defaultAdminRole
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, DEPLOYER));
         vm.prank(DEPLOYER);
         grai.upgradeToAndCall(address(newImpl), "");
     }
 
-    function test_UpgradeMultisigCanUpgrade() public {
-        GRAI newImpl = new GRAI();
+    function test_UpgradeMultisigCanUpgradeGrinders() public {
+        Grinders newImpl = new Grinders();
 
         _exec(
             address(upgradeMultisig),
@@ -163,23 +143,36 @@ contract GRAIRolesTest is Test {
         assertEq(_implementation(address(grai)), address(newImpl));
     }
 
-    function test_UpgradeMultisigControlsAdminRole() public {
-        address newOps = makeAddr("newOps");
-        bytes32 adminRole = grai.ADMIN_ROLE();
+    function test_UpgradeMultisigCanUpgradeGraiToken() public {
+        GRAI newImpl = new GRAI();
 
         _exec(
             address(upgradeMultisig),
             upgradeOwner,
-            address(grai),
-            abi.encodeCall(grai.grantRole, (adminRole, newOps))
+            address(graiToken),
+            abi.encodeCall(graiToken.upgradeToAndCall, (address(newImpl), ""))
         );
 
-        assertTrue(grai.hasRole(adminRole, newOps));
+        assertEq(_implementation(address(graiToken)), address(newImpl));
+    }
+
+    function test_UpgradeMultisigControlsAdminRole() public {
+        address newOps = makeAddr("newOps");
+        bytes32 adminRole = graiToken.ADMIN_ROLE();
+
+        _exec(
+            address(upgradeMultisig),
+            upgradeOwner,
+            address(graiToken),
+            abi.encodeCall(graiToken.grantRole, (adminRole, newOps))
+        );
+
+        assertTrue(graiToken.hasRole(adminRole, newOps));
     }
 
     function test_DeployerCannotGrantRoles() public {
-        bytes32 adminRole = grai.ADMIN_ROLE();
-        bytes32 defaultAdminRole = grai.DEFAULT_ADMIN_ROLE();
+        bytes32 adminRole = graiToken.ADMIN_ROLE();
+        bytes32 defaultAdminRole = graiToken.DEFAULT_ADMIN_ROLE();
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -187,41 +180,34 @@ contract GRAIRolesTest is Test {
             )
         );
         vm.prank(DEPLOYER);
-        grai.grantRole(adminRole, makeAddr("intruder"));
+        graiToken.grantRole(adminRole, makeAddr("intruder"));
     }
 
-    function test_StrangerCannotAcceptOwnership() public {
-        GRAI fresh = _deployFreshGrai();
+    function test_StrangerCannotTransferOwnership() public {
+        Grinders fresh = _deployFreshGrinders();
 
-        vm.prank(DEPLOYER);
-        fresh.transferOwnership(address(upgradeMultisig));
-
-        vm.expectRevert(IGRAI.NotCurrentOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("stranger")));
         vm.prank(makeAddr("stranger"));
-        fresh.transferOwnership(address(upgradeMultisig));
-    }
-
-    function test_PendingOwnershipBlocksSecondOffer() public {
-        GRAI fresh = _deployFreshGrai();
-
-        vm.startPrank(DEPLOYER);
-        fresh.transferOwnership(address(upgradeMultisig));
-        vm.expectRevert(IGRAI.OwnershipOfferPending.selector);
         fresh.transferOwnership(makeAddr("other"));
-        vm.stopPrank();
     }
 
     function test_NonOwnerCannotDriveOpsMultisig() public {
         vm.expectRevert("not owner");
-        _exec(address(opsMultisig), makeAddr("stranger"), address(grai), abi.encodeCall(grai.setJuniorToken, (makeAddr("jv"))));
+        _exec(address(opsMultisig), makeAddr("stranger"), address(graiToken), abi.encodeCall(graiToken.setPaused, (address(0), true)));
     }
 
-    function _deployFreshGrai() internal returns (GRAI fresh) {
-        GRAI impl = new GRAI();
-        fresh = GRAI(
+    function _deployFreshGrinders() internal returns (Grinders fresh) {
+        GRAI tokenImpl = new GRAI();
+        address graiTokenAddr = address(
+            new ERC1967Proxy(address(tokenImpl), abi.encodeCall(GRAI.initialize, (DEPLOYER)))
+        );
+        Grinders impl = new Grinders();
+        fresh = Grinders(
             payable(
                 address(
-                    new ERC1967Proxy(address(impl), abi.encodeCall(GRAI.initialize, (DEPLOYER)))
+                    new ERC1967Proxy(
+                        address(impl), abi.encodeCall(Grinders.initialize, (DEPLOYER, graiTokenAddr))
+                    )
                 )
             )
         );

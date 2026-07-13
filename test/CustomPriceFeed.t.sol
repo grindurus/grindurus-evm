@@ -13,7 +13,7 @@ contract CustomPriceFeedTest is GRAIFixture {
         custom.setPrice(address(mock), 5e8, 8);
 
         vm.prank(admin);
-        grai.setFeed(
+        graiToken.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
                 feedType: 1,
@@ -27,7 +27,7 @@ contract CustomPriceFeedTest is GRAIFixture {
             })
         );
 
-        (uint256 price, uint8 dec) = grai.getPrice(address(mock));
+        (uint256 price, uint8 dec) = graiToken.getPrice(address(mock));
         assertEq(price, 5e8);
         assertEq(dec, 8);
     }
@@ -38,7 +38,7 @@ contract CustomPriceFeedTest is GRAIFixture {
         custom.setPrice(address(mock), 5e8, 8);
 
         vm.prank(admin);
-        grai.setFeed(
+        graiToken.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
                 feedType: 1,
@@ -54,14 +54,14 @@ contract CustomPriceFeedTest is GRAIFixture {
 
         vm.warp(block.timestamp + DEFAULT_MAX_STALENESS + 1);
         vm.expectRevert(IPriceOracleRouter.StalePrice.selector);
-        grai.getPrice(address(mock));
+        graiToken.getPrice(address(mock));
     }
 
     function test_CustomPriceFeedBadCallReverts() public {
         MockERC20 mock = new MockERC20("Mock", "MOCK", 18);
 
         vm.prank(admin);
-        grai.setFeed(
+        graiToken.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
                 feedType: 1,
@@ -76,6 +76,6 @@ contract CustomPriceFeedTest is GRAIFixture {
         );
 
         vm.expectRevert(IPriceOracleRouter.BadCall.selector);
-        grai.getPrice(address(mock));
+        graiToken.getPrice(address(mock));
     }
 }

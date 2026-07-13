@@ -6,29 +6,26 @@ import {IGRAI} from "../src/interfaces/IGRAI.sol";
 
 contract GRAITokenTest is GRAIFixture {
     function test_TokenMetadata() public view {
-        assertEq(grai.name(), "Grinders Artificial Index");
-        assertEq(grai.symbol(), "GRAI");
-        assertEq(grai.decimals(), 6);
+        assertEq(grai.name(), "Grinders Custodians");
+        assertEq(grai.symbol(), "GRINDERS");
     }
 
-    function test_TokenURI() public {
-        string memory uri = "https://example.com/grai.json";
-        vm.prank(admin);
-        grai.setTokenURI(uri);
-        assertEq(grai.tokenURI(), uri);
+    function test_TokenURI() public view {
+        assertEq(graiToken.tokenURI(), "https://grindurus.xyz/metadata.json");
     }
 
     function test_MintRequiresRegisteredAsset() public {
+        address unknown = makeAddr("unknownAsset");
         vm.expectRevert(IGRAI.AssetUnknown.selector);
         vm.prank(alice);
-        grai.mint(alice, 1e18);
+        graiToken.deposit(unknown, 1e18);
     }
 
     function test_SweepRecoversStrayERC20() public {
         usdc.mint(address(grai), 10e6);
         vm.prank(admin);
-        grai.sweep(address(usdc), juniorToken);
+        grai.sweep(address(usdc));
         assertEq(usdc.balanceOf(address(grai)), 0);
-        assertEq(usdc.balanceOf(juniorToken), 10e6);
+        assertEq(usdc.balanceOf(admin), 10e6);
     }
 }

@@ -15,8 +15,6 @@ contract DeployCreate2Test is Test {
 
         assertEq(first.graiImpl, second.graiImpl);
         assertEq(first.graiProxy, second.graiProxy);
-        assertEq(first.juniorTokenImpl, second.juniorTokenImpl);
-        assertEq(first.juniorTokenProxy, second.juniorTokenProxy);
     }
 
     function test_SaltTagChangesAddresses() public {
@@ -24,15 +22,13 @@ contract DeployCreate2Test is Test {
         DeployPlanLib.Plan memory v2 = DeployPlanLib.build(ADMIN, "v2");
 
         assertTrue(v1.graiProxy != v2.graiProxy);
-        assertTrue(v1.juniorTokenProxy != v2.juniorTokenProxy);
     }
 
-    function test_CoupledProxiesReferenceEachOther() public {
+    function test_GraiProxyIsNonZero() public {
         DeployPlanLib.Plan memory plan = DeployPlanLib.build(ADMIN, "v1");
 
         assertTrue(plan.graiProxy != address(0));
-        assertTrue(plan.juniorTokenProxy != address(0));
-        assertTrue(plan.graiProxy != plan.juniorTokenProxy);
+        assertTrue(plan.graiImpl != address(0));
     }
 
     function test_Create2FactoryMatchesOpenZeppelin() public pure {
