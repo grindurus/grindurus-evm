@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {IPriceOracleRouter} from "./interfaces/IPriceOracleRouter.sol";
 import {IPyth, PythStructs} from "./interfaces/IPyth.sol";
@@ -12,6 +13,8 @@ import {IPyth, PythStructs} from "./interfaces/IPyth.sol";
 ///      `2` Chainlink (`source` = aggregator), `3` Pyth (`source` = Pyth contract, `data` = price id).
 ///      Custom feed call shape is documented on `_custom`.
 contract PriceOracleRouter is IPriceOracleRouter {
+    uint8 public constant USD_DECIMALS = 6;
+
     uint8 internal constant FEED_NONE = 0;
     uint8 internal constant FEED_CUSTOM = 1;
     uint8 internal constant FEED_CHAINLINK = 2;
@@ -39,6 +42,13 @@ contract PriceOracleRouter is IPriceOracleRouter {
         if (feedType == FEED_CHAINLINK) return _chainlink(f);
         if (feedType == FEED_PYTH) return _pyth(f);
         revert UnknownFeedType();
+    }
+
+    function usdValue(address asset, uint256 amount) public view returns (uint256) {
+        if (amount == 0) return 0;
+        (uint256 price, uint8 pdec) = getPrice(asset);
+        uint8 adec = asset == address(0) ? 18 : IERC20Metadata(asset).decimals();
+        return (amount * price * (10 ** USD_DECIMALS)) / (10 ** adec) / (10 ** pdec);
     }
 
     /// @dev Custom feed: staticcall to `source` with selector `bytes4(data)` and `asset` as the only argument.
