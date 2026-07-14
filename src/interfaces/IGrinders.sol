@@ -53,7 +53,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function custodianIds(address custodian) external view returns (uint256);
     function allocated(address custodian, address asset) external view returns (uint256);
     function active(address asset) external view returns (uint256);
-    function yieldBy(address custodian, address asset) external view returns (uint256);
 
     function isCustodian(address custodian) external view returns (bool);
 
@@ -65,7 +64,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function mint(bytes32 custodianKind, address owner_, IERC20 baseAsset_, IERC20 quoteAsset_)
         external
         returns (address custodian);
-    function register(address custodian, uint256 custodianId, address owner_) external;
+    function register(address custodian, address owner_) external;
     function allocate(address custodian, address asset, uint256 amount) external;
     function deallocate(address asset, uint256 amount) external payable;
 }

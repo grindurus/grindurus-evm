@@ -36,11 +36,10 @@ contract Grinders is
     mapping(uint256 custodianId => address) public custodians;
     mapping(address custodian => uint256) public custodianIds;
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
-    mapping(address custodian => mapping(address asset => uint256)) public yieldBy;
     mapping(address asset => uint256) public active;
 
     /// @dev Storage gap for future upgrades.
-    uint256[40] private _gap;
+    uint256[41] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -79,27 +78,23 @@ contract Grinders is
         if (amount == 0) revert AmountZero();
         if (balance(asset) < amount) revert InsufficientReserve();
 
-        allocated[custodian][asset] += amount;
-        active[asset] += amount;
         if (asset == address(0)) {
             (bool ok,) = custodian.call{value: amount}("");
             if (!ok) revert EthTransferFailed();
         } else {
             IERC20(asset).safeTransfer(custodian, amount);
         }
+
+        allocated[custodian][asset] += amount;
+        active[asset] += amount;
+
         emit Allocate(asset, custodian, amount);
     }
 
     function deallocate(address asset, uint256 amount) external payable {
-        _onlyCustodian(msg.sender);
         address custodian = msg.sender;
+        _onlyCustodian(custodian);
         if (amount == 0) revert AmountZero();
-
-        uint256 prev = allocated[custodian][asset];
-        allocated[custodian][asset] = prev > amount ? prev - amount : 0;
-
-        uint256 prevActive = active[asset];
-        active[asset] = prevActive > amount ? prevActive - amount : 0;
 
         if (asset == address(0)) {
             if (msg.value != amount) revert ValueMismatch();
@@ -107,6 +102,12 @@ contract Grinders is
             if (msg.value != 0) revert UnexpectedValue();
             IERC20(asset).safeTransferFrom(custodian, address(this), amount);
         }
+
+        uint256 prevAllocated = allocated[custodian][asset];
+        allocated[custodian][asset] = prevAllocated > amount ? prevAllocated - amount : 0;
+
+        uint256 prevActive = active[asset];
+        active[asset] = prevActive > amount ? prevActive - amount : 0;
 
         emit Deallocate(asset, custodian, amount);
     }
@@ -148,9 +149,11 @@ contract Grinders is
     }
 
     /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
-    function register(address custodian, uint256 custodianId, address owner_) external onlyOwner {
+    function register(address custodian, address owner_) external onlyOwner {
         if (custodian == address(0)) revert CustodianZero();
         if (owner_ == address(0)) revert OwnerZero();
+        uint256 custodianId = totalSupply();
+
         if (custodians[custodianId] != address(0)) revert CustodianAlreadyRegistered(custodianId);
 
         custodians[custodianId] = custodian;
@@ -194,6 +197,7 @@ contract Grinders is
     }
 
     function isCustodian(address custodian) public view returns (bool) {
+        if (custodian == address(0)) return false;
         return custodians[custodianIds[custodian]] == custodian;
     }
 
