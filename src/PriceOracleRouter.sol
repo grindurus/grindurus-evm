@@ -83,16 +83,14 @@ contract PriceOracleRouter is IPriceOracleRouter {
         uint256 updatedAt;
         (price, priceDecimals, updatedAt) = abi.decode(ret, (uint256, uint8, uint256));
         if (price == 0) revert BadPrice();
-        if (updatedAt == 0) revert RoundIncomplete();
-        if (block.timestamp - updatedAt > f.maxStaleness) revert StalePrice();
+        _requireFresh(updatedAt, f.maxStaleness);
     }
 
     function _chainlink(Feed storage f) internal view returns (uint256 price, uint8 priceDecimals) {
         AggregatorV3Interface agg = AggregatorV3Interface(f.source);
         (, int256 answer,, uint256 updatedAt,) = agg.latestRoundData();
         if (answer <= 0) revert BadPrice();
-        if (updatedAt == 0) revert RoundIncomplete();
-        if (block.timestamp - updatedAt > f.maxStaleness) revert StalePrice();
+        _requireFresh(updatedAt, f.maxStaleness);
         // forge-lint: disable-next-line(unsafe-typecast)
         return (uint256(answer), agg.decimals());
     }
@@ -105,8 +103,12 @@ contract PriceOracleRouter is IPriceOracleRouter {
         if (decimals > 18) revert ExpoTooLarge();
         // forge-lint: disable-next-line(unsafe-typecast)
         priceDecimals = uint8(decimals);
-        if (p.publishTime == 0) revert RoundIncomplete();
-        if (block.timestamp - p.publishTime > f.maxStaleness) revert StalePrice();
+        _requireFresh(p.publishTime, f.maxStaleness);
         return (uint256(int256(p.price)), priceDecimals);
+    }
+
+    function _requireFresh(uint256 updatedAt, uint256 maxStaleness) internal view {
+        if (updatedAt == 0) revert RoundIncomplete();
+        if (updatedAt > block.timestamp || block.timestamp - updatedAt > maxStaleness) revert StalePrice();
     }
 }

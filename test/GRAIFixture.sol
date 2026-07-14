@@ -8,6 +8,7 @@ import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
@@ -111,10 +112,18 @@ abstract contract GRAIFixture is Test {
         });
     }
 
-    function _auctionExit(address user, address asset, uint256 amount) internal {
-        vm.startPrank(user);
-        uint256 auctionId = graiToken.place(asset, amount);
-        graiToken.bid(auctionId);
+    function _auctionExit(address seller, address bidder, address asset, uint256 graiAmount, uint256 payment)
+        internal
+    {
+        vm.prank(seller);
+        uint256 auctionId = graiToken.ask(asset, payment, payment, 1 days, graiAmount);
+        vm.startPrank(bidder);
+        if (asset != address(0)) {
+            IERC20(asset).approve(address(graiToken), payment);
+            graiToken.bid(auctionId, graiAmount);
+        } else {
+            graiToken.bid{value: payment}(auctionId, graiAmount);
+        }
         vm.stopPrank();
     }
 

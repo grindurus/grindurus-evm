@@ -2,7 +2,6 @@
 pragma solidity ^0.8.30;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import {AccessControlEnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
@@ -20,8 +19,8 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     using SafeERC20 for IERC20;
 
     uint16 internal constant BPS = 100_00;
-    uint16 public constant AUCTION_DISCOUNT_BPS = 500;
-    uint256 public constant AUCTION_DURATION = 1 days;
+    /// @notice Harberger tax rate on listed GRAI, annualized (1% / year).
+    uint16 public constant HARBERGER_BPS = 100;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
@@ -37,9 +36,11 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     uint256 public totalValue;
     mapping(address asset => uint256) public taken;
     mapping(uint256 auctionId => AuctionLot) public auctions;
+    /// @notice Active auction ids (moderated on ask / full fill / seller reclaim).
+    uint256[] public auctionIds;
 
     /// @dev Storage gap for future upgrades.
-    uint256[33] private _gap;
+    uint256[32] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -69,6 +70,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
             _revokeRole(GRINDERS_ROLE, grinders);
             emit GrindersUpdate(grinders, false);
         } else {
+            if (address(IGrinders(grinders).grai()) != address(this)) revert GrindersGraiMismatch();
             _grantRole(GRINDERS_ROLE, grinders);
             emit GrindersUpdate(grinders, true);
         }
@@ -143,11 +145,6 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     function removeAsset(address asset, uint256 hintId) external onlyRole(ADMIN_ROLE) {
         if (!assets[asset].exists) revert AssetUnknown();
         if (!assets[asset].pausedMinting) revert NotPaused();
-
-        uint256 sBal = balance(asset);
-        if (sBal > 0) {
-            _withdrawAsset(asset, msg.sender, sBal);
-        }
 
         uint256 len = assetList.length;
         if (hintId >= len) revert BadHint();
@@ -243,15 +240,11 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     function redeem(uint256 graiAmount) public {
         if (graiAmount == 0) revert AmountZero();
         if (graiAmount > balanceOf(msg.sender)) revert AmountExceedsSupply();
-        if (!_isValidRedeemNavAmount(graiAmount)) revert InvalidRedeemAmount();
+        if (graiAmount > maxRedeem()) revert InvalidRedeemAmount();
         if (totalSupply() == 0) revert NoSupply();
 
         uint256 supply = totalSupply();
         uint256 valueOut = (graiAmount * totalValue) / supply;
-
-        _burn(msg.sender, graiAmount);
-        totalValue -= valueOut;
-        emit GraiBurn(msg.sender, graiAmount, valueOut);
 
         uint256 len = assetList.length;
         for (uint256 i; i < len; ++i) {
@@ -262,101 +255,112 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
             if (redeemAmount == 0) continue;
             _withdrawAsset(asset, msg.sender, redeemAmount);
         }
+
+        _burn(msg.sender, graiAmount);
+        totalValue -= valueOut;
+        emit Burn(msg.sender, graiAmount, valueOut);
     }
 
-    function place(address asset, uint256 graiAmount) public returns (uint256 auctionId) {
-        if (!assets[asset].exists) revert AssetUnknown();
-        if (graiAmount == 0) revert AmountZero();
-        if (graiAmount > balanceOf(msg.sender)) revert AmountExceedsSupply();
-        if (!_isValidAuctionAmount(graiAmount)) revert InvalidRedeemAmount();
-        if (totalSupply() == 0) revert NoSupply();
+    function ask(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
+        public
+        returns (uint256 auctionId)
+    {
+        if (graiAmount == 0 || maxPayment == 0) revert AmountZero();
+        if (duration == 0) revert DurationZero();
+        if (minPayment > maxPayment) revert MinAboveMax();
 
-        _transfer(msg.sender, address(this), graiAmount);
+        uint256 taxGrai = harbergerTax(graiAmount, duration);
+        if (graiAmount + taxGrai > balanceOf(msg.sender)) revert AmountExceedsSupply();
+
+        if (taxGrai > 0) _transfer(msg.sender, treasury, taxGrai);
 
         auctionId = ++nextAuctionId;
-        uint256 startPrice = mintPrice();
         auctions[auctionId] = AuctionLot({
             seller: msg.sender,
             asset: asset,
-            graiAmount: graiAmount,
+            graiRemaining: graiAmount,
+            graiInitial: graiAmount,
+            maxPayment: maxPayment,
+            minPayment: minPayment,
             startTime: block.timestamp,
-            startPrice: startPrice,
-            settled: false
+            duration: duration,
+            listIndex: auctionIds.length
         });
+        auctionIds.push(auctionId);
 
-        emit AuctionStarted(auctionId, msg.sender, asset, graiAmount, startPrice);
+        emit Ask(auctionId, msg.sender, asset, graiAmount, maxPayment, minPayment, duration, taxGrai);
     }
 
-    function bid(uint256 auctionId) public {
+    function bid(uint256 auctionId, uint256 graiAmount) public payable {
         AuctionLot storage entry = auctions[auctionId];
         if (entry.seller == address(0)) revert AuctionNotFound();
-        if (entry.settled) revert AuctionAlreadySettled();
+
+        // After listing duration, seller cancels residual lot with `bid(id, 0)`.
+        if (graiAmount == 0) {
+            if (block.timestamp < entry.startTime + entry.duration) revert AuctionNotExpired();
+            if (msg.sender != entry.seller) revert NotSeller();
+            if (msg.value != 0) revert UnexpectedValue();
+
+            uint256 residual = entry.graiRemaining;
+            address seller_ = entry.seller;
+            _removeAuction(auctionId);
+            emit Unplace(auctionId, seller_, residual);
+            return;
+        }
+
+        if (graiAmount == type(uint256).max) graiAmount = entry.graiRemaining;
+        if (graiAmount > entry.graiRemaining) revert InvalidBidAmount();
+
+        uint256 payment = (auctionPrice(auctionId) * graiAmount) / entry.graiInitial;
+        if (payment == 0) revert AmountZero();
 
         address seller = entry.seller;
         address asset = entry.asset;
-        uint256 graiAmount = entry.graiAmount;
-        uint256 fillPrice = auctionPrice(auctionId);
 
-        entry.settled = true;
+        if (asset == address(0)) {
+            if (msg.value != payment) revert ValueMismatch();
+            (bool ok,) = seller.call{value: payment}("");
+            if (!ok) revert EthTransferFailed();
+        } else {
+            if (msg.value != 0) revert UnexpectedValue();
+            IERC20(asset).safeTransferFrom(msg.sender, seller, payment);
+        }
 
-        uint256 supply = totalSupply();
-        if (supply == 0) revert NoSupply();
+        if (graiAmount > balanceOf(seller)) revert AmountExceedsSupply();
 
-        uint256 valueOut = (graiAmount * fillPrice) / (10 ** decimals());
-        uint256 payoutAmount = _assetAmount(asset, valueOut);
-        if (payoutAmount == 0) revert AmountZero();
-        if (balance(asset) < payoutAmount) revert InsufficientLiquidity();
+        uint256 remaining = entry.graiRemaining - graiAmount;
+        if (remaining == 0) {
+            _removeAuction(auctionId);
+        } else {
+            entry.graiRemaining = remaining;
+        }
 
-        _withdrawAsset(asset, seller, payoutAmount);
-        _burn(address(this), graiAmount);
-        totalValue -= valueOut;
-        emit GraiBurn(seller, graiAmount, valueOut);
-        emit AuctionSettled(auctionId, seller, asset, graiAmount, fillPrice);
+        _transfer(seller, msg.sender, graiAmount);
+        emit Bid(auctionId, msg.sender, seller, asset, graiAmount, payment, remaining);
     }
 
     /// @inheritdoc IGRAI
+    /// @dev Dutch ask for the full initial lot: maxPayment → minPayment over `duration`.
     function auctionPrice(uint256 auctionId) public view returns (uint256) {
         AuctionLot storage entry = auctions[auctionId];
         if (entry.seller == address(0)) revert AuctionNotFound();
 
-        uint256 startPrice = entry.startPrice;
-        uint256 floorPrice = (startPrice * (BPS - AUCTION_DISCOUNT_BPS)) / BPS;
+        uint256 maxPayment = entry.maxPayment;
+        uint256 minPayment = entry.minPayment;
         uint256 elapsed = block.timestamp - entry.startTime;
-        if (elapsed >= AUCTION_DURATION) return floorPrice;
-        return startPrice - ((startPrice - floorPrice) * elapsed) / AUCTION_DURATION;
+        if (elapsed >= entry.duration) return minPayment;
+        return maxPayment - ((maxPayment - minPayment) * elapsed) / entry.duration;
+    }
+
+    /// @inheritdoc IGRAI
+    /// @dev Prepaid Harberger tax in GRAI for listing `graiAmount` over `duration` at `HARBERGER_BPS` / year.
+    function harbergerTax(uint256 graiAmount, uint256 duration) public pure returns (uint256) {
+        return (graiAmount * HARBERGER_BPS * duration) / (uint256(BPS) * 365 days);
     }
 
     function withdraw(address asset, address to, uint256 amount) public onlyRole(GRINDERS_ROLE) {
         taken[asset] += amount;
         _withdrawAsset(asset, to, amount);
-    }
-
-    function _isValidRedeemNavAmount(uint256 graiAmount) internal view returns (bool) {
-        if (graiAmount == 0) return false;
-
-        uint256 supply = totalSupply();
-        if (supply == 0) return false;
-
-        uint256 nav = totalNAV();
-        uint256 required = (graiAmount * mintPrice()) / (10 ** decimals());
-        return nav >= required;
-    }
-
-    function _isValidAuctionAmount(uint256 graiAmount) internal view returns (bool) {
-        if (graiAmount == 0) return false;
-
-        uint256 supply = totalSupply();
-        if (supply == 0) return false;
-
-        uint256 value = totalValue;
-        return graiAmount * value / supply > 0;
-    }
-
-    function _assetAmount(address asset, uint256 value) internal view returns (uint256 amount) {
-        if (value == 0) return 0;
-        (uint256 price, uint8 pdec) = getPrice(asset);
-        uint8 adec = asset == address(0) ? 18 : IERC20Metadata(asset).decimals();
-        amount = (value * (10 ** adec) * (10 ** pdec)) / (price * (10 ** decimals()));
     }
 
     function _withdrawAsset(address asset, address to, uint256 amount) internal {
@@ -368,6 +372,18 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         } else {
             IERC20(asset).safeTransfer(to, amount);
         }
+    }
+
+    function _removeAuction(uint256 auctionId) internal {
+        uint256 index = auctions[auctionId].listIndex;
+        uint256 lastIndex = auctionIds.length - 1;
+        if (index != lastIndex) {
+            uint256 lastId = auctionIds[lastIndex];
+            auctionIds[index] = lastId;
+            auctions[lastId].listIndex = index;
+        }
+        auctionIds.pop();
+        delete auctions[auctionId];
     }
 
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}

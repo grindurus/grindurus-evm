@@ -12,6 +12,10 @@ contract MockCustomOracle {
         _updatedAt[asset] = block.timestamp;
     }
 
+    function setUpdatedAt(address asset, uint256 updatedAt) external {
+        _updatedAt[asset] = updatedAt;
+    }
+
     function getPrice(address asset) external view returns (uint256 price, uint8 decimals, uint256 updatedAt) {
         return (_price[asset], _decimals[asset], _updatedAt[asset]);
     }

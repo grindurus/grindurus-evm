@@ -242,27 +242,149 @@ contract GRAIVaultTest is GRAIFixture {
         assertEq(alice.balance - before, amount);
     }
 
-    function test_DutchRedemptionDiscountAtFloor() public {
+    function test_FlatAskFills() public {
         _mint(alice, usdc, 100e6);
+        usdc.mint(bob, 100e6);
 
-        vm.startPrank(alice);
-        uint256 auctionId = graiToken.place(address(usdc), 50e6);
+        uint256 payment = 50e6;
+        uint256 duration = 1 days;
+        uint256 tax = graiToken.harbergerTax(50e6, duration);
+        uint256 treasuryBefore = graiToken.balanceOf(admin);
+
+        vm.prank(alice);
+        uint256 auctionId = graiToken.ask(address(usdc), payment, payment, duration, 50e6);
+
+        assertEq(graiToken.auctionIds(0), auctionId);
+        assertEq(graiToken.balanceOf(admin) - treasuryBefore, tax);
+        assertEq(graiToken.balanceOf(alice), 100e6 - tax);
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), payment);
+        graiToken.bid(auctionId, 50e6);
         vm.stopPrank();
 
-        uint256 startPrice = graiToken.mintPrice();
-        uint256 floorPrice = (startPrice * (BPS - graiToken.AUCTION_DISCOUNT_BPS())) / BPS;
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, payment);
+        assertEq(graiToken.balanceOf(alice), 50e6 - tax);
+        assertEq(graiToken.balanceOf(bob), 50e6);
+        (address seller,,,,,,,,)= graiToken.auctions(auctionId);
+        assertEq(seller, address(0));
+        vm.expectRevert();
+        graiToken.auctionIds(0);
+    }
 
-        vm.warp(block.timestamp + graiToken.AUCTION_DURATION());
-        usdcFeed.setAnswer(1e8);
-        assertEq(graiToken.auctionPrice(auctionId), floorPrice);
+    function test_DutchAskFillsAtFloor() public {
+        _mint(alice, usdc, 100e6);
+        usdc.mint(bob, 100e6);
 
-        uint256 before = usdc.balanceOf(alice);
+        uint256 maxPayment = 50e6;
+        uint256 minPayment = (maxPayment * 95) / 100;
+        uint256 duration = 1 days;
+        uint256 tax = graiToken.harbergerTax(50e6, duration);
+
         vm.prank(alice);
-        graiToken.bid(auctionId);
+        uint256 auctionId = graiToken.ask(address(usdc), maxPayment, minPayment, duration, 50e6);
 
-        assertEq(usdc.balanceOf(alice) - before, (50e6 * 95) / 100);
-        assertEq(graiToken.balanceOf(alice), 50e6);
-        assertEq(graiToken.totalValue(), 52_500_000);
+        vm.warp(block.timestamp + duration);
+        assertEq(graiToken.auctionPrice(auctionId), minPayment);
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), minPayment);
+        graiToken.bid(auctionId, 50e6);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, minPayment);
+        assertEq(graiToken.balanceOf(alice), 50e6 - tax);
+        assertEq(graiToken.balanceOf(bob), 50e6);
+    }
+
+    function test_FlatAskPartialFill() public {
+        _mint(alice, usdc, 101e6);
+        usdc.mint(bob, 100e6);
+
+        uint256 payment = 100e6;
+        uint256 duration = 1 days;
+        uint256 tax = graiToken.harbergerTax(100e6, duration);
+
+        vm.prank(alice);
+        uint256 auctionId = graiToken.ask(address(usdc), payment, payment, duration, 100e6);
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), 100e6);
+        graiToken.bid(auctionId, 50e6);
+        vm.stopPrank();
+
+        assertEq(graiToken.balanceOf(bob), 50e6);
+        assertEq(graiToken.balanceOf(alice), 101e6 - tax - 50e6);
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, 50e6);
+        (,, uint256 remaining,,,,,,) = graiToken.auctions(auctionId);
+        assertEq(remaining, 50e6);
+
+        vm.prank(bob);
+        graiToken.bid(auctionId, 50e6);
+
+        assertEq(graiToken.balanceOf(bob), 100e6);
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, 100e6);
+        (address seller,,,,,,,,)= graiToken.auctions(auctionId);
+        assertEq(seller, address(0));
+    }
+
+    function test_CancelAfterDuration() public {
+        _mint(alice, usdc, 101e6);
+        usdc.mint(bob, 100e6);
+
+        uint256 duration = 1 days;
+        uint256 tax = graiToken.harbergerTax(100e6, duration);
+
+        vm.prank(alice);
+        uint256 auctionId = graiToken.ask(address(usdc), 100e6, 100e6, duration, 100e6);
+
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), 50e6);
+        graiToken.bid(auctionId, 50e6);
+        vm.stopPrank();
+
+        vm.expectRevert(IGRAI.AuctionNotExpired.selector);
+        vm.prank(alice);
+        graiToken.bid(auctionId, 0);
+
+        vm.warp(block.timestamp + duration);
+
+        vm.expectRevert(IGRAI.NotSeller.selector);
+        vm.prank(bob);
+        graiToken.bid(auctionId, 0);
+
+        vm.prank(alice);
+        graiToken.bid(auctionId, 0);
+
+        assertEq(graiToken.balanceOf(alice), 101e6 - tax - 50e6);
+        (address seller,,,,,,,,)= graiToken.auctions(auctionId);
+        assertEq(seller, address(0));
+    }
+
+    function test_AuctionListSwapPop() public {
+        _mint(alice, usdc, 200e6);
+        usdc.mint(bob, 200e6);
+
+        uint256 duration = 1 days;
+        vm.startPrank(alice);
+        uint256 id1 = graiToken.ask(address(usdc), 50e6, 50e6, duration, 50e6);
+        uint256 id2 = graiToken.ask(address(usdc), 50e6, 50e6, duration, 50e6);
+        vm.stopPrank();
+        assertEq(graiToken.auctionIds(0), id1);
+        assertEq(graiToken.auctionIds(1), id2);
+
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), 50e6);
+        graiToken.bid(id1, type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(graiToken.auctionIds(0), id2);
+        vm.expectRevert();
+        graiToken.auctionIds(1);
     }
 
     function test_UpgradePreservesState() public {

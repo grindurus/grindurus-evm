@@ -16,12 +16,18 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error NoSupply();
     error AmountExceedsSupply();
     error AuctionNotFound();
-    error AuctionAlreadySettled();
-    error InsufficientLiquidity();
+    error AuctionNotExpired();
+    error NotSeller();
+    error MinAboveMax();
+    error InvalidBidAmount();
+    error DurationZero();
     error ZeroAddress();
     error ToZero();
     error AmountZero();
     error EthTransferFailed();
+    error GrindersGraiMismatch();
+    error ValueMismatch();
+    error UnexpectedValue();
 
     struct AssetConfig {
         bool exists;
@@ -32,10 +38,13 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     struct AuctionLot {
         address seller;
         address asset;
-        uint256 graiAmount;
-        uint256 startPrice;
+        uint256 graiRemaining;
+        uint256 graiInitial;
+        uint256 maxPayment;
+        uint256 minPayment;
         uint256 startTime;
-        bool settled;
+        uint256 duration;
+        uint256 listIndex;
     }
 
     event AssetAdd(address indexed asset);
@@ -45,20 +54,32 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     event Mint(address indexed to, uint256 graiOut, uint256 value);
     event GrindersUpdate(address indexed grinders, bool enabled);
     event TreasuryUpdate(address indexed treasury);
-    event GraiBurn(address indexed from, uint256 graiAmount, uint256 value);
+    event Burn(address indexed from, uint256 graiAmount, uint256 value);
     event Distribute(
         address indexed from, address indexed asset, uint256 yieldAmount, uint256 seniorYield, uint256 protocolProfit
     );
-    event AuctionStarted(
-        uint256 indexed auctionId, address indexed seller, address indexed asset, uint256 graiAmount, uint256 startPrice
+    event Ask(
+        uint256 indexed auctionId,
+        address indexed seller,
+        address indexed asset,
+        uint256 graiAmount,
+        uint256 maxPayment,
+        uint256 minPayment,
+        uint256 duration,
+        uint256 taxGrai
     );
-    event AuctionSettled(
-        uint256 indexed auctionId, address indexed seller, address indexed asset, uint256 graiAmount, uint256 fillPrice
+    event Bid(
+        uint256 indexed auctionId,
+        address indexed bidder,
+        address indexed seller,
+        address asset,
+        uint256 graiBought,
+        uint256 payment,
+        uint256 graiRemaining
     );
+    event Unplace(uint256 indexed auctionId, address indexed seller, uint256 graiAmount);
 
-    function AUCTION_DISCOUNT_BPS() external view returns (uint16);
-
-    function AUCTION_DURATION() external view returns (uint256);
+    function HARBERGER_BPS() external view returns (uint16);
 
     function ADMIN_ROLE() external view returns (bytes32);
 
@@ -80,11 +101,16 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         returns (
             address seller,
             address asset,
-            uint256 graiAmount,
-            uint256 startPrice,
+            uint256 graiRemaining,
+            uint256 graiInitial,
+            uint256 maxPayment,
+            uint256 minPayment,
             uint256 startTime,
-            bool settled
+            uint256 duration,
+            uint256 listIndex
         );
+
+    function auctionIds(uint256 index) external view returns (uint256);
 
     function assets(address asset)
         external
@@ -105,6 +131,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function maxRedeem() external view returns (uint256);
 
+    function harbergerTax(uint256 graiAmount, uint256 duration) external pure returns (uint256);
+
     function auctionPrice(uint256 auctionId) external view returns (uint256);
 
     function addAsset(address asset, uint16 yieldSplit) external;
@@ -119,9 +147,11 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function redeem(uint256 graiAmount) external;
 
-    function place(address asset, uint256 graiAmount) external returns (uint256 auctionId);
+    function ask(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
+        external
+        returns (uint256 auctionId);
 
-    function bid(uint256 auctionId) external;
+    function bid(uint256 auctionId, uint256 graiAmount) external payable;
 
     function withdraw(address asset, address to, uint256 amount) external;
 
