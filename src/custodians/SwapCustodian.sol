@@ -8,7 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Custodian} from "../Custodian.sol";
 
 /// @title SwapCustodian (implementation)
-/// @notice Junior-capital custody wallet with owner-gated arbitrary swap calls.
+/// @notice Junior-capital custody wallet with owner-gated router swap calls.
 /// @dev Grinder builds off-chain calldata for a router/aggregator and executes it via `swap`.
 ///      A swap succeeds only when base/quote balances move in opposite directions and the
 ///      execution price `quote per 1 base` (18 decimals) satisfies `limitPrice`:
@@ -24,7 +24,6 @@ contract SwapCustodian is Custodian {
     error TargetZero();
     error DataEmpty();
     error SwapFailed();
-    error NotTradingAsset();
     error NoTrade();
     error ExceededPriceLimit();
 
@@ -53,9 +52,9 @@ contract SwapCustodian is Custodian {
         __Custodian_init(grinders_, baseAsset_, quoteAsset_);
     }
 
-    /// @notice Execute a low-level call to `target` and enforce a post-trade price limit.
+    /// @notice Approve `target`, execute calldata, enforce price + NAV, then clear allowances.
     /// @param limitPrice Minimum `quote per 1 base` when selling base; maximum when buying base (18 decimals).
-    /// @dev Only the Treasury NFT owner may call. ETH value is not forwarded; use WETH routers when needed.
+    /// @dev Only the Grinder NFT owner may call. ETH value is not forwarded; use WETH routers when needed.
     function swap(uint256 limitPrice, address target, bytes calldata data) external returns (bytes memory result) {
         _onlyOwner();
         if (target == address(0)) revert TargetZero();
@@ -64,7 +63,14 @@ contract SwapCustodian is Custodian {
         uint256 baseBefore = balance(address(baseAsset));
         uint256 quoteBefore = balance(address(quoteAsset));
 
+        baseAsset.forceApprove(target, type(uint256).max);
+        quoteAsset.forceApprove(target, type(uint256).max);
+
         (bool ok, bytes memory ret) = target.call(data);
+
+        baseAsset.forceApprove(target, 0);
+        quoteAsset.forceApprove(target, 0);
+
         if (!ok) revert SwapFailed();
 
         uint256 baseAfter = balance(address(baseAsset));
@@ -90,13 +96,6 @@ contract SwapCustodian is Custodian {
 
         emit Swap(target, baseDelta, quoteDelta, executionPrice, limitPrice, ret);
         return ret;
-    }
-
-    /// @notice Approve a router/spender for a trading asset before `swap`.
-    function approve(IERC20 token, address spender, uint256 amount) external {
-        _onlyOwner();
-        if (token != baseAsset && token != quoteAsset) revert NotTradingAsset();
-        token.forceApprove(spender, amount);
     }
 
     function _quotePerBase(uint256 baseDelta, uint256 quoteDelta) internal view returns (uint256) {

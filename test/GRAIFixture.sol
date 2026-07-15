@@ -6,6 +6,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 
 import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
+import {Custodian} from "../src/Custodian.sol";
+import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -17,7 +19,7 @@ abstract contract GRAIFixture is Test {
     address admin = makeAddr("admin");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
-    address custodian = makeAddr("custodian");
+    address custodian;
 
     Grinders grai;
     GRAI graiToken;
@@ -55,7 +57,7 @@ abstract contract GRAIFixture is Test {
 
         usdc.mint(alice, 1_000e6);
         usdc.mint(bob, 1_000e6);
-        usdc.mint(custodian, 1_000e6); // for distribute
+        if (custodian != address(0)) usdc.mint(custodian, 1_000e6); // for distribute
         weth.mint(alice, 100e18);
     }
 
@@ -71,7 +73,14 @@ abstract contract GRAIFixture is Test {
     }
 
     function _registerTestCustodian() internal virtual {
-        grai.register(custodian, 0, admin);
+        LiFiCustodian impl = new LiFiCustodian();
+        custodian = address(
+            new ERC1967Proxy(
+                address(impl),
+                abi.encodeCall(Custodian.initialize, (address(grai), IERC20(address(usdc)), IERC20(address(weth))))
+            )
+        );
+        grai.register(custodian, admin);
     }
 
     function _allocate(address asset, address custodian_, uint256 amount) internal {
@@ -116,13 +125,13 @@ abstract contract GRAIFixture is Test {
         internal
     {
         vm.prank(seller);
-        uint256 auctionId = graiToken.ask(asset, payment, payment, 1 days, graiAmount);
+        graiToken.ask(asset, payment, payment, 1 days, graiAmount);
         vm.startPrank(bidder);
         if (asset != address(0)) {
             IERC20(asset).approve(address(graiToken), payment);
-            graiToken.bid(auctionId, graiAmount);
+            graiToken.bid(seller, type(uint256).max);
         } else {
-            graiToken.bid{value: payment}(auctionId, graiAmount);
+            graiToken.bid{value: payment}(seller, type(uint256).max);
         }
         vm.stopPrank();
     }
@@ -136,7 +145,7 @@ abstract contract GRAIFixture is Test {
     function _mint(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
         vm.startPrank(user);
         token.approve(address(graiToken), amount);
-        graiOut = graiToken.deposit(address(token), amount);
+        (graiOut,) = graiToken.deposit(address(token), amount);
         vm.stopPrank();
     }
 

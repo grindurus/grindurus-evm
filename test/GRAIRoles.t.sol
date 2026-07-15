@@ -118,8 +118,8 @@ contract GRAIRolesTest is Test {
             address(graiToken),
             abi.encodeCall(graiToken.addAsset, (asset, 8_000))
         );
-        (bool exists,,) = graiToken.assets(asset);
-        assertTrue(exists);
+        (uint16 split,,) = graiToken.assets(asset);
+        assertEq(split, 8_000);
     }
 
     function test_DeployerCannotUpgradeGrinders() public {

@@ -63,6 +63,7 @@ contract GrindersCustodianTest is GRAIFixture {
         assertEq(grai.custodianIds(address(custodyWallet)), 0);
         assertEq(grai.ownerOf(0), grinder);
         assertTrue(grai.isCustodian(address(custodyWallet)));
+        assertFalse(grai.isCustodian(address(0)));
         assertTrue(grai.custodianImplementations(cowKind) != address(0));
         assertEq(grai.totalSupply(), 1);
 

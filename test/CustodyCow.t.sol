@@ -32,7 +32,7 @@ contract CustodyCowTest is GRAIFixture {
             )
         );
         vm.startPrank(admin);
-        grai.register(address(custodyWallet), 1, owner);
+        grai.register(address(custodyWallet), owner);
         vm.stopPrank();
     }
 

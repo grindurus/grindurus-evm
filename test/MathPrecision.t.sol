@@ -29,21 +29,26 @@ contract MathPrecisionProbe is GRAIFixture {
     assertEq(grai.grai().totalValue(), tv0 - 1);
   }
 
-  /// Mint works again after an asset is delisted and re-listed.
+  /// Mint works again after an asset is drained, delisted and re-listed.
   function test_MintAfterAssetRelistWorks() public {
     _mint(alice, usdc, 100e6);
 
     vm.startPrank(admin);
     graiToken.setPaused(address(usdc), true);
+    vm.stopPrank();
+
+    _redeem(alice, graiToken.balanceOf(alice));
+
+    vm.startPrank(admin);
     graiToken.removeAsset(address(usdc), 0);
     _setChainlinkFeed(address(usdc), address(usdcFeed));
     graiToken.addAsset(address(usdc), DEFAULT_YIELD_SPLIT);
     vm.stopPrank();
 
-    assertEq(grai.grai().totalNAV(), 0);
+    assertEq(grai.grai().seniorNAV(), 0);
 
     _mint(bob, usdc, 100e6);
-    assertEq(grai.grai().totalNAV(), 100e6);
+    assertEq(grai.grai().seniorNAV(), 100e6);
     assertEq(grai.grai().balanceOf(bob), 100e6);
   }
 }

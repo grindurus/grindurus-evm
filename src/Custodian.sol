@@ -80,6 +80,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         }
     }
 
+    /// @dev By default, owner returns the grinders contract if the NFT owner is not found or not registered.
     function owner() public view virtual returns (address) {
         if (grinders.code.length == 0) return grinders;
         uint256 id = custodianId();

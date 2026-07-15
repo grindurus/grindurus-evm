@@ -27,6 +27,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error InsufficientReserve();
     error CustodianNonexistent(uint256 custodianId);
     error CustodianAlreadyRegistered(uint256 custodianId);
+    error GrindersMismatch();
+    error CustodianOwnerMismatch();
 
     event GraiTokenUpdate(address indexed graiToken);
     event Sweep(address indexed asset, address indexed to, uint256 amount);

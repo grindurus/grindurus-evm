@@ -35,6 +35,8 @@ contract Grinders is
     mapping(bytes32 custodianKind => address) public custodianImplementations;
     mapping(uint256 custodianId => address) public custodians;
     mapping(address custodian => uint256) public custodianIds;
+    /// @notice Units of `asset` given to `custodian` via `allocate` — issuance ledger (who got how much),
+    ///         not a claim that the wallet still holds that balance or must return it 1:1 after trading.
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
     mapping(address asset => uint256) public active;
 
@@ -152,8 +154,10 @@ contract Grinders is
     function register(address custodian, address owner_) external onlyOwner {
         if (custodian == address(0)) revert CustodianZero();
         if (owner_ == address(0)) revert OwnerZero();
-        uint256 custodianId = totalSupply();
+        if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
+        if (Custodian(payable(custodian)).grinders() != address(this)) revert GrindersMismatch();
 
+        uint256 custodianId = totalSupply();
         if (custodians[custodianId] != address(0)) revert CustodianAlreadyRegistered(custodianId);
 
         custodians[custodianId] = custodian;
