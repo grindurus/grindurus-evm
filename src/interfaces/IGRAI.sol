@@ -11,6 +11,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error AssetBalanceNonZero();
     error BpsTooHigh();
     error NotPaused();
+    error Paused();
     error BadHint();
     error HintMismatch();
     error InvalidRedeemAmount();
@@ -28,7 +29,6 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error GrindersGraiMismatch();
     error ValueMismatch();
     error UnexpectedValue();
-    error InsufficientSeniorVault();
     error PaymentExceedsMax();
     error PaymentBelowMin();
     error InsufficientAllowance();
@@ -70,26 +70,31 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint32 id;
     }
 
-    struct Lock {
+    struct Vote {
         uint256 amount;
-        /// @notice Timestamp of the latest `lock` (resets on each lock).
+        /// @notice Timestamp of the latest `vote` (resets on each vote).
         uint48 lockedAt;
+        /// @notice Index of this account in `voters` while the vote is open.
+        uint32 id;
     }
 
-    /// @notice Ask/bid Harberger APRs and liquidation quorum threshold.
+    /// @notice Ask/bid Harberger APRs, unlock fees, and liquidation quorum threshold.
     struct ProtocolConfig {
         uint16 askAprBps;
         uint16 bidAprBps;
+        uint16 unlockFeeBps;
+        uint16 unlockAprBps;
         uint16 liquidationQuorumBps;
     }
 
     event AssetAdd(address indexed asset);
     event AssetRemove(address indexed asset);
-    event PauseUpdate(address indexed asset, bool paused);
-    event YieldSplitUpdate(address indexed asset, uint16 bps);
+    event AssetConfigUpdate(address indexed asset, uint16 yieldSplit, bool paused);
     event Deposit(address indexed to, uint256 graiOut, uint256 value);
     event GrindersUpdate(address indexed grinders, bool enabled);
     event TreasuryUpdate(address indexed treasury);
+    event JuniorVaultUpdate(address indexed juniorVault);
+    event SeniorVaultUpdate(address indexed seniorVault);
     event Redeem(address indexed from, uint256 graiAmount, uint256 value);
     event Distribute(
         address indexed from, address indexed asset, uint256 yieldAmount, uint256 seniorYield, uint256 protocolProfit
@@ -126,20 +131,21 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint256 graiSold,
         uint256 payment
     );
-    event LiquidationLock(address indexed account, uint256 amount, uint256 totalLocked);
+    event Voted(address indexed account, uint256 amount, uint256 totalVoted);
     event LiquidationUnlock(address indexed account, uint256 amount, uint256 fee, uint256 totalLocked);
-    event Liquidated(uint256 totalLocked, uint256 supply);
-    event LiquidationClosed(uint256 totalLocked, uint256 supply);
+    event Liquidate(bool liquidation, uint256 totalVoted, uint256 supply);
     event ConfigUpdate(ProtocolConfig config);
 
     function config()
         external
         view
-        returns (uint16 askAprBps, uint16 bidAprBps, uint16 liquidationQuorumBps);
-
-    function UNLOCK_FEE_BPS() external view returns (uint16);
-
-    function UNLOCK_APR_BPS() external view returns (uint16);
+        returns (
+            uint16 askAprBps,
+            uint16 bidAprBps,
+            uint16 unlockFeeBps,
+            uint16 unlockAprBps,
+            uint16 liquidationQuorumBps
+        );
 
     function ADMIN_ROLE() external view returns (bytes32);
 
@@ -187,11 +193,18 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function bidsList(uint256 index) external view returns (address);
 
-    function liquidationLocks(address account) external view returns (uint256 amount, uint48 lockedAt);
+    function getOrders() external view returns (address[] memory asks, address[] memory bids);
 
-    function totalLiquidationLocked() external view returns (uint256);
+    function votes(address account) external view returns (uint256 amount, uint48 lockedAt, uint32 id);
 
-    /// @notice True when locked GRAI is at least `config.liquidationQuorumBps` of `totalSupply`.
+    function voters(uint256 index) external view returns (address);
+
+    function getVoters() external view returns (address[] memory);
+
+    function totalVoted() external view returns (uint256);
+
+    /// @notice True when voted GRAI is at least `config.liquidationQuorumBps` of `totalSupply`.
+    /// @dev Uses live supply (not a snapshot); deposits may dilute quorum until votes catch up — by design.
     function hasQuorum() external view returns (bool);
 
     /// @notice True after `openLiquidation` until `closeLiquidation`.
@@ -202,6 +215,10 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     function assetList(uint256 index) external view returns (address);
 
     function getAssets() external view returns (address[] memory);
+
+    function setJuniorVault(address juniorVault_) external;
+
+    function setSeniorVault(address seniorVault_) external;
 
     function setTreasury(address treasury_) external;
 
@@ -243,9 +260,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function removeAsset(address asset, uint256 hintId) external;
 
-    function setPaused(address asset, bool paused) external;
-
-    function setYieldSplit(address asset, uint16 bps) external;
+    function setAssetConfig(address asset, uint16 yieldSplit, bool paused) external;
 
     function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
 
@@ -281,18 +296,16 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    function take(address asset, address to, uint256 amount) external;
-
     function put(address asset, uint256 amount) external payable;
 
-    /// @notice Lock GRAI on this contract toward the 95% liquidation quorum (resets lock timer).
-    function lock(uint256 graiAmount) external;
+    /// @notice Vote GRAI toward the liquidation quorum (escrowed on this contract; resets vote timer).
+    function vote(uint256 graiAmount) external;
 
-    /// @notice Net GRAI returned and fee (flat `UNLOCK_FEE_BPS` + time tax at `UNLOCK_APR_BPS`).
-    ///         Fee is zero while `liquidation` so lockers can exit and redeem.
+    /// @notice Net GRAI returned and fee (flat `config.unlockFeeBps` + time tax at `config.unlockAprBps`).
+    ///         Fee is zero while `liquidation` so voters can exit and redeem.
     function previewUnlock(address account, uint256 graiAmount) external view returns (uint256 net, uint256 fee);
 
-    /// @notice Return locked GRAI minus unlock fee (fee to treasury; waived when `liquidation`).
+    /// @notice Return voted GRAI minus unlock fee (fee to treasury; waived when `liquidation`).
     function unlock(uint256 graiAmount) external;
 
     /// @notice If quorum is met, set `liquidation` and pause all assets (Grinders `liquidate` then reads this flag).
