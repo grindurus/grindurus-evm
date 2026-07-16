@@ -33,7 +33,7 @@ contract MathPrecisionProbe is GRAIFixture {
     _mint(alice, usdc, 100e6);
 
     vm.startPrank(admin);
-    graiToken.setPaused(address(usdc), true);
+    graiToken.setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, true);
     vm.stopPrank();
 
     _redeem(alice, graiToken.balanceOf(alice));

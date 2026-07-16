@@ -7,7 +7,7 @@ import {IGrinders} from "../src/interfaces/IGrinders.sol";
 import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 
-contract GrindersCustodianTest is GRAIFixture {
+contract GrindersTest is GRAIFixture {
     address grinder = makeAddr("grinder");
     bytes32 cowKind;
     bytes32 lifiKind;

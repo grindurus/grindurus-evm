@@ -2,6 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {Test} from "forge-std/Test.sol";
+import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {Grinders} from "../src/Grinders.sol";
@@ -15,6 +16,8 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
 
 abstract contract GRAIFixture is Test {
+    using stdStorage for StdStorage;
+
     address admin = makeAddr("admin");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
@@ -150,6 +153,22 @@ abstract contract GRAIFixture is Test {
 
     function _fundGrinders(MockERC20 token, uint256 amount) internal {
         token.mint(address(grai), amount);
+    }
+
+    /// @dev Test stand-in for removed `GRAI.take`: move idle out of the vault and bump `used`.
+    function _take(address asset, address to, uint256 amount) internal {
+        if (asset == address(0)) {
+            vm.deal(address(graiToken), address(graiToken).balance - amount);
+            vm.deal(to, to.balance + amount);
+        } else {
+            uint256 fromBal = IERC20(asset).balanceOf(address(graiToken));
+            uint256 toBal = IERC20(asset).balanceOf(to);
+            deal(asset, address(graiToken), fromBal - amount, true);
+            deal(asset, to, toBal + amount, true);
+        }
+        stdstore.target(address(graiToken)).sig("used(address)").with_key(asset).checked_write(
+            graiToken.used(asset) + amount
+        );
     }
 
     function _assertFirstVaultSnapshot(address expectedAsset, uint256 expectedSenior, uint256 expectedJunior)
