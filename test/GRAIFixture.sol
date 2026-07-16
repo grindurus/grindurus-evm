@@ -129,9 +129,9 @@ abstract contract GRAIFixture is Test {
         vm.startPrank(bidder);
         if (asset != address(0)) {
             IERC20(asset).approve(address(graiToken), payment);
-            graiToken.bid(seller, type(uint256).max);
+            graiToken.fulfillAsk(seller, type(uint256).max, payment);
         } else {
-            graiToken.bid{value: payment}(seller, type(uint256).max);
+            graiToken.fulfillAsk{value: payment}(seller, type(uint256).max, payment);
         }
         vm.stopPrank();
     }

@@ -40,8 +40,13 @@ contract Grinders is
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
     mapping(address asset => uint256) public active;
 
+    /// @notice True after GRAI opens liquidation; unlocks permissionless paginated `liquidate`.
+    bool public liquidation;
+    /// @notice Senior assets recalled during liquidation (`openLiquidation`).
+    address[] public liquidationAssets;
+
     /// @dev Storage gap for future upgrades.
-    uint256[41] private _gap;
+    uint256[39] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -112,6 +117,74 @@ contract Grinders is
         active[asset] = prevActive > amount ? prevActive - amount : 0;
 
         emit Deallocate(asset, custodian, amount);
+    }
+
+    /// @inheritdoc IGrinders
+    function openLiquidation(address[] calldata assets_) external {
+        _onlyGRAI();
+        if (liquidation) revert AlreadyOpen();
+
+        liquidation = true;
+        delete liquidationAssets;
+        uint256 assetsLen = assets_.length;
+        for (uint256 j; j < assetsLen; ++j) {
+            address asset = assets_[j];
+            liquidationAssets.push(asset);
+            active[asset] = 0;
+        }
+
+        emit Opened(address(grai), assetsLen);
+    }
+
+
+    /// @inheritdoc IGrinders
+    /// @dev Permissionless once liquidation; liquidates custodians in `[fromId, toId)` and `put`s swept amounts to GRAI.
+    function liquidate(uint256 fromId, uint256 toId) external {
+        if (!liquidation) revert NotOpen();
+        if (fromId >= toId) revert InvalidLiquidationRange(fromId, toId);
+
+        uint256 n = totalSupply();
+        if (toId > n) toId = n;
+
+        address[] storage assets_ = liquidationAssets;
+        uint256 assetsLen = assets_.length;
+        for (uint256 i = fromId; i < toId; ++i) {
+            address c = custodians[i];
+            if (c == address(0)) continue;
+
+            (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = Custodian(payable(c)).liquidate();
+            for (uint256 j; j < assetsLen; ++j) {
+                allocated[c][assets_[j]] = 0;
+            }
+
+            IERC20 base = Custodian(payable(c)).baseAsset();
+            IERC20 quote = Custodian(payable(c)).quoteAsset();
+            _putLiquidated(address(0), ethOut);
+            _putLiquidated(address(base), baseOut);
+            _putLiquidated(address(quote), quoteOut);
+        }
+
+        emit Liquidate(fromId, toId, assetsLen);
+    }
+
+    function _putLiquidated(address asset, uint256 amount) private {
+        if (amount == 0) return;
+        if (asset == address(0)) {
+            grai.put{value: amount}(asset, amount);
+        } else {
+            IERC20(asset).forceApprove(address(grai), amount);
+            grai.put(asset, amount);
+        }
+    }
+
+    /// @inheritdoc IGrinders
+    function closeLiquidation() external {
+        _onlyGRAI();
+        if (!liquidation) revert NotOpen();
+
+        liquidation = false;
+        delete liquidationAssets;
+        emit Closed(address(grai));
     }
 
     function setCustodianImplementation(bytes32 custodianKind, address implementation) public onlyOwner {
@@ -207,6 +280,10 @@ contract Grinders is
 
     function _onlyCustodian(address account) internal view {
         if (!isCustodian(account)) revert UnknownCustodian();
+    }
+
+    function _onlyGRAI() internal view {
+        if (msg.sender != address(grai)) revert NotGrai(msg.sender);
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}

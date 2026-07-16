@@ -24,6 +24,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     error NonZeroBalance();
     error FeatureDisabled();
     error FeatureDelay();
+    error NotGrinders(address caller);
+    error EthTransferFailed();
+    error LiquidationOpen();
 
     uint48 public constant DISABLE_DELAY = 24 hours;
 
@@ -45,6 +48,10 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     function _onlyOwner() internal view {
         if (msg.sender != owner()) revert NotOwner(msg.sender);
+    }
+
+    function _onlyGrinders() internal view {
+        if (msg.sender != grinders) revert NotGrinders(msg.sender);
     }
 
     receive() external payable {}
@@ -122,6 +129,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     function deallocate(address asset, uint256 amount) public {
         _onlyOwner();
+        if (_isLiquidating()) revert LiquidationOpen();
         if (amount == 0) revert AmountZero();
         if (asset == address(0)) {
             IGrinders(grinders).deallocate{value: amount}(asset, amount);
@@ -129,6 +137,36 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
             IERC20(asset).forceApprove(grinders, amount);
             IGrinders(grinders).deallocate(asset, amount);
         }
+    }
+
+    /// @dev Safe against non-contract / non-IGrinders `grinders` (same pattern as `custodianId` / `owner`).
+    function _isLiquidating() internal view returns (bool) {
+        if (grinders.code.length == 0) return false;
+        try IGrinders(grinders).liquidation() returns (bool open) {
+            return open;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @notice Liquidation pull of ETH / base / quote to Grinders (only Grinders).
+    function liquidate() public returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut) {
+        _onlyGrinders();
+
+        ethOut = address(this).balance;
+        if (ethOut > 0) {
+            (bool ok,) = grinders.call{value: ethOut}("");
+            if (!ok) revert EthTransferFailed();
+        }
+
+        baseOut = _sweepToken(baseAsset, grinders);
+        quoteOut = _sweepToken(quoteAsset, grinders);
+    }
+
+    function _sweepToken(IERC20 token, address to) private returns (uint256 bal) {
+        if (address(token) == address(0)) return 0;
+        bal = token.balanceOf(address(this));
+        if (bal > 0) token.safeTransfer(to, bal);
     }
 
     function distribute(address asset, uint256 yieldAmount) public {
