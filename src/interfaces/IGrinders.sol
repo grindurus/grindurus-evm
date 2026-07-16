@@ -29,15 +29,11 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
     error CustodianOwnerMismatch();
-    error NotGrai(address caller);
-    error AlreadyOpen();
     error NotOpen();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
 
     event GraiTokenUpdate(address indexed graiToken);
     event Sweep(address indexed asset, address indexed to, uint256 amount);
-    event Opened(address indexed grai, uint256 assets);
-    event Closed(address indexed grai);
     event Liquidate(uint256 fromId, uint256 toId, uint256 assets);
     event CustodianImplementationUpdated(bytes32 indexed custodianKind, address implementation);
     event CustodianDeployed(
@@ -62,8 +58,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function custodianIds(address custodian) external view returns (uint256);
     function allocated(address custodian, address asset) external view returns (uint256);
     function active(address asset) external view returns (uint256);
-    function liquidation() external view returns (bool);
-    function liquidationAssets(uint256 index) external view returns (address);
+
 
     function isCustodian(address custodian) external view returns (bool);
 
@@ -79,12 +74,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function allocate(address custodian, address asset, uint256 amount) external;
     function deallocate(address asset, uint256 amount) external payable;
 
-    /// @notice Open liquidation and record senior assets (only `grai`). Then call `liquidate` in pages.
-    function openLiquidation(address[] calldata assets_) external;
-
-    /// @notice Close liquidation window (only `grai`).
-    function closeLiquidation() external;
-
-    /// @notice Permissionless after `openLiquidation`: liquidate custodians `[fromId, toId)` and `put` swept amounts to GRAI.
+    /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and `put` swept amounts to GRAI.
     function liquidate(uint256 fromId, uint256 toId) external;
 }
