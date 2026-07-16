@@ -28,7 +28,6 @@ contract GRAI is
 
     uint16 public constant BPS = 100_00; // 100%
     /// @notice Harberger tax rate on listed GRAI, annualized (1% / year).
-    uint16 public constant ASK_APR_BPS = 1_00; // 1% 
     uint16 public constant GRAI_DUST_BPS = 10; // 0.1%
     /// @notice Flat unlock fee on locked GRAI (sent to treasury).
     uint16 public constant UNLOCK_FEE_BPS = 5_00; // 5%
@@ -59,11 +58,12 @@ contract GRAI is
     /// @notice Buyers with an open bid; `bids[buyer].id` is the index here.
     address[] public bidsList;
 
+    /// @notice Ask/bid Harberger APRs and liquidation quorum threshold.
+    ProtocolConfig public config;
+
     /// @notice GRAI locked toward liquidation quorum (held by this contract).
     mapping(address account => Lock) public liquidationLocks;
     uint256 public totalLiquidationLocked;
-    /// @notice Share of GRAI supply that must be locked to trigger protocol liquidation (bps).
-    uint16 public liquidationQuorumBps;
     /// @notice True after `openLiquidation` until `closeLiquidation`.
     bool public liquidation;
 
@@ -82,16 +82,16 @@ contract GRAI is
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         treasury = admin_;
-        liquidationQuorumBps = 80_00; // 80%
+        config = ProtocolConfig({askAprBps: 1_00, bidAprBps: 1_00, liquidationQuorumBps: 66_67});
         _grantRole(DEFAULT_ADMIN_ROLE, admin_);
         _grantRole(ADMIN_ROLE, admin_);
         _grantRole(ORACLE_ROLE, admin_);
     }
 
-    function setLiquidationQuorumBps(uint16 bps) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (bps > BPS) revert BpsTooHigh();
-        liquidationQuorumBps = bps;
-        emit LiquidationQuorumUpdate(bps);
+    function setConfig(ProtocolConfig calldata cfg) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (cfg.askAprBps > BPS || cfg.bidAprBps > BPS || cfg.liquidationQuorumBps > BPS) revert BpsTooHigh();
+        config = cfg;
+        emit ConfigUpdate(cfg);
     }
 
     function setTreasury(address treasury_) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -155,7 +155,7 @@ contract GRAI is
     /// @inheritdoc IGRAI
     function hasQuorum() public view returns (bool) {
         uint256 supply = totalSupply();
-        return supply > 0 && totalLiquidationLocked * BPS >= supply * liquidationQuorumBps;
+        return supply > 0 && totalLiquidationLocked * BPS >= supply * config.liquidationQuorumBps;
     }
 
     /// @inheritdoc IGRAI
@@ -254,15 +254,9 @@ contract GRAI is
         emit YieldSplitUpdate(asset, bps);
     }
 
-    function take(address asset, address to, uint256 amount) public onlyRole(GRINDERS_ROLE) {
-        if (amount > balance(asset)) revert InsufficientSeniorVault();
-        _withdraw(to, asset, amount);
-        used[asset] += amount;
-    }
-
     function put(address asset, uint256 amount) public payable onlyRole(GRINDERS_ROLE) {
         if (amount == 0) revert AmountZero();
-        uint256 received = _deposit(msg.sender, asset, amount);
+        uint256 received = _deposit(msg.sender, address(this), asset, amount);
         uint256 prev = used[asset];
         used[asset] = prev > received ? prev - received : 0;
     }
@@ -310,7 +304,8 @@ contract GRAI is
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (assets[asset].paused) revert IGrinders.MintingPaused();
 
-        uint256 received = _deposit(msg.sender, asset, amount);
+        address receiver = address(this);
+        uint256 received = _deposit(msg.sender, receiver, asset, amount);
 
         (graiOut, depositValue) = previewDeposit(asset, received);
         if (depositValue == 0) revert IGrinders.ValueZero();
@@ -409,14 +404,12 @@ contract GRAI is
     ) public {
         address seller = msg.sender;
         (uint256 lot, uint256 tax) = previewAsk(seller, maxPayment, minPayment, duration, graiAmount);
-        if (tax > 0) _transfer(seller, treasury, tax);
 
         uint32 id = asks[seller].id;
         if (asks[seller].startTime == 0) {
             id = uint32(asksList.length);
             asksList.push(seller);
         }
-
         asks[seller] = Ask({
             asset: asset,
             graiRemaining: lot,
@@ -427,6 +420,8 @@ contract GRAI is
             duration: duration,
             id: id
         });
+        // Listing cost is Harberger tax
+        if (tax > 0) _transfer(seller, treasury, tax);
         emit AskCreate(seller, asset, graiAmount, maxPayment, minPayment, duration, tax);
     }
 
@@ -443,36 +438,8 @@ contract GRAI is
         if (minPayment > maxPayment) revert MinAboveMax();
         if (graiAmount > balanceOf(seller)) revert AmountExceedsSupply();
 
-        tax = (graiAmount * ASK_APR_BPS * duration) / (uint256(BPS) * 365 days);
+        tax = (graiAmount * config.askAprBps * duration) / (uint256(BPS) * 365 days);
         lot = graiAmount - tax;
-    }
-
-    function fulfillAsk(address seller, uint256 graiAmount, uint256 paymentMax) public payable {
-        Ask storage entry = asks[seller];
-        if (entry.startTime == 0) revert AskNotFound();
-
-        (uint256 graiOut, uint256 payment) = previewFulfillAsk(seller, graiAmount);
-        if (graiOut == 0 || payment == 0) revert AmountZero();
-        if (payment > paymentMax) revert PaymentExceedsMax();
-
-        address asset = entry.asset;
-        uint256 remaining = entry.graiRemaining;
-        uint256 newRemaining = remaining - graiOut;
-        // Dust vs pre-scale initial; post-scale initial tracks remaining and would make dust unreachable.
-        uint256 graiDust = (entry.graiInitial * GRAI_DUST_BPS) / BPS;
-        entry.maxPayment = (entry.maxPayment * newRemaining) / remaining;
-        entry.minPayment = (entry.minPayment * newRemaining) / remaining;
-        entry.graiInitial = (entry.graiInitial * newRemaining) / remaining;
-        entry.graiRemaining = newRemaining;
-        if (
-            newRemaining == 0 || newRemaining <= graiDust || entry.maxPayment == 0 || balanceOf(seller) == 0
-        ) {
-            _removeAsk(seller);
-        }
-
-        _pay(seller, asset, payment);
-        _transfer(seller, msg.sender, graiOut);
-        emit AskFulfill(msg.sender, seller, asset, graiOut, payment);
     }
 
     /// @inheritdoc IGRAI
@@ -498,6 +465,35 @@ contract GRAI is
         payment = (price * graiOut) / entry.graiInitial;
     }
 
+    function fulfillAsk(address seller, uint256 graiAmount, uint256 paymentMax) public payable {
+        address buyer = msg.sender;
+        Ask storage entry = asks[seller];
+        if (entry.startTime == 0) revert AskNotFound();
+
+        (uint256 graiOut, uint256 payment) = previewFulfillAsk(seller, graiAmount);
+        if (graiOut == 0 || payment == 0) revert AmountZero();
+        if (payment > paymentMax) revert PaymentExceedsMax();
+
+        address asset = entry.asset;
+        uint256 remaining = entry.graiRemaining;
+        uint256 newRemaining = remaining - graiOut;
+        // Dust vs pre-scale initial; post-scale initial tracks remaining and would make dust unreachable.
+        uint256 graiDust = (entry.graiInitial * GRAI_DUST_BPS) / BPS;
+        entry.maxPayment = (entry.maxPayment * newRemaining) / remaining;
+        entry.minPayment = (entry.minPayment * newRemaining) / remaining;
+        entry.graiInitial = (entry.graiInitial * newRemaining) / remaining;
+        entry.graiRemaining = newRemaining;
+        if (
+            newRemaining == 0 || newRemaining <= graiDust || entry.maxPayment == 0 || balanceOf(seller) == 0
+        ) {
+            _removeAsk(seller);
+        }
+
+        _transfer(seller, buyer, graiOut);
+        _pay(seller, asset, payment);
+        emit AskFulfill(buyer, seller, asset, graiOut, payment);
+    }
+
     //////////////////// BID ////////////////////
 
     /// @inheritdoc IGRAI
@@ -507,18 +503,9 @@ contract GRAI is
         uint256 minPayment,
         uint256 duration,
         uint256 graiAmount
-    ) public payable {
+    ) public {
         address buyer = msg.sender;
         (uint256 lot, uint256 tax) = previewBid(buyer, asset, maxPayment, minPayment, duration, graiAmount);
-
-        // Listing cost is Harberger tax only (soft bid for the dutch payment).
-        if (asset == address(0)) {
-            if (msg.value != tax) revert ValueMismatch();
-            if (tax > 0) _withdraw(treasury, address(0), tax);
-        } else {
-            if (msg.value != 0) revert UnexpectedValue();
-            if (tax > 0) IERC20(asset).safeTransferFrom(buyer, treasury, tax);
-        }
 
         uint32 id = bids[buyer].id;
         if (bids[buyer].startTime == 0) {
@@ -537,11 +524,13 @@ contract GRAI is
             duration: duration,
             id: id
         });
+        // Listing cost is Harberger tax only (soft bid for the dutch payment).
+        if (tax > 0) IERC20(asset).safeTransferFrom(buyer, treasury, tax);
         emit BidCreate(buyer, asset, graiAmount, maxPayment, minPayment, duration, tax);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Soft bid: Harberger tax paid upfront. ERC20 needs allowance for dutch payment; ETH paid on fulfill.
+    /// @dev Soft bid: Harberger tax paid upfront. ERC20 needs allowance for dutch payment
     function previewBid(
         address buyer,
         address asset,
@@ -550,67 +539,19 @@ contract GRAI is
         uint256 duration,
         uint256 graiAmount
     ) public view returns (uint256 lot, uint256 tax) {
+        if (asset == address(0)) revert EthBidsDisabled();
         if (graiAmount == 0 || maxPayment == 0) revert AmountZero();
         if (duration == 0) revert DurationZero();
         if (minPayment > maxPayment) revert MinAboveMax();
 
-        tax = (maxPayment * ASK_APR_BPS * duration) / (uint256(BPS) * 365 days);
+        tax = (maxPayment * config.bidAprBps * duration) / (uint256(BPS) * 365 days);
         if (tax >= maxPayment) revert AmountZero();
         if (minPayment > maxPayment - tax) revert MinAboveMax();
 
-        if (asset == address(0)) {
-            // Buyer pays tax via `msg.value` on `bid`; dutch ETH is paid on fulfill.
-            if (buyer.balance < maxPayment) revert AmountExceedsSupply();
-        } else {
-            // Tax + dutch payment covered by soft allowance / balance of `maxPayment`.
-            if (IERC20(asset).allowance(buyer, address(this)) < maxPayment) revert InsufficientAllowance();
-            if (IERC20(asset).balanceOf(buyer) < maxPayment) revert AmountExceedsSupply();
-        }
+        // Tax + dutch payment covered by soft allowance / balance of `maxPayment`.
+        if (IERC20(asset).allowance(buyer, address(this)) < maxPayment) revert InsufficientAllowance();
+        if (IERC20(asset).balanceOf(buyer) < maxPayment) revert AmountExceedsSupply();
         lot = graiAmount;
-    }
-
-    /// @inheritdoc IGRAI
-    /// @dev ERC20 (`msg.value == 0`): seller (`msg.sender`) fills `peer`'s bid.
-    ///      ETH (`msg.value > 0`): buyer (`msg.sender`) fills; `peer` is seller. ETH wins when both exist.
-    function fulfillBid(address peer, uint256 graiAmount, uint256 paymentMin) public payable {
-        address buyer;
-        address seller;
-        if (msg.value > 0) {
-            if (bids[msg.sender].startTime == 0 || bids[msg.sender].asset != address(0)) revert BidNotFound();
-            buyer = msg.sender;
-            seller = peer;
-        } else if (bids[peer].startTime != 0 && bids[peer].asset != address(0)) {
-            buyer = peer;
-            seller = msg.sender;
-        } else {
-            revert BidNotFound();
-        }
-
-        Bid storage entry = bids[buyer];
-        (uint256 graiIn, uint256 payment) = previewFulfillBid(buyer, seller, graiAmount);
-        if (graiIn == 0 || payment == 0) revert AmountZero();
-        if (payment < paymentMin) revert PaymentBelowMin();
-
-        address asset = entry.asset;
-        uint256 remaining = entry.graiRemaining;
-        uint256 newRemaining = remaining - graiIn;
-        // Dust vs pre-scale initial; post-scale initial tracks remaining and would make dust unreachable.
-        uint256 graiDust = (entry.graiInitial * GRAI_DUST_BPS) / BPS;
-        entry.maxPayment = (entry.maxPayment * newRemaining) / remaining;
-        entry.minPayment = (entry.minPayment * newRemaining) / remaining;
-        entry.graiInitial = (entry.graiInitial * newRemaining) / remaining;
-        entry.graiRemaining = newRemaining;
-
-        if (newRemaining == 0 || newRemaining <= graiDust || balanceOf(seller) == 0) _removeBid(buyer);
-        if (asset == address(0)) {
-            if (msg.value != payment) revert ValueMismatch();
-            _withdraw(seller, address(0), payment);
-        } else {
-            if (msg.value != 0) revert UnexpectedValue();
-            IERC20(asset).safeTransferFrom(buyer, seller, payment);
-        }
-        _transfer(seller, buyer, graiIn);
-        emit BidFulfill(seller, buyer, asset, graiIn, payment);
     }
 
     /// @inheritdoc IGRAI
@@ -639,9 +580,6 @@ contract GRAI is
             : maxPayment - ((maxPayment - minPayment) * elapsed) / entry.duration;
         payment = (price * graiIn) / entry.graiInitial;
 
-        // Soft ERC20 clamp to allowance/balance. ETH is paid via `msg.value` on fulfill (no pull).
-        if (entry.asset == address(0)) return (graiIn, payment);
-
         uint256 allowance = IERC20(entry.asset).allowance(buyer, address(this));
         uint256 bal = IERC20(entry.asset).balanceOf(buyer);
         uint256 spendable = allowance < bal ? allowance : bal;
@@ -653,6 +591,32 @@ contract GRAI is
             payment = (price * graiIn) / entry.graiInitial;
             if (payment > spendable) payment = spendable;
         }
+    }
+
+    /// @inheritdoc IGRAI
+    /// @dev ERC20 only: seller (`msg.sender`) fills `buyer`'s bid; payment is pulled from buyer allowance.
+    function fulfillBid(address buyer, uint256 graiAmount, uint256 paymentMin) public {
+        address seller = msg.sender;
+        Bid storage entry = bids[buyer];
+        (uint256 graiIn, uint256 payment) = previewFulfillBid(buyer, seller, graiAmount);
+        
+        if (graiIn == 0 || payment == 0) revert AmountZero();
+        if (payment < paymentMin) revert PaymentBelowMin();
+
+        address asset = entry.asset;
+        uint256 remaining = entry.graiRemaining;
+        uint256 newRemaining = remaining - graiIn;
+        // Dust vs pre-scale initial; post-scale initial tracks remaining and would make dust unreachable.
+        uint256 graiDust = (entry.graiInitial * GRAI_DUST_BPS) / BPS;
+        entry.maxPayment = (entry.maxPayment * newRemaining) / remaining;
+        entry.minPayment = (entry.minPayment * newRemaining) / remaining;
+        entry.graiInitial = (entry.graiInitial * newRemaining) / remaining;
+        entry.graiRemaining = newRemaining;
+        if (newRemaining == 0 || newRemaining <= graiDust || balanceOf(seller) == 0) _removeBid(buyer);
+
+        _transfer(seller, buyer, graiIn);
+        _pay(seller, asset, payment);
+        emit BidFulfill(seller, buyer, asset, graiIn, payment);
     }
 
     //////////////////// LIQUIDATION ////////////////////
@@ -707,6 +671,7 @@ contract GRAI is
     //////////////////// INTERNAL HELPERS ////////////////////
 
     function _pay(address to, address asset, uint256 payment) private {
+        // address payer = msg.sender
         if (asset == address(0)) {
             if (msg.value != payment) revert ValueMismatch();
             (bool ok,) = to.call{value: payment}("");
@@ -746,15 +711,15 @@ contract GRAI is
     }
 
     /// @dev Pulls `amount` and returns tokens actually credited (FoT-safe for ERC20).
-    function _deposit(address from, address asset, uint256 amount) internal returns (uint256 received) {
+    function _deposit(address from, address to, address asset, uint256 amount) internal returns (uint256 received) {
         if (asset == address(0)) {
             if (msg.value != amount) revert IGrinders.ValueMismatch();
             return amount;
         }
-        if (msg.value != 0) revert IGrinders.UnexpectedValue();
+        if (msg.value > 0) revert IGrinders.UnexpectedValue();
         uint256 before = IERC20(asset).balanceOf(address(this));
-        IERC20(asset).safeTransferFrom(from, address(this), amount);
-        received = IERC20(asset).balanceOf(address(this)) - before;
+        IERC20(asset).safeTransferFrom(from, to, amount);
+        received = IERC20(asset).balanceOf(to) - before;
         if (received == 0) revert AmountZero();
     }
 

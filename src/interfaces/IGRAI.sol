@@ -36,6 +36,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     error LiquidationAlreadyOpen();
     error LiquidationNotOpen();
     error LiquidationOpen();
+    error EthBidsDisabled();
 
     struct AssetConfig {
         uint16 yieldSplit;
@@ -73,6 +74,13 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint256 amount;
         /// @notice Timestamp of the latest `lock` (resets on each lock).
         uint48 lockedAt;
+    }
+
+    /// @notice Ask/bid Harberger APRs and liquidation quorum threshold.
+    struct ProtocolConfig {
+        uint16 askAprBps;
+        uint16 bidAprBps;
+        uint16 liquidationQuorumBps;
     }
 
     event AssetAdd(address indexed asset);
@@ -122,9 +130,12 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     event LiquidationUnlock(address indexed account, uint256 amount, uint256 fee, uint256 totalLocked);
     event Liquidated(uint256 totalLocked, uint256 supply);
     event LiquidationClosed(uint256 totalLocked, uint256 supply);
-    event LiquidationQuorumUpdate(uint16 bps);
+    event ConfigUpdate(ProtocolConfig config);
 
-    function ASK_APR_BPS() external view returns (uint16);
+    function config()
+        external
+        view
+        returns (uint16 askAprBps, uint16 bidAprBps, uint16 liquidationQuorumBps);
 
     function UNLOCK_FEE_BPS() external view returns (uint16);
 
@@ -180,9 +191,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function totalLiquidationLocked() external view returns (uint256);
 
-    function liquidationQuorumBps() external view returns (uint16);
-
-    /// @notice True when locked GRAI is at least `liquidationQuorumBps` of `totalSupply`.
+    /// @notice True when locked GRAI is at least `config.liquidationQuorumBps` of `totalSupply`.
     function hasQuorum() external view returns (bool);
 
     /// @notice True after `openLiquidation` until `closeLiquidation`.
@@ -196,7 +205,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function setTreasury(address treasury_) external;
 
-    function setLiquidationQuorumBps(uint16 bps) external;
+    function setConfig(ProtocolConfig calldata cfg) external;
 
     function toggleGrinders(address grinders) external;
 
@@ -249,8 +258,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     /// @notice Soft bid: Harberger tax on listing. ERC20 dutch paid via allowance; ETH dutch paid on fulfill.
     function bid(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
-        external
-        payable;
+        external;
 
     /// @notice Net GRAI sought and listing tax in `asset` for a soft bid.
     function previewBid(
@@ -262,9 +270,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint256 graiAmount
     ) external view returns (uint256 lot, uint256 tax);
 
-    /// @notice Fill a soft bid. `msg.value > 0` → ETH path (buyer=`msg.sender`, peer=seller);
-    ///         else ERC20 (seller=`msg.sender`, peer=buyer). ETH takes priority when both listings exist.
-    function fulfillBid(address peer, uint256 graiAmount, uint256 paymentMin) external payable;
+    /// @notice Fill a soft bid by the GRAI seller. Payment is pulled from buyer allowance.
+    function fulfillBid(address peer, uint256 graiAmount, uint256 paymentMin) external;
 
     /// @notice GRAI sold (capped) and dutch payment pulled from buyer's allowance.
     function previewFulfillBid(address buyer, address seller, uint256 graiAmount)
