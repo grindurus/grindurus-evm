@@ -27,16 +27,15 @@ contract Grinders is
 {
     using SafeERC20 for IERC20;
 
-    uint16 public constant BPS = 100_00; // 100%
-    uint16 public constant DEFAULT_YIELD_SPLIT = 80_00; // 80%
-
     IGRAI public grai;
 
     mapping(bytes32 custodianKind => address) public custodianImplementations;
     mapping(uint256 custodianId => address) public custodians;
     mapping(address custodian => uint256) public custodianIds;
-    /// @notice Units of `asset` given to `custodian` via `allocate` — issuance ledger (who got how much),
-    ///         not a claim that the wallet still holds that balance or must return it 1:1 after trading.
+    /// @notice Issuance ledger: how much of `asset` was sent to `custodian` via `allocate`.
+    /// @dev Not an escrow balance and not a cap on returns. Custodians swap base↔quote, so they may
+    ///      `deallocate` an arbitrary amount of any held asset (often a different token than allocated).
+    ///      On deallocate the ledger is floored toward zero for that asset only; it must not gate the pull.
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
     mapping(address asset => uint256) public active;
 
@@ -93,6 +92,9 @@ contract Grinders is
         emit Allocate(asset, custodian, amount);
     }
 
+    /// @notice Pull `amount` of `asset` from a custodian back to this contract.
+    /// @dev Amount is not capped by `allocated`: after swaps the returned token/size need not match
+    ///      what was allocated. Ledger is best-effort decreased (floored at 0) for accounting only.
     function deallocate(address asset, uint256 amount) external payable {
         address custodian = msg.sender;
         _onlyCustodian(custodian);
@@ -105,6 +107,7 @@ contract Grinders is
             IERC20(asset).safeTransferFrom(custodian, address(this), amount);
         }
 
+        // Issuance ledger only — do not require amount <= allocated (swaps change token/size).
         uint256 prevAllocated = allocated[custodian][asset];
         allocated[custodian][asset] = prevAllocated > amount ? prevAllocated - amount : 0;
 

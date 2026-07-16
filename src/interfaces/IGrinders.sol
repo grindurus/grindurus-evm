@@ -47,15 +47,13 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     event Allocate(address indexed asset, address indexed custodian, uint256 amount);
     event Deallocate(address indexed asset, address indexed custodian, uint256 amount);
 
-    function BPS() external view returns (uint16);
-    function DEFAULT_YIELD_SPLIT() external view returns (uint16);
-
     function grai() external view returns (IGRAI);
     function balance(address asset) external view returns (uint256);
 
     function custodianImplementations(bytes32 custodianKind) external view returns (address);
     function custodians(uint256 custodianId) external view returns (address);
     function custodianIds(address custodian) external view returns (uint256);
+    /// @notice Issuance ledger of `allocate` amounts (not a wallet balance / deallocate cap).
     function allocated(address custodian, address asset) external view returns (uint256);
     function active(address asset) external view returns (uint256);
 
@@ -72,6 +70,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         returns (address custodian);
     function register(address custodian, address owner_) external;
     function allocate(address custodian, address asset, uint256 amount) external;
+    /// @notice Custodian returns `amount` of `asset`. Not capped by `allocated` (post-swap inventory).
     function deallocate(address asset, uint256 amount) external payable;
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and `put` swept amounts to GRAI.
