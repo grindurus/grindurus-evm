@@ -142,8 +142,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     /// @dev Safe against non-contract / non-IGrinders `grinders` (same pattern as `custodianId` / `owner`).
     function _isLiquidating() internal view returns (bool) {
         if (grinders.code.length == 0) return false;
-        try IGrinders(grinders).liquidation() returns (bool open) {
-            return open;
+        try IGrinders(grinders).grai() returns (IGRAI grai) {
+            return grai.liquidation();
         } catch {
             return false;
         }
