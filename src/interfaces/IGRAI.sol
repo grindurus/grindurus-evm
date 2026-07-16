@@ -282,10 +282,10 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     function lock(uint256 graiAmount) external;
 
     /// @notice Net GRAI returned and fee (flat `UNLOCK_FEE_BPS` + time tax at `UNLOCK_APR_BPS`).
-    ///         Fee is zero while `hasQuorum()` or `liquidation` so lockers can exit and redeem.
+    ///         Fee is zero while `liquidation` so lockers can exit and redeem.
     function previewUnlock(address account, uint256 graiAmount) external view returns (uint256 net, uint256 fee);
 
-    /// @notice Return locked GRAI minus unlock fee (fee to treasury; waived when `hasQuorum()` or `liquidation`).
+    /// @notice Return locked GRAI minus unlock fee (fee to treasury; waived when `liquidation`).
     function unlock(uint256 graiAmount) external;
 
     /// @notice If quorum is met, set `liquidation` and pause all assets (Grinders `liquidate` then reads this flag).

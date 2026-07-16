@@ -271,7 +271,6 @@ contract GRAI is
 
     /// @notice Split yield into senior accrual (`totalValue` + idle) and protocol profit (to `treasury`).
     function distribute(address asset, uint256 yieldAmount) public payable {
-        // TODO fix double value [88]
         AssetConfig storage cfg = assets[asset];
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (yieldAmount == 0) revert AmountZero();
@@ -688,7 +687,7 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Fee = flat `UNLOCK_FEE_BPS` + `UNLOCK_APR_BPS` accrued since the latest `lock`.
-    ///      Waived when `hasQuorum()` or `liquidation` so lockers can exit and redeem.
+    ///      Waived when `liquidation` so lockers can exit and redeem.
     function previewUnlock(address account, uint256 graiAmount) public view returns (uint256 net, uint256 fee) {
         if (graiAmount == 0) revert AmountZero();
         Lock storage entry = liquidationLocks[account];
