@@ -120,27 +120,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
             + token.usdValue(address(quoteAsset), balance(address(quoteAsset)));
     }
 
-    function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public virtual {
-        _onlyOwner();
-        if (balance(address(baseAsset)) != 0 || balance(address(quoteAsset)) != 0) revert NonZeroBalance();
-        _setTradingAssets(baseAsset_, quoteAsset_);
-        emit AssetsUpdated(address(baseAsset_), address(quoteAsset_));
-    }
-
-    function deallocate(address asset, uint256 amount) public {
-        _onlyOwner();
-        if (_isLiquidating()) revert LiquidationOpen();
-        if (amount == 0) revert AmountZero();
-        if (asset == address(0)) {
-            IGrinders(grinders).deallocate{value: amount}(asset, amount);
-        } else {
-            IERC20(asset).forceApprove(grinders, amount);
-            IGrinders(grinders).deallocate(asset, amount);
-        }
-    }
-
     /// @dev Safe against non-contract / non-IGrinders `grinders` (same pattern as `custodianId` / `owner`).
-    function _isLiquidating() internal view returns (bool) {
+    function liquidation() public view returns (bool) {
         if (grinders.code.length == 0) return false;
         try IGrinders(grinders).grai() returns (IGRAI grai) {
             return grai.liquidation();
@@ -149,27 +130,14 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         }
     }
 
-    /// @notice Liquidation pull of ETH / base / quote to Grinders (only Grinders).
-    function liquidate() public returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut) {
-        _onlyGrinders();
-
-        ethOut = address(this).balance;
-        if (ethOut > 0) {
-            (bool ok,) = grinders.call{value: ethOut}("");
-            if (!ok) revert EthTransferFailed();
-        }
-
-        baseOut = _sweepToken(baseAsset, grinders);
-        quoteOut = _sweepToken(quoteAsset, grinders);
+    function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public virtual {
+        _onlyOwner();
+        if (balance(address(baseAsset)) != 0 || balance(address(quoteAsset)) != 0) revert NonZeroBalance();
+        _setTradingAssets(baseAsset_, quoteAsset_);
+        emit AssetsUpdated(address(baseAsset_), address(quoteAsset_));
     }
 
-    function _sweepToken(IERC20 token, address to) private returns (uint256 bal) {
-        if (address(token) == address(0)) return 0;
-        bal = token.balanceOf(address(this));
-        if (bal > 0) token.safeTransfer(to, bal);
-    }
-
-    function distribute(address asset, uint256 yieldAmount) public {
+    function distribute(address asset, uint256 yieldAmount) public virtual {
         _onlyOwner();
         if (yieldAmount == 0) revert AmountZero();
 
@@ -182,10 +150,36 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         }
     }
 
+    function deallocate(address asset, uint256 amount) public virtual {
+        _onlyOwner();
+        if (liquidation()) revert LiquidationOpen();
+        if (amount == 0) revert AmountZero();
+        if (asset == address(0)) {
+            IGrinders(grinders).deallocate{value: amount}(asset, amount);
+        } else {
+            IERC20(asset).forceApprove(grinders, amount);
+            IGrinders(grinders).deallocate(asset, amount);
+        }
+    }
+
+    /// @notice Liquidation pull of ETH / base / quote to Grinders (only Grinders).
+    function liquidate() public virtual returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut) {
+        _onlyGrinders();
+
+        ethOut = address(this).balance;
+        if (ethOut > 0) {
+            (bool ok,) = grinders.call{value: ethOut}("");
+            if (!ok) revert EthTransferFailed();
+        }
+
+        baseOut = _sweepToken(baseAsset, grinders);
+        quoteOut = _sweepToken(quoteAsset, grinders);
+    }
+
     /// @notice Lock UUPS upgrades instantly, or schedule unlock after `DISABLE_DELAY` when already locked.
     function toggleUpgradeable() public {
         _onlyOwner();
-        if (_isFeatureUnlocked(isUpgradeableDisabled, upgradesDisableScheduledAt)) {
+        if (!isUpgradeableDisabled && block.timestamp > upgradesDisableScheduledAt) {
             isUpgradeableDisabled = true;
             upgradesDisableScheduledAt = type(uint48).max;
             emit UpgradesDisabled();
@@ -202,11 +196,13 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         emit UpgradesDisabled();
     }
 
-    function _isFeatureUnlocked(bool isDisabled, uint48 disableScheduledAt) internal view returns (bool) {
-        return !isDisabled && block.timestamp > disableScheduledAt;
+    function _sweepToken(IERC20 token, address to) internal virtual returns (uint256 bal) {
+        if (address(token) == address(0)) return 0;
+        bal = token.balanceOf(address(this));
+        if (bal > 0) token.safeTransfer(to, bal);
     }
 
-    function _setTradingAssets(IERC20 baseAsset_, IERC20 quoteAsset_) internal {
+    function _setTradingAssets(IERC20 baseAsset_, IERC20 quoteAsset_) internal virtual {
         if (address(baseAsset_) == address(0)) revert BaseZero();
         if (address(quoteAsset_) == address(0)) revert QuoteZero();
         if (address(baseAsset_) == address(quoteAsset_)) revert SameAsset();
