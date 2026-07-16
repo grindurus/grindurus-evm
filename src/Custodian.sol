@@ -139,6 +139,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     function distribute(address asset, uint256 yieldAmount) public virtual {
         _onlyOwner();
+        if (liquidation()) revert LiquidationOpen();
         if (yieldAmount == 0) revert AmountZero();
 
         IGRAI grai_ = IGrinders(grinders).grai();
@@ -150,6 +151,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         }
     }
 
+    /// @notice Return inventory to Grinders. Not limited by `allocated` (custodian may hold swapped assets).
     function deallocate(address asset, uint256 amount) public virtual {
         _onlyOwner();
         if (liquidation()) revert LiquidationOpen();
@@ -165,13 +167,11 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
     /// @notice Liquidation pull of ETH / base / quote to Grinders (only Grinders).
     function liquidate() public virtual returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut) {
         _onlyGrinders();
-
         ethOut = address(this).balance;
         if (ethOut > 0) {
             (bool ok,) = grinders.call{value: ethOut}("");
             if (!ok) revert EthTransferFailed();
         }
-
         baseOut = _sweepToken(baseAsset, grinders);
         quoteOut = _sweepToken(quoteAsset, grinders);
     }
