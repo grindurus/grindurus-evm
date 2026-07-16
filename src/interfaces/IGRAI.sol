@@ -192,6 +192,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function assetList(uint256 index) external view returns (address);
 
+    function getAssets() external view returns (address[] memory);
+
     function setTreasury(address treasury_) external;
 
     function setLiquidationQuorumBps(uint16 bps) external;
@@ -200,6 +202,8 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function balance(address asset) external view returns (uint256);
 
+    /// @notice USD NAV of idle senior balances (6 decimals).
+    // forge-lint: disable-next-line(mixed-case-function)
     function seniorNAV() external view returns (uint256);
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 graiOut, uint256 value);
@@ -284,9 +288,9 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     /// @notice Return locked GRAI minus unlock fee (fee to treasury; waived when `hasQuorum()` or `liquidation`).
     function unlock(uint256 graiAmount) external;
 
-    /// @notice If quorum is met, pause all assets and `openLiquidation` on each grinders registry.
+    /// @notice If quorum is met, set `liquidation` and pause all assets (Grinders `liquidate` then reads this flag).
     function openLiquidation() external;
 
-    /// @notice Close grinders liquidation windows and unpause all assets.
+    /// @notice Clear `liquidation` and unpause all assets.
     function closeLiquidation() external;
 }

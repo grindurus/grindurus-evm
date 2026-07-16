@@ -82,7 +82,7 @@ contract GRAI is
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         treasury = admin_;
-        liquidationQuorumBps = 95_00; // 95%
+        liquidationQuorumBps = 80_00; // 80%
         _grantRole(DEFAULT_ADMIN_ROLE, admin_);
         _grantRole(ADMIN_ROLE, admin_);
         _grantRole(ORACLE_ROLE, admin_);
@@ -114,6 +114,19 @@ contract GRAI is
 
     receive() external payable {}
 
+    /// @inheritdoc IGRAI
+    function getAssets() public view returns (address[] memory) {
+        return assetList;
+    }
+
+    function getAsks() public view returns (address[] memory) {
+        return asksList;
+    }
+
+    function getBids() public view returns (address[] memory) {
+        return bidsList;
+    }
+
     /// @inheritdoc IERC1046
     function tokenURI() public pure returns (string memory) {
         return "https://grindurus.xyz/metadata.json";
@@ -129,6 +142,7 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
+    // forge-lint: disable-next-line(mixed-case-function)
     function seniorNAV() public view returns (uint256 value) {
         uint256 len = assetList.length;
         for (uint256 i; i < len; ++i) {
@@ -136,6 +150,12 @@ contract GRAI is
             uint256 bal = balance(asset);
             if (bal > 0) value += usdValue(asset, bal);
         }
+    }
+
+    /// @inheritdoc IGRAI
+    function hasQuorum() public view returns (bool) {
+        uint256 supply = totalSupply();
+        return supply > 0 && totalLiquidationLocked * BPS >= supply * liquidationQuorumBps;
     }
 
     /// @inheritdoc IGRAI
@@ -182,12 +202,43 @@ contract GRAI is
         if (index != lastIndex) {
             address moved = assetList[lastIndex];
             assetList[index] = moved;
+            // list length / index always fit uint32 in practice
+            // forge-lint: disable-next-line(unsafe-typecast)
             assets[moved].id = uint32(index);
         }
         assetList.pop();
         delete assets[asset];
         delete feeds[asset];
         emit AssetRemove(asset);
+    }
+
+    /// @inheritdoc IGRAI
+    function openLiquidation() public onlyRole(ADMIN_ROLE) {
+        if (liquidation) revert LiquidationAlreadyOpen();
+        if (!hasQuorum()) revert LiquidationQuorumNotMet();
+        uint256 len = assetList.length;
+        for (uint256 i; i < len; ) {
+            address asset = assetList[i];
+            assets[asset].paused = true;
+            emit PauseUpdate(asset, true);
+            unchecked { ++i; }
+        }
+        liquidation = true;
+        emit Liquidated(totalLiquidationLocked, totalSupply());
+    }
+
+    /// @inheritdoc IGRAI
+    function closeLiquidation() public onlyRole(ADMIN_ROLE) {
+        if (!liquidation) revert LiquidationNotOpen();
+        uint256 len = assetList.length;
+        for (uint256 i; i < len; ) {
+            address asset = assetList[i];
+            assets[asset].paused = false;
+            emit PauseUpdate(asset, false);
+            unchecked { ++i; }
+        }
+        liquidation = false;
+        emit LiquidationClosed(totalLiquidationLocked, totalSupply());
     }
 
     function setPaused(address asset, bool paused) external onlyRole(ADMIN_ROLE) {
@@ -541,17 +592,8 @@ contract GRAI is
         if (graiIn == 0 || payment == 0) revert AmountZero();
         if (payment < paymentMin) revert PaymentBelowMin();
 
-        uint256 remaining = entry.graiRemaining;
         address asset = entry.asset;
-        if (asset == address(0)) {
-            if (msg.value != payment) revert ValueMismatch();
-            _withdraw(seller, address(0), payment);
-        } else {
-            if (msg.value != 0) revert UnexpectedValue();
-            IERC20(asset).safeTransferFrom(buyer, seller, payment);
-        }
-        _transfer(seller, buyer, graiIn);
-
+        uint256 remaining = entry.graiRemaining;
         uint256 newRemaining = remaining - graiIn;
         // Dust vs pre-scale initial; post-scale initial tracks remaining and would make dust unreachable.
         uint256 graiDust = (entry.graiInitial * GRAI_DUST_BPS) / BPS;
@@ -561,6 +603,14 @@ contract GRAI is
         entry.graiRemaining = newRemaining;
 
         if (newRemaining == 0 || newRemaining <= graiDust || balanceOf(seller) == 0) _removeBid(buyer);
+        if (asset == address(0)) {
+            if (msg.value != payment) revert ValueMismatch();
+            _withdraw(seller, address(0), payment);
+        } else {
+            if (msg.value != 0) revert UnexpectedValue();
+            IERC20(asset).safeTransferFrom(buyer, seller, payment);
+        }
+        _transfer(seller, buyer, graiIn);
         emit BidFulfill(seller, buyer, asset, graiIn, payment);
     }
 
@@ -655,56 +705,6 @@ contract GRAI is
         net = graiAmount - fee;
     }
 
-    /// @inheritdoc IGRAI
-    function hasQuorum() public view returns (bool) {
-        uint256 supply = totalSupply();
-        return supply > 0 && totalLiquidationLocked * BPS >= supply * liquidationQuorumBps;
-    }
-
-    /// @inheritdoc IGRAI
-    function openLiquidation() public {
-        if (liquidation) revert LiquidationAlreadyOpen();
-        if (!hasQuorum()) revert LiquidationQuorumNotMet();
-
-        liquidation = true;
-
-        uint256 len = assetList.length;
-        address[] memory assets_ = new address[](len);
-        for (uint256 i; i < len; ) {
-            address asset = assetList[i];
-            assets[asset].paused = true;
-            assets_[i] = asset;
-            emit PauseUpdate(asset, true);
-            unchecked { ++i; }
-        }
-        uint256 grindersLen = getRoleMemberCount(GRINDERS_ROLE);
-        for (uint256 i; i < grindersLen; ++i) {
-            IGrinders(getRoleMember(GRINDERS_ROLE, i)).openLiquidation(assets_);
-        }
-        emit Liquidated(totalLiquidationLocked, totalSupply());
-    }
-
-    /// @inheritdoc IGRAI
-    function closeLiquidation() public onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (!liquidation) revert LiquidationNotOpen();
-
-        uint256 grindersLen = getRoleMemberCount(GRINDERS_ROLE);
-        for (uint256 i; i < grindersLen; ++i) {
-            IGrinders(getRoleMember(GRINDERS_ROLE, i)).closeLiquidation();
-        }
-
-        uint256 len = assetList.length;
-        for (uint256 i; i < len; ) {
-            address asset = assetList[i];
-            assets[asset].paused = false;
-            emit PauseUpdate(asset, false);
-            unchecked { ++i; }
-        }
-
-        liquidation = false;
-        emit LiquidationClosed(totalLiquidationLocked, totalSupply());
-    }
-
     //////////////////// INTERNAL HELPERS ////////////////////
 
     function _pay(address to, address asset, uint256 payment) private {
@@ -724,6 +724,8 @@ contract GRAI is
         if (index != lastIndex) {
             address moved = asksList[lastIndex];
             asksList[index] = moved;
+            // asksList length / index always fit uint32 in practice
+            // forge-lint: disable-next-line(unsafe-typecast)
             asks[moved].id = uint32(index);
         }
         asksList.pop();
@@ -736,6 +738,8 @@ contract GRAI is
         if (index != lastIndex) {
             address moved = bidsList[lastIndex];
             bidsList[index] = moved;
+            // bidsList length / index always fit uint32 in practice
+            // forge-lint: disable-next-line(unsafe-typecast)
             bids[moved].id = uint32(index);
         }
         bidsList.pop();
