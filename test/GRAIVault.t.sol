@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
+import {console2} from "forge-std/console2.sol";
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {GRAI} from "../src/GRAI.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IGrinders} from "../src/interfaces/IGrinders.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
@@ -581,7 +581,7 @@ contract GRAIVaultTest is GRAIFixture {
 
     /// Shared: deposit at mintEthUsd → take → price → distribute 0.1 → redeem(max) → put 1 ETH → redeem(max).
     /// Senior yield split 80% → vault idle 0.08 ETH; Grinders keep the 1 ETH principal until put.
-    function _scenario_TakeDistributeRedeemPutRedeem(
+    function _scenarioTakeDistributeRedeemPutRedeem(
         int256 mintEthUsd,
         uint256 expectedMintGrai,
         int256 ethUsd,
@@ -676,48 +676,48 @@ contract GRAIVaultTest is GRAIFixture {
 
     function test_Scenario_TakeDistributeRedeem_Price2500() public {
         // mint @ $2000; yield @ $2500 → full exit after put
-        _scenario_TakeDistributeRedeemPutRedeem(
+        _scenarioTakeDistributeRedeemPutRedeem(
             2000e8, 2000e6, 2500e8, 200e6, 2200e6, 1_100_000, 181_818_182, 1_818_181_818, 1_818_181_818, 0
         );
     }
 
     function test_Scenario_TakeDistributeRedeem_Price2000() public {
         // mint @ $2000; yield @ $2000 → full exit after put
-        _scenario_TakeDistributeRedeemPutRedeem(
+        _scenarioTakeDistributeRedeemPutRedeem(
             2000e8, 2000e6, 2000e8, 160e6, 2160e6, 1_080_000, 148_148_149, 1_851_851_851, 1_851_851_851, 0
         );
     }
 
     function test_Scenario_TakeDistributeRedeem_Price1500() public {
         // mint @ $2000; yield @ $1500 → leave ~471.70 GRAI after put+redeem
-        _scenario_TakeDistributeRedeemPutRedeem(
+        _scenarioTakeDistributeRedeemPutRedeem(
             2000e8, 2000e6, 1500e8, 120e6, 2120e6, 1_060_000, 113_207_548, 1_886_792_452, 1_415_094_339, 471_698_113
         );
     }
 
     function test_Scenario_Mint1000_TakeDistributeRedeem_Price500() public {
         // mint @ $1000; spot $500 → after put leave ~480.77 GRAI
-        _scenario_TakeDistributeRedeemPutRedeem(
+        _scenarioTakeDistributeRedeemPutRedeem(
             1000e8, 1000e6, 500e8, 40e6, 1040e6, 1_040_000, 38_461_539, 961_538_461, 480_769_231, 480_769_230
         );
     }
 
     function test_Scenario_Mint1000_TakeDistributeRedeem_Price1000() public {
         // mint @ $1000; spot $1000 → full exit after put
-        _scenario_TakeDistributeRedeemPutRedeem(
+        _scenarioTakeDistributeRedeemPutRedeem(
             1000e8, 1000e6, 1000e8, 80e6, 1080e6, 1_080_000, 74_074_074, 925_925_926, 925_925_925, 1
         );
     }
 
     function test_Scenario_Mint1000_TakeDistributeRedeem_Price1500() public {
         // mint @ $1000; spot $1500 → full exit after put (NAV > remaining book)
-        _scenario_TakeDistributeRedeemPutRedeem(
+        _scenarioTakeDistributeRedeemPutRedeem(
             1000e8, 1000e6, 1500e8, 120e6, 1120e6, 1_120_000, 107_142_858, 892_857_142, 892_857_142, 0
         );
     }
 
     /// ETH+USDC: deposit → take → price → distribute → redeem → put basket → redeem.
-    function _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+    function _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
         int256 ethUsd,
         uint256 expectedNavAfterDist,
         uint256 expectedTvAfterDist,
@@ -841,74 +841,74 @@ contract GRAIVaultTest is GRAIFixture {
 
     // --- legacy partial put (0.5 ETH + 1500 USDC) ---
     function test_Scenario_EthUsdc_TakeDistributeRedeemPut_Price500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             500e8, 80e6, 2080e6, 1_040_000, 76_923_077, 1_923_076_923, 0.5 ether, 1500e6, 1_682_692_308, 240_384_615
         );
     }
 
     function test_Scenario_EthUsdc_TakeDistributeRedeemPut_Price1000() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1000e8, 120e6, 2120e6, 1_060_000, 113_207_548, 1_886_792_452, 0.5 ether, 1500e6, 1_886_792_452, 0
         );
     }
 
     function test_Scenario_EthUsdc_TakeDistributeRedeemPut_Price1500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1500e8, 160e6, 2160e6, 1_080_000, 148_148_149, 1_851_851_851, 0.5 ether, 1500e6, 1_851_851_851, 0
         );
     }
 
     // --- put matrix: (2 ETH,0) / (1 ETH,1000 USDC) / (0,2000 USDC) × price $500/$1000/$1500 ---
     function test_Scenario_EthUsdc_Put2Eth_Price500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             500e8, 80e6, 2080e6, 1_040_000, 76_923_077, 1_923_076_923, 2 ether, 0, 961_538_462, 961_538_461
         );
     }
 
     function test_Scenario_EthUsdc_Put2Eth_Price1000() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1000e8, 120e6, 2120e6, 1_060_000, 113_207_548, 1_886_792_452, 2 ether, 0, 1_886_792_452, 0
         );
     }
 
     function test_Scenario_EthUsdc_Put2Eth_Price1500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1500e8, 160e6, 2160e6, 1_080_000, 148_148_149, 1_851_851_851, 2 ether, 0, 1_851_851_851, 0
         );
     }
 
     function test_Scenario_EthUsdc_Put1Eth1000Usdc_Price500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             500e8, 80e6, 2080e6, 1_040_000, 76_923_077, 1_923_076_923, 1 ether, 1000e6, 1_442_307_693, 480_769_230
         );
     }
 
     function test_Scenario_EthUsdc_Put1Eth1000Usdc_Price1000() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1000e8, 120e6, 2120e6, 1_060_000, 113_207_548, 1_886_792_452, 1 ether, 1000e6, 1_886_792_452, 0
         );
     }
 
     function test_Scenario_EthUsdc_Put1Eth1000Usdc_Price1500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1500e8, 160e6, 2160e6, 1_080_000, 148_148_149, 1_851_851_851, 1 ether, 1000e6, 1_851_851_851, 0
         );
     }
 
     function test_Scenario_EthUsdc_Put2000Usdc_Price500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             500e8, 80e6, 2080e6, 1_040_000, 76_923_077, 1_923_076_923, 0, 2000e6, 1_923_076_923, 0
         );
     }
 
     function test_Scenario_EthUsdc_Put2000Usdc_Price1000() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1000e8, 120e6, 2120e6, 1_060_000, 113_207_548, 1_886_792_452, 0, 2000e6, 1_886_792_452, 0
         );
     }
 
     function test_Scenario_EthUsdc_Put2000Usdc_Price1500() public {
-        _scenario_EthUsdc_TakeDistributeRedeemPutRedeem(
+        _scenarioEthUsdcTakeDistributeRedeemPutRedeem(
             1500e8, 160e6, 2160e6, 1_080_000, 148_148_149, 1_851_851_851, 0, 2000e6, 1_851_851_851, 0
         );
     }
@@ -1262,7 +1262,7 @@ contract GRAIVaultTest is GRAIFixture {
 
         uint256 send = lot / 4;
         vm.prank(alice);
-        graiToken.transfer(bob, send);
+        assertTrue(graiToken.transfer(bob, send));
 
         // No transfer-hook: ask lot is unchanged after a plain transfer.
         (, uint256 remaining, uint256 initial, uint256 maxAfter, uint256 minAfter, uint256 startTime,,) =
@@ -1276,7 +1276,7 @@ contract GRAIVaultTest is GRAIFixture {
         // Dump unlisted + part of listed so seller holds less than the open lot.
         uint256 dump = graiToken.balanceOf(alice) - (lot / 2);
         vm.prank(alice);
-        graiToken.transfer(bob, dump);
+        assertTrue(graiToken.transfer(bob, dump));
         assertLt(graiToken.balanceOf(alice), lot);
 
         // previewFulfillAsk / bid clamp to seller balance — payment shrinks, fill succeeds.
@@ -1295,6 +1295,223 @@ contract GRAIVaultTest is GRAIFixture {
         assertEq(graiToken.balanceOf(bob), held + send + dump);
         (,,,, , uint256 startAfter,,) = graiToken.asks(alice);
         assertEq(startAfter, 0);
+    }
+
+    // Deposit 1 ETH at $1000 -> ask 500 GRAI for 500 USDC (flat) -> bob fills entire lot.
+    function test_Ask500_FulfillAll() public {
+        address treasury = admin;
+        _enableEthAt1000();
+
+        uint256 aliceUsdc0 = usdc.balanceOf(alice);
+        uint256 bobUsdc0 = usdc.balanceOf(bob);
+        uint256 treasury0 = graiToken.balanceOf(treasury);
+
+        // 1) deposit 1 ETH @ $1000
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        graiToken.deposit{value: 1 ether}(address(0), 1 ether);
+        assertEq(graiToken.balanceOf(alice), 1000e6);
+
+        // 2) ask 500 GRAI for 500 USDC
+        uint256 duration = 1 days;
+        uint256 listAmount = 500e6;
+        uint256 askPayment = 500e6;
+        (uint256 lot, uint256 tax) = graiToken.previewAsk(alice, askPayment, askPayment, duration, listAmount);
+        assertEq(tax, 13_698);
+        assertEq(lot, 499_986_302);
+
+        vm.prank(alice);
+        graiToken.ask(address(usdc), askPayment, askPayment, duration, listAmount);
+        assertEq(graiToken.balanceOf(alice), 1000e6 - tax);
+        assertEq(graiToken.balanceOf(treasury) - treasury0, tax);
+
+        // 3) fulfill all
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), askPayment);
+        graiToken.fulfillAsk(alice, type(uint256).max, askPayment);
+        vm.stopPrank();
+
+        assertEq(graiToken.balanceOf(alice), 1000e6 - tax - lot);
+        assertEq(graiToken.balanceOf(bob), lot);
+        assertEq(usdc.balanceOf(alice), aliceUsdc0 + askPayment);
+        assertEq(usdc.balanceOf(bob), bobUsdc0 - askPayment);
+        (,,,,, uint256 startAfter,,) = graiToken.asks(alice);
+        assertEq(startAfter, 0);
+    }
+
+    // Deposit 1 ETH at $1000 -> ask 500 GRAI for 500 USDC (flat) -> bob fills half, ask stays open.
+    function test_Ask500_FulfillPartial() public {
+        address treasury = admin;
+        _enableEthAt1000();
+
+        uint256 aliceUsdc0 = usdc.balanceOf(alice);
+        uint256 bobUsdc0 = usdc.balanceOf(bob);
+        uint256 treasury0 = graiToken.balanceOf(treasury);
+
+        // 1) deposit 1 ETH @ $1000
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        graiToken.deposit{value: 1 ether}(address(0), 1 ether);
+        assertEq(graiToken.balanceOf(alice), 1000e6);
+
+        // 2) ask 500 GRAI for 500 USDC
+        uint256 duration = 1 days;
+        uint256 listAmount = 500e6;
+        uint256 askPayment = 500e6;
+        (uint256 lot, uint256 tax) = graiToken.previewAsk(alice, askPayment, askPayment, duration, listAmount);
+        assertEq(tax, 13_698);
+        assertEq(lot, 499_986_302);
+
+        vm.prank(alice);
+        graiToken.ask(address(usdc), askPayment, askPayment, duration, listAmount);
+        assertEq(graiToken.balanceOf(alice), 1000e6 - tax);
+        assertEq(graiToken.balanceOf(treasury) - treasury0, tax);
+
+        // 3) fulfill partial (half lot → 250 USDC)
+        uint256 fill = lot / 2;
+        (, uint256 pay) = graiToken.previewFulfillAsk(alice, fill);
+        assertEq(pay, 250e6);
+
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), pay);
+        graiToken.fulfillAsk(alice, fill, pay);
+        vm.stopPrank();
+
+        assertEq(graiToken.balanceOf(alice), 1000e6 - tax - fill);
+        assertEq(graiToken.balanceOf(bob), fill);
+        assertEq(usdc.balanceOf(alice), aliceUsdc0 + pay);
+        assertEq(usdc.balanceOf(bob), bobUsdc0 - pay);
+
+        (, uint256 rem,, uint256 maxPay,,,,) = graiToken.asks(alice);
+        assertEq(rem, lot - fill);
+        assertEq(maxPay, 250e6);
+    }
+
+    function _enableEthAt1000() internal {
+        vm.startPrank(admin);
+        wethFeed.setAnswer(1000e8);
+        _setChainlinkFeed(address(0), address(wethFeed));
+        graiToken.addAsset(address(0), DEFAULT_YIELD_SPLIT);
+        vm.stopPrank();
+    }
+
+    // Deposit 1 ETH at $1000 -> bob bids 500 GRAI for 500 USDC (flat after tax) -> alice fills entire lot.
+    //
+    // tax = 13_698, maxNet = 499_986_302 (1d). Bid lot = 500e6 GRAI (tax is USDC, not GRAI).
+    //
+    // | step | event                         | alice GRAI | bob GRAI | treasury USDC | alice USDC        | bob USDC          | bid rem | bid maxNet    |
+    // |------|-------------------------------|------------|----------|---------------|-------------------|-------------------|---------|---------------|
+    // | 0    | start                         | 0          | 0        | 0             | 1000e6            | 1000e6            | -       | -             |
+    // | 1    | alice deposit 1 ETH @ $1000   | 1000e6     | 0        | 0             | 1000e6            | 1000e6            | -       | -             |
+    // | 2    | bob bid 500 GRAI / 500 USDC   | 1000e6     | 0        | 13698         | 1000e6            | 999986302         | 500e6   | 499986302     |
+    // | 3    | alice fulfill all             | 500e6      | 500e6    | 13698         | 1000e6+499986302  | 500e6             | cleared | -             |
+    function test_Bid500_FulfillAll() public {
+        address treasury = admin;
+        _enableEthAt1000();
+
+        uint256 aliceUsdc0 = usdc.balanceOf(alice);
+        uint256 bobUsdc0 = usdc.balanceOf(bob);
+        uint256 treasuryUsdc0 = usdc.balanceOf(treasury);
+
+        // 1) alice deposits 1 ETH @ $1000
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        graiToken.deposit{value: 1 ether}(address(0), 1 ether);
+        assertEq(graiToken.balanceOf(alice), 1000e6);
+
+        // 2) bob bids 500 GRAI for 500 USDC (flat dutch = maxNet)
+        uint256 duration = 1 days;
+        uint256 graiWanted = 500e6;
+        uint256 maxPayment = 500e6;
+
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), maxPayment);
+        (uint256 lot, uint256 tax) =
+            graiToken.previewBid(bob, address(usdc), maxPayment, 0, duration, graiWanted);
+        assertEq(lot, graiWanted);
+        assertEq(tax, 13_698);
+        uint256 maxNet = maxPayment - tax;
+        assertEq(maxNet, 499_986_302);
+        graiToken.bid(address(usdc), maxPayment, maxNet, duration, graiWanted);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(treasury) - treasuryUsdc0, tax);
+        assertEq(usdc.balanceOf(bob), bobUsdc0 - tax);
+        (, uint256 rem,, uint256 maxStored,,,,) = graiToken.bids(bob);
+        assertEq(rem, lot);
+        assertEq(maxStored, maxNet);
+
+        // 3) alice fulfill all
+        vm.prank(alice);
+        graiToken.fulfillBid(bob, type(uint256).max, maxNet);
+
+        assertEq(graiToken.balanceOf(alice), 500e6);
+        assertEq(graiToken.balanceOf(bob), lot);
+        assertEq(usdc.balanceOf(alice), aliceUsdc0 + maxNet);
+        assertEq(usdc.balanceOf(bob), bobUsdc0 - maxPayment);
+        (,,,,, uint256 startAfter,,) = graiToken.bids(bob);
+        assertEq(startAfter, 0);
+    }
+
+    // Deposit 1 ETH at $1000 -> bob bids 500 GRAI for 500 USDC -> alice fills half, bid stays open.
+    //
+    // | step | event                         | alice GRAI | bob GRAI | treasury USDC | alice USDC        | bob USDC          | bid rem | bid maxNet    |
+    // |------|-------------------------------|------------|----------|---------------|-------------------|-------------------|---------|---------------|
+    // | 0    | start                         | 0          | 0        | 0             | 1000e6            | 1000e6            | -       | -             |
+    // | 1    | alice deposit 1 ETH @ $1000   | 1000e6     | 0        | 0             | 1000e6            | 1000e6            | -       | -             |
+    // | 2    | bob bid 500 GRAI / 500 USDC   | 1000e6     | 0        | 13698         | 1000e6            | 999986302         | 500e6   | 499986302     |
+    // | 3    | alice fulfill half            | 750e6      | 250e6    | 13698         | 1000e6+249993151  | 749993151         | 250e6   | 249993151     |
+    //
+    // Step 3 payment = maxNet/2 = 249_993_151; bob USDC = 1000e6 - tax - pay.
+    function test_Bid500_FulfillPartial() public {
+        address treasury = admin;
+        _enableEthAt1000();
+
+        uint256 aliceUsdc0 = usdc.balanceOf(alice);
+        uint256 bobUsdc0 = usdc.balanceOf(bob);
+        uint256 treasuryUsdc0 = usdc.balanceOf(treasury);
+
+        // 1) alice deposits 1 ETH @ $1000
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        graiToken.deposit{value: 1 ether}(address(0), 1 ether);
+        assertEq(graiToken.balanceOf(alice), 1000e6);
+
+        // 2) bob bids 500 GRAI for 500 USDC
+        uint256 duration = 1 days;
+        uint256 graiWanted = 500e6;
+        uint256 maxPayment = 500e6;
+
+        vm.startPrank(bob);
+        usdc.approve(address(graiToken), maxPayment);
+        (uint256 lot, uint256 tax) =
+            graiToken.previewBid(bob, address(usdc), maxPayment, 0, duration, graiWanted);
+        assertEq(lot, graiWanted);
+        assertEq(tax, 13_698);
+        uint256 maxNet = maxPayment - tax;
+        assertEq(maxNet, 499_986_302);
+        graiToken.bid(address(usdc), maxPayment, maxNet, duration, graiWanted);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(treasury) - treasuryUsdc0, tax);
+
+        // 3) alice fulfill partial (half lot)
+        uint256 fill = lot / 2;
+        (, uint256 pay) = graiToken.previewFulfillBid(bob, alice, fill);
+        assertEq(pay, maxNet / 2);
+        assertEq(pay, 249_993_151);
+
+        vm.prank(alice);
+        graiToken.fulfillBid(bob, fill, pay);
+
+        assertEq(graiToken.balanceOf(alice), 1000e6 - fill);
+        assertEq(graiToken.balanceOf(bob), fill);
+        assertEq(usdc.balanceOf(alice), aliceUsdc0 + pay);
+        assertEq(usdc.balanceOf(bob), bobUsdc0 - tax - pay);
+
+        (, uint256 rem,, uint256 maxStored,,,,) = graiToken.bids(bob);
+        assertEq(rem, lot - fill);
+        assertEq(maxStored, maxNet - pay);
     }
 
     // Soft-escrow auction walkthrough (flat 500 USDC ask for half of a 1 ETH at 1000 USD mint).
@@ -1379,7 +1596,7 @@ contract GRAIVaultTest is GRAIFixture {
         // --- 4. alice transfers half of remaining wallet GRAI to charlie (ask unchanged) ---
         uint256 toCharlie = aliceGrai3 / 2;
         vm.prank(alice);
-        graiToken.transfer(charlie, toCharlie);
+        assertTrue(graiToken.transfer(charlie, toCharlie));
 
         uint256 aliceGrai4 = aliceGrai3 - toCharlie;
         assertEq(graiToken.balanceOf(alice), aliceGrai4);
@@ -1870,7 +2087,7 @@ contract GRAIVaultTest is GRAIFixture {
         (, bool wethPaused,) = graiToken.assets(address(weth));
         assertTrue(usdcPaused);
         assertTrue(wethPaused);
-        assertTrue(grai.liquidation());
+        assertTrue(graiToken.liquidation());
 
         // Paginated custodian sweep (anyone).
         grai.liquidate(0, grai.totalSupply());
@@ -1958,5 +2175,115 @@ contract GRAIVaultTest is GRAIFixture {
         assertEq(graiToken.balanceOf(bob), graiWanted);
         (,,,,,, uint256 startTime,) = graiToken.bids(bob);
         assertEq(startTime, 0);
+    }
+
+    /// Deposit 1 ETH at $1000 + 1000 USDC → take all → allocate custodians → lock → openLiquidation
+    /// → liquidate (idle back on vault) → unlock → Alice & Bob redeem.
+    function test_Scenario_LockOpenUnlockRedeem_EthUsdc_TakeAll() public {
+        vm.startPrank(admin);
+        wethFeed.setAnswer(1000e8);
+        _setChainlinkFeed(address(0), address(wethFeed));
+        graiToken.addAsset(address(0), DEFAULT_YIELD_SPLIT);
+        vm.stopPrank();
+
+        // Drop fixture seed so liquidate only returns taken capital.
+        deal(address(usdc), custodian, 0);
+
+        _logBalances("0.start");
+
+        // 1) deposit 1 ETH @ $1000 + 1000 USDC (Alice)
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        graiToken.deposit{value: 1 ether}(address(0), 1 ether);
+        _mint(alice, usdc, 1000e6);
+        assertEq(graiToken.balanceOf(alice), 2000e6);
+        assertEq(graiToken.totalValue(), 2000e6);
+        _logBalances("1.deposit");
+
+        // 2) grinders take all → allocate to custodian (junior park)
+        vm.startPrank(address(grai));
+        graiToken.take(address(0), address(grai), 1 ether);
+        graiToken.take(address(usdc), address(grai), 1000e6);
+        vm.stopPrank();
+        _allocate(address(0), custodian, 1 ether);
+        _allocate(address(usdc), custodian, 1000e6);
+        assertEq(graiToken.seniorNAV(), 0);
+        assertEq(graiToken.maxRedeem(), 0);
+        _logBalances("2.take+allocate");
+
+        // 3) two users: Bob unlocked float; Alice locks 95% for quorum
+        vm.prank(alice);
+        assertTrue(graiToken.transfer(bob, 100e6));
+        vm.prank(alice);
+        graiToken.lock(1900e6);
+        assertTrue(graiToken.hasQuorum());
+        _logBalances("3.lock");
+
+        // 4) openLiquidation + paginated recall → idle back on vault
+        vm.prank(alice);
+        graiToken.openLiquidation();
+        assertTrue(graiToken.liquidation());
+        grai.liquidate(0, grai.totalSupply());
+        assertEq(graiToken.balance(address(0)), 1 ether);
+        assertEq(graiToken.balance(address(usdc)), 1000e6);
+        assertEq(graiToken.seniorNAV(), 2000e6);
+        assertEq(graiToken.maxRedeem(), 2000e6);
+        _logBalances("4.open+liquidate");
+
+        // 5) Alice unlocks for free (fee waived while liquidation)
+        (uint256 net, uint256 fee) = graiToken.previewUnlock(alice, 1900e6);
+        assertEq(fee, 0);
+        assertEq(net, 1900e6);
+        vm.prank(alice);
+        graiToken.unlock(1900e6);
+        assertEq(graiToken.balanceOf(alice), 1900e6);
+        _logBalances("5.unlock");
+
+        // 6) Alice then Bob redeem their balances (pro-rata idle vs maxRedeem)
+        uint256 aliceEthBefore = alice.balance;
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 bobEthBefore = bob.balance;
+        uint256 bobUsdcBefore = usdc.balanceOf(bob);
+
+        uint256 aliceBal = graiToken.balanceOf(alice);
+        uint256 bobBal = graiToken.balanceOf(bob);
+        _redeem(alice, aliceBal);
+        _logBalances("6a.aliceRedeem");
+        _redeem(bob, bobBal);
+        _logBalances("6b.bobRedeem");
+
+        // Full idle drained; sticky book burned with supply.
+        assertEq(graiToken.balance(address(0)), 0);
+        assertEq(graiToken.balance(address(usdc)), 0);
+        assertEq(graiToken.balanceOf(alice), 0);
+        assertEq(graiToken.balanceOf(bob), 0);
+        assertEq(graiToken.seniorNAV(), 0);
+        assertEq(graiToken.maxRedeem(), 0);
+
+        // Pro-rata: Alice 1900/2000, Bob 100/2000 of 1 ETH + 1000 USDC
+        assertEq(alice.balance - aliceEthBefore, (1 ether * 1900) / 2000);
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, (1000e6 * 1900) / 2000);
+        assertEq(bob.balance - bobEthBefore, (1 ether * 100) / 2000);
+        assertEq(usdc.balanceOf(bob) - bobUsdcBefore, (1000e6 * 100) / 2000);
+    }
+
+    function _logBalances(string memory step) internal view {
+        console2.log("========", step);
+        console2.log("TV", graiToken.totalValue());
+        console2.log("NAV", graiToken.seniorNAV());
+        console2.log("maxRedeem", graiToken.maxRedeem());
+        console2.log("supply", graiToken.totalSupply());
+        console2.log("locked", graiToken.totalLiquidationLocked());
+        console2.log("liquidation", graiToken.liquidation());
+        console2.log("alice GRAI", graiToken.balanceOf(alice));
+        console2.log("bob GRAI", graiToken.balanceOf(bob));
+        console2.log("vault ETH", graiToken.balance(address(0)));
+        console2.log("vault USDC", graiToken.balance(address(usdc)));
+        console2.log("custodian ETH", custodian.balance);
+        console2.log("custodian USDC", usdc.balanceOf(custodian));
+        console2.log("grinders ETH", grai.balance(address(0)));
+        console2.log("grinders USDC", usdc.balanceOf(address(grai)));
+        console2.log("used ETH", graiToken.used(address(0)));
+        console2.log("used USDC", graiToken.used(address(usdc)));
     }
 }

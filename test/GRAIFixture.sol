@@ -8,7 +8,6 @@ import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
 import {Custodian} from "../src/Custodian.sol";
 import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
-import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 

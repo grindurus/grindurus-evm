@@ -2,7 +2,6 @@
 pragma solidity ^0.8.30;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
-import {IGRAI} from "../src/interfaces/IGRAI.sol";
 
 contract MathPrecisionProbe is GRAIFixture {
   /// Micro redeem is allowed when NAV covers mint-price value.

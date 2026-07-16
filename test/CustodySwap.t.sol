@@ -2,6 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAIFixture} from "./GRAIFixture.sol";
@@ -9,14 +10,16 @@ import {SwapCustodian} from "../src/custodians/SwapCustodian.sol";
 import {Custodian} from "../src/Custodian.sol";
 
 contract MockSwapRouter {
+    using SafeERC20 for IERC20;
+
     function sellBaseForQuote(IERC20 base, IERC20 quote, uint256 baseIn, uint256 quoteOut) external {
-        IERC20(base).transferFrom(msg.sender, address(this), baseIn);
-        IERC20(quote).transfer(msg.sender, quoteOut);
+        base.safeTransferFrom(msg.sender, address(this), baseIn);
+        quote.safeTransfer(msg.sender, quoteOut);
     }
 
     function buyBaseWithQuote(IERC20 base, IERC20 quote, uint256 quoteIn, uint256 baseOut) external {
-        IERC20(quote).transferFrom(msg.sender, address(this), quoteIn);
-        IERC20(base).transfer(msg.sender, baseOut);
+        quote.safeTransferFrom(msg.sender, address(this), quoteIn);
+        base.safeTransfer(msg.sender, baseOut);
     }
 
     function alwaysRevert() external pure {
