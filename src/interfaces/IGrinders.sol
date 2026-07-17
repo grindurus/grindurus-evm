@@ -5,9 +5,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
 import {IERC1046} from "./IERC1046.sol";
 
-import {IGRAI} from "./IGRAI.sol";
+import {IJuniorPool} from "./IJuniorPool.sol";
 
-interface IGrinders is IERC721Enumerable, IERC1046 {
+interface IGrinders is IERC721Enumerable, IERC1046, IJuniorPool {
     error ZeroAddress();
     error OwnerZero();
     error GraiTokenZero();
@@ -47,7 +47,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     event Allocate(address indexed asset, address indexed custodian, uint256 amount);
     event Deallocate(address indexed asset, address indexed custodian, uint256 amount);
 
-    function grai() external view returns (IGRAI);
     function balance(address asset) external view returns (uint256);
 
     function custodianImplementations(bytes32 custodianKind) external view returns (address);
