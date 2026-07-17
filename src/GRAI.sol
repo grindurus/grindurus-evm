@@ -188,17 +188,14 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @notice Liquid senior tranche cap: how much GRAI may exit against *current idle* NAV only.
-    /// @dev Sticky `totalValue` can exceed idle mark-to-market (e.g. after an oracle drop while book is
-    ///      unchanged). Redeeming exactly `maxRedeem()` intentionally drains 100% of idle balances while
-    ///      burning only that NAV-capped share count — residual GRAI stays as a claim on non-idle /
-    ///      sticky book. Partial redeems pro-rate idle by `graiAmount / maxRedeem`, not `/ totalSupply`.
-    ///      This FCFS idle model is by design, not an accounting bug.
+    /// @notice Max GRAI that can be redeemed against idle assets right now.
+    /// @dev `redeem(maxRedeem())` takes all idle; leftover GRAI stays as a claim on future yield.
+    ///      Partial redeems split idle by `graiAmount / maxRedeem` (first-come-first-served).
     function maxRedeem() public view returns (uint256) {
         uint256 supply = totalSupply();
         if (supply == 0) return 0;
-        // Invert of previewRedeem book value: (graiAmount * totalValue) / supply <= nav().
-        if (totalValue == 0) return supply;
+        // Invert of previewRedeem book value: (graiAmount * totalDeposit) / supply <= nav().
+        if (totalDeposit + totalYield == 0) return supply;
 
         uint256 byNav = ((nav() + 1) * supply - 1) / (totalDeposit + totalYield);
         return byNav < supply ? byNav : supply;
@@ -265,8 +262,6 @@ contract GRAI is
 
     //////////////////// DISTRIBUTE ////////////////////
 
-    /// @notice Split yield into senior accrual (`totalValue` + idle) and protocol profit (to `treasury`).
-    /// @dev Pull funds, update book, then pay treasury (effects before the outbound call).
     function distribute(address asset, uint256 yieldAmount) public payable {
         AssetConfig storage cfg = assets[asset];
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
@@ -309,8 +304,8 @@ contract GRAI is
     function previewDeposit(address asset, uint256 amount) public view returns (uint256 graiOut, uint256 value) {
         value = usdValue(asset, amount);
         uint256 supply = totalSupply();
-        if (supply == 0 || totalValue == 0) return (value, value);
-        graiOut = (value * supply) / totalValue;
+        if (supply == 0 || totalDeposit == 0) return (value, value);
+        graiOut = (value * supply) / (totalDeposit + totalYield);
     }
 
     //////////////////// REDEEM ////////////////////
