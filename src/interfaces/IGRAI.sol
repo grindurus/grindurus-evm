@@ -7,7 +7,6 @@ import {IERC1046} from "./IERC1046.sol";
 import {IPriceOracleRouter} from "./IPriceOracleRouter.sol";
 
 interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
-    error AssetExists();
     error AssetUnknown();
     error AssetBalanceNonZero();
     error BpsTooHigh();
@@ -28,10 +27,12 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error EthBidsDisabled();
 
     struct AssetConfig {
-        uint16 yieldSplit;
-        bool paused;
+        /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
+        address asset;
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
+        bool paused;
+        uint16 yieldSplit;
     }
 
     struct Ask {
@@ -78,7 +79,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     event AssetAdd(address indexed asset);
     event AssetRemove(address indexed asset);
-    event AssetConfigUpdate(address indexed asset, uint16 yieldSplit, bool paused);
+    event AssetConfigUpdate(address indexed asset, AssetConfig cfg);
     event Deposit(address indexed to, uint256 graiOut, uint256 value);
     event PoolToggle(bytes32 indexed role, address indexed pool, bool enabled);
     event TreasuryUpdate(address indexed treasury);
@@ -97,7 +98,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 duration,
         uint256 taxGrai
     );
-    event AskFulfill(
+    event AskFill(
         address indexed buyer,
         address indexed seller,
         address asset,
@@ -113,7 +114,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 duration,
         uint256 taxPayment
     );
-    event BidFulfill(
+    event BidFill(
         address indexed seller,
         address indexed buyer,
         address asset,
@@ -143,11 +144,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function ADMIN_ROLE() external view returns (bytes32);
 
-    function ORACLE_ROLE() external view returns (bytes32);
-
-    function SENIOR_ROLE() external view returns (bytes32);
-
-    function JUNIOR_ROLE() external view returns (bytes32);
+    function GRINDERS_ROLE() external view returns (bytes32);
 
     function treasury() external view returns (address);
 
@@ -206,23 +203,19 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice True after `openLiquidation` until `closeLiquidation`.
     function liquidation() external view returns (bool);
 
-    function assets(address asset) external view returns (uint16 yieldSplit, bool paused, uint32 id);
+    function assets(address asset) external view returns (address asset_, uint32 id, bool paused, uint16 yieldSplit);
 
     function assetList(uint256 index) external view returns (address);
 
     function getAssets() external view returns (address[] memory);
 
-    function setJuniorPool(address juniorPool_) external;
+    function setGrinders(address grinders_) external;
 
-    function setSeniorPool(address seniorPool_) external;
+    function setSGRAI(address sgrai_) external;
 
     function setTreasury(address treasury_) external;
 
     function setConfig(ProtocolConfig calldata cfg) external;
-
-    function toggleSeniorPool(address seniorPool_) external;
-
-    function toggleJuniorPool(address juniorPool_) external;
 
     function balance(address asset) external view returns (uint256);
 
@@ -254,17 +247,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         pure
         returns (uint256);
 
-    /// @notice GRAI out (capped to ask remaining + seller balance) and dutch payment.
-    function previewFulfillAsk(address seller, uint256 graiAmount)
+    /// @notice GRAI out (capped to ask remaining + seller balance) and dutch payment at `timestamp`.
+    function previewFillAsk(address seller, uint256 graiAmount, uint256 timestamp)
         external
         view
         returns (uint256 graiOut, uint256 payment);
 
-    function addAsset(address asset, uint16 yieldSplit) external;
-
-    function removeAsset(address asset) external;
-
-    function setAssetConfig(address asset, uint16 yieldSplit, bool paused) external;
+    function setAssetConfig(address asset, AssetConfig calldata cfg) external;
 
     function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
 
@@ -273,7 +262,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function ask(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
         external;
 
-    function fulfillAsk(address seller, uint256 graiAmount, uint256 paymentMax) external payable;
+    function fillAsk(address seller, uint256 graiAmount, uint256 paymentMax) external payable;
 
     /// @notice Soft bid: Harberger tax on listing. ERC20 dutch paid via allowance; ETH dutch paid on fulfill.
     function bid(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
@@ -290,10 +279,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ) external view returns (uint256 lot, uint256 tax);
 
     /// @notice Fill a soft bid by the GRAI seller. Payment is pulled from buyer allowance.
-    function fulfillBid(address peer, uint256 graiAmount, uint256 paymentMin) external;
+    function fillBid(address peer, uint256 graiAmount, uint256 paymentMin) external;
 
-    /// @notice GRAI sold (capped) and dutch payment pulled from buyer's allowance.
-    function previewFulfillBid(address buyer, address seller, uint256 graiAmount)
+    /// @notice GRAI sold (capped) and dutch payment (at `timestamp`) pulled from buyer's allowance.
+    function previewFillBid(address buyer, address seller, uint256 graiAmount, uint256 timestamp)
         external
         view
         returns (uint256 graiIn, uint256 payment);
@@ -317,5 +306,5 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets, closing unpauses them.
     ///         Grinders `liquidate` reads this flag.
-    function toggleLiquidate() external;
+    function liquidate() external;
 }

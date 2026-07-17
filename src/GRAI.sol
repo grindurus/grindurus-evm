@@ -6,8 +6,8 @@ import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/
 import {AccessControlEnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IGRAI, IERC20, IERC20Metadata, IPriceOracleRouter} from "./interfaces/IGRAI.sol";
-import {IJuniorPool} from "./interfaces/IJuniorPool.sol";
-import {ISeniorPool} from "./interfaces/ISeniorPool.sol";
+import {IGrinders} from "./interfaces/IGrinders.sol";
+import {IsGRAI} from "./interfaces/IsGRAI.sol";
 import {IERC1046} from "./interfaces/IERC1046.sol";
 import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 
@@ -28,15 +28,13 @@ contract GRAI is
 
     // bytes32 public constant DEFAULT_ADMIN_ROLE = keccak256("DEFAULT_ADMIN_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
-    bytes32 public constant SENIOR_ROLE = keccak256("SENIOR_ROLE");
-    bytes32 public constant JUNIOR_ROLE = keccak256("JUNIOR_ROLE");
+    bytes32 public constant GRINDERS_ROLE = keccak256("GRINDERS_ROLE");
 
     /// @notice Low-risk pool providing liquidation insurance backing for GRAI.
-    ISeniorPool public seniorPool;
+    IsGRAI public sgrai;
 
     /// @notice High-risk pool that generates yield.
-    IJuniorPool public juniorPool;
+    IGrinders public grinders;
 
     /// @notice Fee recipient for protocol profit from `distribute`.
     address public treasury;
@@ -84,8 +82,8 @@ contract GRAI is
         __UUPSUpgradeable_init();
         __ERC20_init("Grinders Artificial Index", "GRAI");
         __AccessControlEnumerable_init();
-        seniorPool = ISeniorPool(address(this));
-        juniorPool = IJuniorPool(address(this));
+        sgrai = IsGRAI(address(this));
+        grinders = IGrinders(address(this));
         treasury = admin_;
         config = ProtocolConfig({
             askAprBps: 1_00,
@@ -95,7 +93,6 @@ contract GRAI is
         });
         _grantRole(DEFAULT_ADMIN_ROLE, admin_);
         _grantRole(ADMIN_ROLE, admin_);
-        _grantRole(ORACLE_ROLE, admin_);
     }
 
     function setConfig(ProtocolConfig calldata cfg) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -108,40 +105,26 @@ contract GRAI is
         emit ConfigUpdate(cfg);
     }
 
-    function setSeniorPool(address seniorPool_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (seniorPool_ == address(0)) revert ZeroAddress();
-        if (address(ISeniorPool(seniorPool_).grai()) != address(this)) revert GrindersGraiMismatch();
-
-        address previous = address(seniorPool);
-        if (previous != address(0)) _revokeRole(SENIOR_ROLE, previous);
-        seniorPool = ISeniorPool(seniorPool_);
-        _grantRole(SENIOR_ROLE, seniorPool_);
-        emit SeniorPoolUpdate(seniorPool_);
+    function setSGRAI(address sgrai_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (sgrai_ == address(0)) revert ZeroAddress();
+        if (address(IsGRAI(sgrai_).grai()) != address(this)) revert GrindersGraiMismatch();
+        sgrai = IsGRAI(sgrai_);
     }
 
-    function setJuniorPool(address juniorPool_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (juniorPool_ == address(0)) revert ZeroAddress();
-        if (address(IJuniorPool(juniorPool_).grai()) != address(this)) revert GrindersGraiMismatch();
+    function setGrinders(address grinders_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (grinders_ == address(0)) revert ZeroAddress();
+        if (address(IGrinders(grinders_).grai()) != address(this)) revert GrindersGraiMismatch();
 
-        address previous = address(juniorPool);
-        if (previous != address(0)) _revokeRole(JUNIOR_ROLE, previous);
-        juniorPool = IJuniorPool(juniorPool_);
-        _grantRole(JUNIOR_ROLE, juniorPool_);
-        emit JuniorPoolUpdate(juniorPool_);
+        address previous = address(grinders);
+        if (previous != address(0)) _revokeRole(GRINDERS_ROLE, previous);
+        grinders = IGrinders(grinders_);
+        _grantRole(GRINDERS_ROLE, grinders_);
     }
 
     function setTreasury(address treasury_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (treasury_ == address(0)) revert ZeroAddress();
         treasury = treasury_;
         emit TreasuryUpdate(treasury_);
-    }
-
-    function toggleSeniorPool(address seniorPool_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _togglePool(SENIOR_ROLE, seniorPool_);
-    }
-
-    function toggleJuniorPool(address juniorPool_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _togglePool(JUNIOR_ROLE, juniorPool_);
     }
 
     receive() external payable {}
@@ -217,27 +200,34 @@ contract GRAI is
         // Invert of previewRedeem book value: (graiAmount * totalValue) / supply <= nav().
         if (totalValue == 0) return supply;
 
-        uint256 byNav = ((nav() + 1) * supply - 1) / totalValue;
+        uint256 byNav = ((nav() + 1) * supply - 1) / (totalDeposit + totalYield);
         return byNav < supply ? byNav : supply;
     }
 
-    function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyRole(ORACLE_ROLE) {
-        super.setFeed(asset, feed);
+    /// @dev Setting a real feed (feedType != FEED_NONE) lists the asset; clearing it (FEED_NONE) delists it.
+    ///      Delisting inherits the guards of asset removal (must be paused with zero balance).
+    function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyRole(ADMIN_ROLE) {
+        if (feed.feedType == FEED_NONE) {
+            _removeAsset(asset);
+        } else {
+            super.setFeed(asset, feed);
+            _addAsset(asset);
+        }
     }
 
-    function addAsset(address asset, uint16 yieldSplit) external onlyRole(ADMIN_ROLE) {
-        if (feeds[asset].feedType == FEED_NONE) revert FeedNotSet();
-        if (yieldSplit > BPS) revert BpsTooHigh();
+    function _addAsset(address asset) internal {
+        // Already listed: setFeed only updated the feed, so keep the existing config (id/yieldSplit/paused).
         uint256 existingId = assets[asset].id;
-        if (existingId < assetList.length && assetList[existingId] == asset) revert AssetExists();
+        if (existingId < assetList.length && assetList[existingId] == asset) return;
 
         uint32 id = uint32(assetList.length);
-        assets[asset] = AssetConfig({yieldSplit: yieldSplit, paused: false, id: id});
+        // Preserve a previously configured yield split; defaults to 0 for a new asset (set via setAssetConfig).
+        assets[asset] = AssetConfig({asset: asset, yieldSplit: assets[asset].yieldSplit, paused: false, id: id});
         assetList.push(asset);
         emit AssetAdd(asset);
     }
 
-    function removeAsset(address asset) external onlyRole(ADMIN_ROLE) {
+    function _removeAsset(address asset) internal {
         uint256 index = assets[asset].id;
         if (index >= assetList.length || assetList[index] != asset) revert AssetUnknown();
         if (!assets[asset].paused) revert NotPaused();
@@ -257,31 +247,16 @@ contract GRAI is
         emit AssetRemove(asset);
     }
 
-    /// @inheritdoc IGRAI
-    /// @dev Flips the liquidation flag and pauses/unpauses every asset accordingly. Opening requires quorum.
-    function toggleLiquidate() public onlyRole(ADMIN_ROLE) {
-        bool opening = !liquidation;
-        if (opening && !hasQuorum()) revert LiquidationQuorumNotMet();
-        uint256 len = assetList.length;
-        for (uint256 i; i < len; ) {
-            address asset = assetList[i];
-            assets[asset].paused = opening;
-            emit AssetConfigUpdate(asset, assets[asset].yieldSplit, opening);
-            unchecked { ++i; }
-        }
-        liquidation = opening;
-        emit Liquidate(opening, totalVoted, totalSupply());
-    }
-
-    function setAssetConfig(address asset, uint16 yieldSplit, bool paused) external onlyRole(ADMIN_ROLE) {
+    /// @dev `cfg.asset` and `cfg.id` are ignored: the `asset` param is authoritative and the `assetList` index is managed internally.
+    function setAssetConfig(address asset, AssetConfig calldata cfg) external onlyRole(ADMIN_ROLE) {
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
-        if (yieldSplit > BPS) revert BpsTooHigh();
-        assets[asset].yieldSplit = yieldSplit;
-        assets[asset].paused = paused;
-        emit AssetConfigUpdate(asset, yieldSplit, paused);
+        if (cfg.yieldSplit > BPS) revert BpsTooHigh();
+        assets[asset].yieldSplit = cfg.yieldSplit;
+        assets[asset].paused = cfg.paused;
+        emit AssetConfigUpdate(asset, assets[asset]);
     }
 
-    function put(address asset, uint256 amount) public payable onlyRole(JUNIOR_ROLE) {
+    function put(address asset, uint256 amount) public payable onlyRole(GRINDERS_ROLE) {
         if (amount == 0) revert AmountZero();
         uint256 received = _deposit(msg.sender, address(this), asset, amount);
         uint256 prev = used[asset];
@@ -317,14 +292,14 @@ contract GRAI is
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (assets[asset].paused) revert Paused();
 
-        uint256 received = _deposit(msg.sender, address(juniorPool), asset, amount);
+        uint256 received = _deposit(msg.sender, address(grinders), asset, amount);
 
         (graiOut, depositValue) = previewDeposit(asset, received);
         if (depositValue == 0) revert AmountZero();
         if (graiOut == 0) revert AmountZero();
 
         totalDeposit += depositValue;
-        if (address(seniorPool) == address(juniorPool)) totalValue += depositValue;
+        if (address(grinders) == address(this)) totalValue += depositValue;
         _mint(msg.sender, graiOut);
         emit Deposit(msg.sender, graiOut, depositValue);
     }
@@ -409,7 +384,6 @@ contract GRAI is
     ) public {
         address seller = msg.sender;
         (uint256 lot, uint256 tax) = previewAsk(seller, maxPayment, minPayment, duration, graiAmount);
-
         uint32 id = asks[seller].id;
         if (asks[seller].startTime == 0) {
             id = uint32(asksList.length);
@@ -425,7 +399,6 @@ contract GRAI is
             duration: duration,
             id: id
         });
-        // Listing cost is Harberger tax
         if (tax > 0) _transfer(seller, treasury, tax);
         emit AskCreate(seller, asset, graiAmount, maxPayment, minPayment, duration, tax);
     }
@@ -442,35 +415,23 @@ contract GRAI is
         if (duration == 0) revert AmountZero();
         if (minPayment > maxPayment) revert InvalidAmount();
         if (graiAmount > balanceOf(seller)) revert InvalidAmount();
-
+        // tax is based on Harberger`s tax
         tax = (graiAmount * config.askAprBps * duration) / (uint256(BPS) * 365 days);
         lot = graiAmount - tax;
     }
 
-    /// @inheritdoc IGRAI
-    /// @dev Dutch payment: maxPayment → minPayment over `duration`, scaled by lot size.
-    ///      Caps fill to `graiRemaining` and seller balance; returns `(fill, payment)`.
-    function previewFulfillAsk(address seller, uint256 graiAmount) public view returns (uint256 graiOut, uint256 payment) {
-        Ask storage entry = asks[seller];
-        if (entry.startTime == 0) revert AskNotFound();
+    //////////////////// FILL ASK ////////////////////
 
-        if (graiAmount == type(uint256).max) graiAmount = entry.graiRemaining;
-        if (graiAmount > entry.graiRemaining) graiAmount = entry.graiRemaining;
-        uint256 sellerBal = balanceOf(seller);
-        if (graiAmount > sellerBal) graiAmount = sellerBal;
-        if (graiAmount == 0) return (0, 0);
-
-        graiOut = graiAmount;
-        uint256 price = dutchPrice(entry.maxPayment, entry.minPayment, block.timestamp - entry.startTime, entry.duration);
-        payment = (price * graiOut) / entry.graiInitial;
-    }
-
-    function fulfillAsk(address seller, uint256 graiAmount, uint256 paymentMax) public payable {
+    function fillAsk(
+        address seller,
+        uint256 graiAmount,
+        uint256 paymentMax
+    ) public payable {
         address buyer = msg.sender;
         Ask storage entry = asks[seller];
         if (entry.startTime == 0) revert AskNotFound();
 
-        (uint256 graiOut, uint256 payment) = previewFulfillAsk(seller, graiAmount);
+        (uint256 graiOut, uint256 payment) = previewFillAsk(seller, graiAmount, block.timestamp);
         if (graiOut == 0 || payment == 0) revert AmountZero();
         if (payment > paymentMax) revert InvalidAmount();
 
@@ -486,8 +447,31 @@ contract GRAI is
         if (newRemaining <= graiDust || balanceOf(seller) <= graiOut) _removeAsk(seller);
 
         _transfer(seller, buyer, graiOut);
-        _pay(seller, asset, payment);
-        emit AskFulfill(buyer, seller, asset, graiOut, payment);
+        _pay(buyer, seller, asset, payment);
+        emit AskFill(buyer, seller, asset, graiOut, payment);
+    }
+
+    /// @inheritdoc IGRAI
+    /// @dev Dutch payment: maxPayment → minPayment over `duration`, scaled by lot size.
+    ///      Caps fill to `graiRemaining` and seller balance; returns `(fill, payment)`.
+    ///      `timestamp` is the reference time for the dutch price (pass `block.timestamp` for the live price).
+    function previewFillAsk(
+        address seller,
+        uint256 graiAmount,
+        uint256 timestamp
+    ) public view returns (uint256 graiOut, uint256 payment) {
+        Ask storage entry = asks[seller];
+        if (entry.startTime == 0) revert AskNotFound();
+
+        if (graiAmount == type(uint256).max) graiAmount = entry.graiRemaining;
+        if (graiAmount > entry.graiRemaining) graiAmount = entry.graiRemaining;
+        if (graiAmount > balanceOf(seller)) graiAmount = balanceOf(seller);
+        if (graiAmount == 0) return (0, 0);
+
+        graiOut = graiAmount;
+        uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
+        uint256 price = dutchPrice(entry.maxPayment, entry.minPayment, elapsed, entry.duration);
+        payment = (price * graiOut) / entry.graiInitial;
     }
 
     //////////////////// BID ////////////////////
@@ -502,26 +486,23 @@ contract GRAI is
     ) public {
         address buyer = msg.sender;
         (uint256 lot, uint256 tax) = previewBid(buyer, asset, maxPayment, minPayment, duration, graiAmount);
-
         uint32 id = bids[buyer].id;
         if (bids[buyer].startTime == 0) {
             id = uint32(bidsList.length);
             bidsList.push(buyer);
         }
-
-        uint256 maxNet = maxPayment - tax;
         bids[buyer] = Bid({
             asset: asset,
             graiRemaining: lot,
             graiInitial: lot,
-            maxPayment: maxNet,
+            maxPayment: maxPayment,
             minPayment: minPayment,
             startTime: block.timestamp,
             duration: duration,
             id: id
         });
-        // Listing cost is Harberger tax only (soft bid for the dutch payment).
-        if (tax > 0) IERC20(asset).safeTransferFrom(buyer, treasury, tax);
+        // Listing cost is Harberger tax charged on top of the dutch payment.
+        if (tax > 0) _pay(buyer, treasury, asset, tax);
         emit BidCreate(buyer, asset, graiAmount, maxPayment, minPayment, duration, tax);
     }
 
@@ -539,57 +520,24 @@ contract GRAI is
         if (graiAmount == 0 || maxPayment == 0) revert AmountZero();
         if (duration == 0) revert AmountZero();
         if (minPayment > maxPayment) revert InvalidAmount();
-
+        // Harberger tax is charged on top of the dutch payment.
         tax = (maxPayment * config.bidAprBps * duration) / (uint256(BPS) * 365 days);
-        if (tax >= maxPayment) revert AmountZero();
-        if (minPayment > maxPayment - tax) revert InvalidAmount();
 
-        // Tax + dutch payment covered by soft allowance / balance of `maxPayment`.
-        if (IERC20(asset).allowance(buyer, address(this)) < maxPayment) revert InvalidAmount();
-        if (IERC20(asset).balanceOf(buyer) < maxPayment) revert InvalidAmount();
+        // Dutch payment (up to `maxPayment`) plus `tax` must be covered by soft allowance / balance.
+        uint256 total = maxPayment + tax;
+        if (IERC20(asset).allowance(buyer, address(this)) < total) revert InvalidAmount();
+        if (IERC20(asset).balanceOf(buyer) < total) revert InvalidAmount();
         lot = graiAmount;
     }
 
-    /// @inheritdoc IGRAI
-    /// @dev Dutch payment: maxPayment → minPayment over `duration`, scaled by lot size.
-    ///      Caps fill to `graiRemaining` and seller GRAI balance.
-    function previewFulfillBid(
-        address buyer,
-        address seller,
-        uint256 graiAmount
-    ) public view returns (uint256 graiIn, uint256 payment) {
-        Bid storage entry = bids[buyer];
-        if (entry.startTime == 0) revert BidNotFound();
-
-        if (graiAmount == type(uint256).max) graiAmount = entry.graiRemaining;
-        if (graiAmount > entry.graiRemaining) graiAmount = entry.graiRemaining;
-        uint256 sellerBal = balanceOf(seller);
-        if (graiAmount > sellerBal) graiAmount = sellerBal;
-        if (graiAmount == 0) return (0, 0);
-
-        graiIn = graiAmount;
-        uint256 price = dutchPrice(entry.maxPayment, entry.minPayment, block.timestamp - entry.startTime, entry.duration);
-        payment = (price * graiIn) / entry.graiInitial;
-
-        uint256 allowance = IERC20(entry.asset).allowance(buyer, address(this));
-        uint256 bal = IERC20(entry.asset).balanceOf(buyer);
-        uint256 spendable = allowance < bal ? allowance : bal;
-        if (payment > spendable) {
-            if (spendable == 0 || price == 0) return (0, 0);
-            graiIn = (spendable * entry.graiInitial) / price;
-            if (graiIn > graiAmount) graiIn = graiAmount;
-            if (graiIn == 0) return (0, 0);
-            payment = (price * graiIn) / entry.graiInitial;
-            if (payment > spendable) payment = spendable;
-        }
-    }
+    //////////////////// FILL BID ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev ERC20 only: seller (`msg.sender`) fills `buyer`'s bid; payment is pulled from buyer allowance.
-    function fulfillBid(address buyer, uint256 graiAmount, uint256 paymentMin) public {
+    function fillBid(address buyer, uint256 graiAmount, uint256 paymentMin) public {
         address seller = msg.sender;
         Bid storage entry = bids[buyer];
-        (uint256 graiIn, uint256 payment) = previewFulfillBid(buyer, seller, graiAmount);
+        (uint256 graiIn, uint256 payment) = previewFillBid(buyer, seller, graiAmount, block.timestamp);
         
         if (graiIn == 0 || payment == 0) revert AmountZero();
         if (payment < paymentMin) revert InvalidAmount();
@@ -606,20 +554,68 @@ contract GRAI is
         if (newRemaining <= graiDust) _removeBid(buyer);
 
         _transfer(seller, buyer, graiIn);
-        _pay(buyer, asset, payment);
-        emit BidFulfill(seller, buyer, asset, graiIn, payment);
+        _pay(buyer, seller, asset, payment);
+        emit BidFill(seller, buyer, asset, graiIn, payment);
     }
 
-    //////////////////// LIQUIDATION ////////////////////
+    /// @inheritdoc IGRAI
+    /// @dev Dutch payment: maxPayment → minPayment over `duration`, scaled by lot size.
+    ///      Caps fill to `graiRemaining` and seller GRAI balance.
+    ///      `timestamp` is the reference time for the dutch price (pass `block.timestamp` for the live price).
+    function previewFillBid(
+        address buyer,
+        address seller,
+        uint256 graiAmount,
+        uint256 timestamp
+    ) public view returns (uint256 graiIn, uint256 payment) {
+        Bid storage entry = bids[buyer];
+        if (entry.startTime == 0) revert BidNotFound();
+
+        if (graiAmount == type(uint256).max) graiAmount = entry.graiRemaining;
+        if (graiAmount > entry.graiRemaining) graiAmount = entry.graiRemaining;
+        uint256 sellerBal = balanceOf(seller);
+        if (graiAmount > sellerBal) graiAmount = sellerBal;
+        if (graiAmount == 0) return (0, 0);
+
+        graiIn = graiAmount;
+        uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
+        uint256 price = dutchPrice(entry.maxPayment, entry.minPayment, elapsed, entry.duration);
+        payment = (price * graiIn) / entry.graiInitial;
+
+        uint256 allowance = IERC20(entry.asset).allowance(buyer, address(this));
+        uint256 bal = IERC20(entry.asset).balanceOf(buyer);
+        uint256 spendable = allowance < bal ? allowance : bal;
+        if (payment > spendable) {
+            if (spendable == 0 || price == 0) return (0, 0);
+            graiIn = (spendable * entry.graiInitial) / price;
+            if (graiIn > graiAmount) graiIn = graiAmount;
+            if (graiIn == 0) return (0, 0);
+            payment = (price * graiIn) / entry.graiInitial;
+            if (payment > spendable) payment = spendable;
+        }
+    }
+
+    //////////////////// VOTE ////////////////////
 
     /// @inheritdoc IGRAI
+    /// @dev `vote(0)` withdraws all of the caller's escrowed GRAI (full unvote).
     function vote(uint256 graiAmount) public {
         address voter = msg.sender;
-        if (graiAmount == 0) revert AmountZero();
+        Vote storage entry = votes[voter];
+
+        if (graiAmount == 0) {
+            uint256 locked = entry.amount;
+            if (locked == 0) revert AmountZero();
+            totalVoted -= locked;
+            _removeVoter(voter);
+            _transfer(address(this), voter, locked);
+            emit Voted(voter, 0, totalVoted);
+            return;
+        }
+
         if (graiAmount > balanceOf(voter)) revert InvalidAmount();
 
         _transfer(voter, address(this), graiAmount);
-        Vote storage entry = votes[voter];
         uint32 id = entry.id;
         if (entry.amount == 0) {
             id = uint32(voters.length);
@@ -631,6 +627,8 @@ contract GRAI is
         totalVoted += graiAmount;
         emit Voted(voter, graiAmount, totalVoted);
     }
+
+    //////////////////// BRIBE ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev Briber (`msg.sender`) buys out `voter`'s vote of `graiAmount`: pays book value + premium to the voter
@@ -650,11 +648,10 @@ contract GRAI is
         if (asset == address(0)) {
             if (msg.value != total) revert ValueMismatch();
             if (bribeAmount > 0) _withdraw(voter, asset, bribeAmount);
-            if (premium > 0) _withdraw(address(seniorPool), asset, premium);
+            if (premium > 0) _withdraw(address(sgrai), asset, premium);
         } else {
-            if (msg.value != 0) revert UnexpectedValue();
-            if (bribeAmount > 0) IERC20(asset).safeTransferFrom(briber, voter, bribeAmount);
-            if (premium > 0) IERC20(asset).safeTransferFrom(briber, address(seniorPool), premium);
+            if (bribeAmount > 0) _pay(briber, voter, asset, bribeAmount);
+            if (premium > 0) _pay(briber, address(sgrai), asset, premium);
         }
 
         // Escrowed GRAI is released to the briber.
@@ -664,7 +661,7 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Book value of `graiAmount` = `graiAmount * (totalDeposit + totalYield) / totalSupply`, priced in USD
-    ///      and converted to the senior asset (`seniorPool.hedgeAsset()`).
+    ///      and converted to the senior asset (`sgrai.hedgeAsset()`).
     function previewBribe(
         address voter,
         uint256 graiAmount
@@ -673,23 +670,47 @@ contract GRAI is
         Vote storage entry = votes[voter];
         if (graiAmount > entry.amount) revert InvalidAmount();
 
-        asset = seniorPool.hedgeAsset();
+        asset = sgrai.hedgeAsset();
         uint256 supply = totalSupply();
         bribeAmount = supply == 0 ? 0 : (graiAmount * (totalDeposit + totalYield)) / supply;
         premium = (bribeAmount * config.bribePremiumBps) / BPS;
     }
 
+    //////////////////// LIQUIDATE ////////////////////
+
+    /// @inheritdoc IGRAI
+    /// @dev Flips the liquidation flag and pauses/unpauses every asset accordingly. Opening requires quorum.
+    function liquidate() public onlyRole(ADMIN_ROLE) {
+        bool opening = !liquidation;
+        if (opening && !hasQuorum()) revert LiquidationQuorumNotMet();
+        if (opening) {
+            uint256 len = assetList.length;
+            for (uint256 i; i < len; ) {
+                address asset = assetList[i];
+                assets[asset].paused = opening;
+                emit AssetConfigUpdate(asset, assets[asset]);
+                unchecked { ++i; }
+            }
+            totalValue += totalDeposit;
+            totalDeposit = 0;
+        }
+        liquidation = opening;
+        emit Liquidate(opening, totalVoted, totalSupply());
+    }
+
     //////////////////// INTERNAL HELPERS ////////////////////
 
-    function _pay(address to, address asset, uint256 payment) private {
-        // address payer = msg.sender
+    /// @dev `from` is the logical payer. ETH cannot be pulled from a third party: it must be funded
+    ///      by the caller's `msg.value` and is forwarded from this contract, so `from` is ignored for ETH.
+    ///      ERC20 is pulled directly from `from` via `safeTransferFrom`.
+    function _pay(address from, address to, address asset, uint256 payment) private {
         if (asset == address(0)) {
             if (msg.value != payment) revert ValueMismatch();
             (bool ok,) = to.call{value: payment}("");
             if (!ok) revert EthTransferFailed();
         } else {
             if (msg.value != 0) revert UnexpectedValue();
-            IERC20(asset).safeTransferFrom(msg.sender, to, payment);
+            IERC20(asset).safeTransferFrom(from, to, payment);
         }
     }
 
@@ -739,13 +760,17 @@ contract GRAI is
     function _deposit(address from, address to, address asset, uint256 amount) internal returns (uint256 received) {
         if (asset == address(0)) {
             if (msg.value != amount) revert ValueMismatch();
-            return amount;
+            if (to != address(this)) {
+                (bool ok,) = payable(to).call{value: amount}("");
+                if (!ok) revert EthTransferFailed();
+            }
+            received = amount;
+        } else {
+            if (msg.value > 0) revert UnexpectedValue();
+            uint256 before = IERC20(asset).balanceOf(to);
+            IERC20(asset).safeTransferFrom(from, to, amount);
+            received = IERC20(asset).balanceOf(to) - before;
         }
-        if (msg.value > 0) revert UnexpectedValue();
-        uint256 before = IERC20(asset).balanceOf(address(this));
-        IERC20(asset).safeTransferFrom(from, to, amount);
-        received = IERC20(asset).balanceOf(to) - before;
-        if (received == 0) revert AmountZero();
     }
 
     function _withdraw(address to, address asset, uint256 amount) internal {
@@ -756,19 +781,6 @@ contract GRAI is
             if (!ok) revert EthTransferFailed();
         } else {
             IERC20(asset).safeTransfer(to, amount);
-        }
-    }
-
-    /// @dev Grants `role` to `pool` (or revokes if already held); on grant, requires `pool.grai() == this`.
-    function _togglePool(bytes32 role, address pool) internal {
-        if (pool == address(0)) revert ZeroAddress();
-        if (hasRole(role, pool)) {
-            _revokeRole(role, pool);
-            emit PoolToggle(role, pool, false);
-        } else {
-            if (address(ISeniorPool(pool).grai()) != address(this)) revert GrindersGraiMismatch();
-            _grantRole(role, pool);
-            emit PoolToggle(role, pool, true);
         }
     }
 
