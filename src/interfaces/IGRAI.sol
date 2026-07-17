@@ -2,39 +2,28 @@
 pragma solidity ^0.8.30;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC1046} from "./IERC1046.sol";
 import {IPriceOracleRouter} from "./IPriceOracleRouter.sol";
 
-interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
+interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error AssetExists();
     error AssetUnknown();
     error AssetBalanceNonZero();
     error BpsTooHigh();
     error NotPaused();
     error Paused();
-    error BadHint();
-    error HintMismatch();
-    error InvalidRedeemAmount();
-    error NoSupply();
-    error AmountExceedsSupply();
     error AskNotFound();
     error BidNotFound();
-    error MinAboveMax();
-    error InvalidBidAmount();
-    error DurationZero();
     error ZeroAddress();
-    error ToZero();
     error AmountZero();
+    /// @notice An amount/limit is out of range (exceeds balance/allowance/supply, min>max, payment bounds).
+    error InvalidAmount();
     error EthTransferFailed();
     error GrindersGraiMismatch();
     error ValueMismatch();
     error UnexpectedValue();
-    error PaymentExceedsMax();
-    error PaymentBelowMin();
-    error InsufficientAllowance();
     error LiquidationQuorumNotMet();
-    error LiquidationAlreadyOpen();
-    error LiquidationNotOpen();
     error LiquidationOpen();
     error EthBidsDisabled();
 
@@ -78,12 +67,12 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint32 id;
     }
 
-    /// @notice Ask/bid Harberger APRs, unlock fees, and liquidation quorum threshold.
+    /// @notice Ask/bid Harberger APRs, vote-buyout (bribe) premium, and liquidation quorum threshold.
     struct ProtocolConfig {
         uint16 askAprBps;
         uint16 bidAprBps;
-        uint16 unlockFeeBps;
-        uint16 unlockAprBps;
+        /// @notice Premium over book value paid to the bought-out voter.
+        uint16 bribePremiumBps;
         uint16 liquidationQuorumBps;
     }
 
@@ -91,10 +80,10 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     event AssetRemove(address indexed asset);
     event AssetConfigUpdate(address indexed asset, uint16 yieldSplit, bool paused);
     event Deposit(address indexed to, uint256 graiOut, uint256 value);
-    event GrindersUpdate(address indexed grinders, bool enabled);
+    event PoolToggle(bytes32 indexed role, address indexed pool, bool enabled);
     event TreasuryUpdate(address indexed treasury);
-    event JuniorVaultUpdate(address indexed juniorVault);
-    event SeniorVaultUpdate(address indexed seniorVault);
+    event JuniorPoolUpdate(address indexed juniorPool);
+    event SeniorPoolUpdate(address indexed seniorPool);
     event Redeem(address indexed from, uint256 graiAmount, uint256 value);
     event Distribute(
         address indexed from, address indexed asset, uint256 yieldAmount, uint256 seniorYield, uint256 protocolProfit
@@ -132,7 +121,13 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint256 payment
     );
     event Voted(address indexed account, uint256 amount, uint256 totalVoted);
-    event LiquidationUnlock(address indexed account, uint256 amount, uint256 fee, uint256 totalLocked);
+    event Bribe(
+        address indexed briber,
+        address indexed voter,
+        uint256 graiAmount,
+        uint256 bribeAmount,
+        uint256 totalVoted
+    );
     event Liquidate(bool liquidation, uint256 totalVoted, uint256 supply);
     event ConfigUpdate(ProtocolConfig config);
 
@@ -142,8 +137,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         returns (
             uint16 askAprBps,
             uint16 bidAprBps,
-            uint16 unlockFeeBps,
-            uint16 unlockAprBps,
+            uint16 bribePremiumBps,
             uint16 liquidationQuorumBps
         );
 
@@ -151,7 +145,9 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function ORACLE_ROLE() external view returns (bytes32);
 
-    function GRINDERS_ROLE() external view returns (bytes32);
+    function SENIOR_ROLE() external view returns (bytes32);
+
+    function JUNIOR_ROLE() external view returns (bytes32);
 
     function treasury() external view returns (address);
 
@@ -216,21 +212,23 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function getAssets() external view returns (address[] memory);
 
-    function setJuniorVault(address juniorVault_) external;
+    function setJuniorPool(address juniorPool_) external;
 
-    function setSeniorVault(address seniorVault_) external;
+    function setSeniorPool(address seniorPool_) external;
 
     function setTreasury(address treasury_) external;
 
     function setConfig(ProtocolConfig calldata cfg) external;
 
-    function toggleGrinders(address grinders) external;
+    function toggleSeniorPool(address seniorPool_) external;
+
+    function toggleJuniorPool(address juniorPool_) external;
 
     function balance(address asset) external view returns (uint256);
 
     /// @notice USD NAV of idle senior balances (6 decimals).
     // forge-lint: disable-next-line(mixed-case-function)
-    function seniorNAV() external view returns (uint256);
+    function nav() external view returns (uint256);
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 graiOut, uint256 value);
 
@@ -250,6 +248,12 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
         uint256 graiAmount
     ) external view returns (uint256 lot, uint256 tax);
 
+    /// @notice Linear Dutch price: decays `maxPayment` → `minPayment` over `duration`.
+    function dutchPrice(uint256 maxPayment, uint256 minPayment, uint256 elapsed, uint256 duration)
+        external
+        pure
+        returns (uint256);
+
     /// @notice GRAI out (capped to ask remaining + seller balance) and dutch payment.
     function previewFulfillAsk(address seller, uint256 graiAmount)
         external
@@ -258,7 +262,7 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
 
     function addAsset(address asset, uint16 yieldSplit) external;
 
-    function removeAsset(address asset, uint256 hintId) external;
+    function removeAsset(address asset) external;
 
     function setAssetConfig(address asset, uint16 yieldSplit, bool paused) external;
 
@@ -301,16 +305,17 @@ interface IGRAI is IERC20, IERC1046, IPriceOracleRouter {
     /// @notice Vote GRAI toward the liquidation quorum (escrowed on this contract; resets vote timer).
     function vote(uint256 graiAmount) external;
 
-    /// @notice Net GRAI returned and fee (flat `config.unlockFeeBps` + time tax at `config.unlockAprBps`).
-    ///         Fee is zero while `liquidation` so voters can exit and redeem.
-    function previewUnlock(address account, uint256 graiAmount) external view returns (uint256 net, uint256 fee);
+    /// @notice Preview a vote buyout: settlement `asset`, `bribeAmount` (book value), and `premium`.
+    function previewBribe(address voter, uint256 graiAmount)
+        external
+        view
+        returns (address asset, uint256 bribeAmount, uint256 premium);
 
-    /// @notice Return voted GRAI minus unlock fee (fee to treasury; waived when `liquidation`).
-    function unlock(uint256 graiAmount) external;
+    /// @notice Buy out `voter`'s vote: briber pays book value + premium to the voter (settled in the senior
+    ///         asset), and receives the escrowed GRAI.
+    function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice If quorum is met, set `liquidation` and pause all assets (Grinders `liquidate` then reads this flag).
-    function openLiquidation() external;
-
-    /// @notice Clear `liquidation` and unpause all assets.
-    function closeLiquidation() external;
+    /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets, closing unpauses them.
+    ///         Grinders `liquidate` reads this flag.
+    function toggleLiquidate() external;
 }
