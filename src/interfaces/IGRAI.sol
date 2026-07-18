@@ -12,19 +12,22 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error BpsTooHigh();
     error NotPaused();
     error Paused();
-    error AskNotFound();
-    error BidNotFound();
+    error AuctionNotFound();
     error ZeroAddress();
     error AmountZero();
     /// @notice An amount/limit is out of range (exceeds balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
+    error Slippage();
     error EthTransferFailed();
     error GrindersGraiMismatch();
     error ValueMismatch();
     error UnexpectedValue();
     error LiquidationQuorumNotMet();
     error LiquidationOpen();
-    error EthBidsDisabled();
+    error LiquidationClosed();
+    error LiquidationDelay();
+    error RedeemPeriodActive();
+    error HedgeAssetUnset();
 
     struct AssetConfig {
         /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
@@ -35,99 +38,51 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 yieldSplit;
     }
 
-    struct Ask {
+    /// @notice One Dutch auction of distributed yield for a single sold asset, paid in `hedgeAsset`.
+    struct DutchAuction {
         address asset;
-        uint256 graiRemaining;
-        uint256 graiInitial;
+        uint256 remaining;
+        uint256 initial;
+        /// @notice Full-lot payment in `hedgeAsset` units at auction start (oracle fair value).
         uint256 maxPayment;
+        /// @notice Full-lot payment in `hedgeAsset` units after the Dutch auction ends.
         uint256 minPayment;
         uint256 startTime;
-        uint256 duration;
-        /// @notice Index of this seller in `asksList` while the ask is open.
-        uint32 id;
     }
 
-    /// @notice Soft bid to buy GRAI with `asset` (Dutch max→min payment); requires ERC20 allowance.
-    struct Bid {
-        address asset;
-        uint256 graiRemaining;
-        uint256 graiInitial;
-        uint256 maxPayment;
-        uint256 minPayment;
-        uint256 startTime;
-        uint256 duration;
-        /// @notice Index of this buyer in `bidsList` while the bid is open.
-        uint32 id;
-    }
-
-    struct Vote {
+    struct VoteEscrow {
         uint256 amount;
         /// @notice Timestamp of the latest `vote` (resets on each vote).
-        uint48 lockedAt;
+        uint48 votedAt;
         /// @notice Index of this account in `voters` while the vote is open.
         uint32 id;
     }
 
-    /// @notice Ask/bid Harberger APRs, vote-buyout (bribe) premium, and liquidation quorum threshold.
+    /// @notice Bribe premium, liquidation quorum, and liquidation timing.
     struct ProtocolConfig {
-        uint16 askAprBps;
-        uint16 bidAprBps;
         /// @notice Premium over book value paid to the bought-out voter.
         uint16 bribePremiumBps;
         uint16 liquidationQuorumBps;
+        /// @notice Delay after liquidation opens before `redeem` is allowed.
+        uint32 liquidationPeriod;
+        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed.
+        uint32 redeemPeriod;
     }
 
-    event AssetAdd(address indexed asset);
-    event AssetRemove(address indexed asset);
+    event AssetUpdate(address indexed asset, bool listed);
     event AssetConfigUpdate(address indexed asset, AssetConfig cfg);
-    event Deposit(address indexed to, uint256 graiOut, uint256 value);
-    event PoolToggle(bytes32 indexed role, address indexed pool, bool enabled);
+    event Mint(address indexed minter, uint256 graiOut, address indexed asset, uint256 amount, uint256 value);
     event TreasuryUpdate(address indexed treasury);
-    event JuniorPoolUpdate(address indexed juniorPool);
-    event SeniorPoolUpdate(address indexed seniorPool);
-    event Redeem(address indexed from, uint256 graiAmount, uint256 value);
+    event HedgeAssetUpdate(address indexed hedgeAsset);
     event Distribute(
-        address indexed from, address indexed asset, uint256 yieldAmount, uint256 seniorYield, uint256 protocolProfit
+        address indexed from, address indexed asset, uint256 yieldAmount, uint256 yieldShare, uint256 treasuryShare
     );
-    event AskCreate(
-        address indexed seller,
-        address indexed asset,
-        uint256 graiAmount,
-        uint256 maxPayment,
-        uint256 minPayment,
-        uint256 duration,
-        uint256 taxGrai
-    );
-    event AskFill(
-        address indexed buyer,
-        address indexed seller,
-        address asset,
-        uint256 graiBought,
-        uint256 payment
-    );
-    event BidCreate(
-        address indexed buyer,
-        address indexed asset,
-        uint256 graiAmount,
-        uint256 maxPayment,
-        uint256 minPayment,
-        uint256 duration,
-        uint256 taxPayment
-    );
-    event BidFill(
-        address indexed seller,
-        address indexed buyer,
-        address asset,
-        uint256 graiSold,
-        uint256 payment
-    );
-    event Voted(address indexed account, uint256 amount, uint256 totalVoted);
+    event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
+    event AuctionFill(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
+    event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
+    event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event Bribe(
-        address indexed briber,
-        address indexed voter,
-        uint256 graiAmount,
-        uint256 bribeAmount,
-        uint256 totalVoted
+        address indexed briber, address indexed voter, uint256 graiAmount, uint256 bribeAmount, uint256 totalVoted
     );
     event Liquidate(bool liquidation, uint256 totalVoted, uint256 supply);
     event ConfigUpdate(ProtocolConfig config);
@@ -135,12 +90,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function config()
         external
         view
-        returns (
-            uint16 askAprBps,
-            uint16 bidAprBps,
-            uint16 bribePremiumBps,
-            uint16 liquidationQuorumBps
-        );
+        returns (uint16 bribePremiumBps, uint16 liquidationQuorumBps, uint32 liquidationPeriod, uint32 redeemPeriod);
 
     function ADMIN_ROLE() external view returns (bytes32);
 
@@ -150,45 +100,24 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function totalValue() external view returns (uint256);
 
-    function used(address asset) external view returns (uint256);
-
     function yieldBy(address custodian, address asset) external view returns (uint256);
 
-    function asks(address seller)
+    function auctions(address asset)
         external
         view
         returns (
-            address asset,
-            uint256 graiRemaining,
-            uint256 graiInitial,
+            address asset_,
+            uint256 remaining,
+            uint256 initial,
             uint256 maxPayment,
             uint256 minPayment,
-            uint256 startTime,
-            uint256 duration,
-            uint32 id
+            uint256 startTime
         );
 
-    function asksList(uint256 index) external view returns (address);
+    /// @notice Listed assets that currently have an open yield auction.
+    function getAuctions() external view returns (address[] memory);
 
-    function bids(address buyer)
-        external
-        view
-        returns (
-            address asset,
-            uint256 graiRemaining,
-            uint256 graiInitial,
-            uint256 maxPayment,
-            uint256 minPayment,
-            uint256 startTime,
-            uint256 duration,
-            uint32 id
-        );
-
-    function bidsList(uint256 index) external view returns (address);
-
-    function getOrders() external view returns (address[] memory asks, address[] memory bids);
-
-    function votes(address account) external view returns (uint256 amount, uint48 lockedAt, uint32 id);
+    function votes(address account) external view returns (uint256 amount, uint48 votedAt, uint32 id);
 
     function voters(uint256 index) external view returns (address);
 
@@ -197,11 +126,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function totalVoted() external view returns (uint256);
 
     /// @notice True when voted GRAI is at least `config.liquidationQuorumBps` of `totalSupply`.
-    /// @dev Uses live supply (not a snapshot); deposits may dilute quorum until votes catch up — by design.
     function hasQuorum() external view returns (bool);
 
-    /// @notice True after `openLiquidation` until `closeLiquidation`.
+    /// @notice True after `liquidate` opens until it closes.
     function liquidation() external view returns (bool);
+
+    /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
+    function liquidationAt() external view returns (uint48);
 
     function assets(address asset) external view returns (address asset_, uint32 id, bool paused, uint16 yieldSplit);
 
@@ -211,35 +142,20 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function setGrinders(address grinders_) external;
 
-    function setSGRAI(address sgrai_) external;
-
     function setTreasury(address treasury_) external;
 
-    function setConfig(ProtocolConfig calldata cfg) external;
+    function hedgeAsset() external view returns (address);
+
+    function setHedgeAsset(address hedgeAsset_) external;
+
+    function setProtocolConfig(ProtocolConfig calldata cfg) external;
 
     function balance(address asset) external view returns (uint256);
 
-    /// @notice USD NAV of idle senior balances (6 decimals).
-    // forge-lint: disable-next-line(mixed-case-function)
-    function nav() external view returns (uint256);
+    /// @notice Convert a USD amount (`USD_DECIMALS`) into `hedgeAsset` base units via oracle.
+    function hedgeAmountFromUsd(uint256 usdAmount) external view returns (uint256);
 
-    function previewDeposit(address asset, uint256 amount) external view returns (uint256 graiOut, uint256 value);
-
-    function previewRedeem(uint256 graiAmount)
-        external
-        view
-        returns (address[] memory assetOuts, uint256[] memory amounts, uint256 value);
-
-    function maxRedeem() external view returns (uint256);
-
-    /// @notice Validates ask params for `seller`, then returns net listed GRAI (`lot`) and listing tax.
-    function previewAsk(
-        address seller,
-        uint256 maxPayment,
-        uint256 minPayment,
-        uint256 duration,
-        uint256 graiAmount
-    ) external view returns (uint256 lot, uint256 tax);
+    function previewMint(address asset, uint256 amount) external view returns (uint256 graiOut, uint256 value);
 
     /// @notice Linear Dutch price: decays `maxPayment` → `minPayment` over `duration`.
     function dutchPrice(uint256 maxPayment, uint256 minPayment, uint256 elapsed, uint256 duration)
@@ -247,49 +163,28 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         pure
         returns (uint256);
 
-    /// @notice GRAI out (capped to ask remaining + seller balance) and dutch payment at `timestamp`.
-    function previewFillAsk(address seller, uint256 graiAmount, uint256 timestamp)
+    /// @notice Yield-asset out (capped to auction remaining) and dutch `hedgeAsset` payment at `timestamp`.
+    function previewFill(address asset, uint256 amount, uint256 timestamp)
         external
         view
-        returns (uint256 graiOut, uint256 payment);
+        returns (uint256 amountOut, uint256 payment);
 
     function setAssetConfig(address asset, AssetConfig calldata cfg) external;
 
-    function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
+    function mint(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
 
-    function redeem(uint256 graiAmount) external;
-
-    function ask(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
-        external;
-
-    function fillAsk(address seller, uint256 graiAmount, uint256 paymentMax) external payable;
-
-    /// @notice Soft bid: Harberger tax on listing. ERC20 dutch paid via allowance; ETH dutch paid on fulfill.
-    function bid(address asset, uint256 maxPayment, uint256 minPayment, uint256 duration, uint256 graiAmount)
-        external;
-
-    /// @notice Net GRAI sought and listing tax in `asset` for a soft bid.
-    function previewBid(
-        address buyer,
-        address asset,
-        uint256 maxPayment,
-        uint256 minPayment,
-        uint256 duration,
-        uint256 graiAmount
-    ) external view returns (uint256 lot, uint256 tax);
-
-    /// @notice Fill a soft bid by the GRAI seller. Payment is pulled from buyer allowance.
-    function fillBid(address peer, uint256 graiAmount, uint256 paymentMin) external;
-
-    /// @notice GRAI sold (capped) and dutch payment (at `timestamp`) pulled from buyer's allowance.
-    function previewFillBid(address buyer, address seller, uint256 graiAmount, uint256 timestamp)
-        external
-        view
-        returns (uint256 graiIn, uint256 payment);
+    function fill(address asset, uint256 amount, uint256 paymentMax) external payable;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    function put(address asset, uint256 amount) external payable;
+    /// @notice Pro-rata asset amounts paid for burning `graiAmount` after the liquidation delay.
+    function previewRedeem(uint256 graiAmount)
+        external
+        view
+        returns (address[] memory assetOuts, uint256[] memory amounts);
+
+    /// @notice Burn GRAI for a pro-rata share of all assets held by GRAI, after `config.liquidationPeriod`.
+    function redeem(uint256 graiAmount) external;
 
     /// @notice Vote GRAI toward the liquidation quorum (escrowed on this contract; resets vote timer).
     function vote(uint256 graiAmount) external;
@@ -300,11 +195,11 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (address asset, uint256 bribeAmount, uint256 premium);
 
-    /// @notice Buy out `voter`'s vote: briber pays book value + premium to the voter (settled in the senior
-    ///         asset), and receives the escrowed GRAI.
+    /// @notice Buy out `voter`'s vote: briber pays book value + premium to the voter (settled in
+    ///         `hedgeAsset`), and receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets, closing unpauses them.
-    ///         Grinders `liquidate` reads this flag.
+    /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets; closing is available
+    ///         after the liquidation and redeem periods and unpauses all assets.
     function liquidate() external;
 }
