@@ -2,11 +2,11 @@
 pragma solidity ^0.8.30;
 
 import {Test} from "forge-std/Test.sol";
-import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
+import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {Custodian} from "../src/Custodian.sol";
 import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
@@ -16,15 +16,13 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
 
 abstract contract GRAIFixture is Test {
-    using stdStorage for StdStorage;
-
     address admin = makeAddr("admin");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
     address custodian;
 
-    Grinders grai;
-    GRAI graiToken;
+    Grinders grinders;
+    GRAI grai;
 
     MockERC20 usdc; // 6 decimals
     MockERC20 weth; // 18 decimals
@@ -38,22 +36,22 @@ abstract contract GRAIFixture is Test {
     function setUp() public virtual {
         vm.startPrank(admin);
         address tokenAddr = _deployGraiToken();
-        graiToken = GRAI(payable(tokenAddr));
+        grai = GRAI(payable(tokenAddr));
 
         Grinders impl = new Grinders();
         bytes memory init = abi.encodeCall(Grinders.initialize, (admin, tokenAddr));
-        grai = Grinders(payable(address(new ERC1967Proxy(address(impl), init))));
-        graiToken.toggleGrinders(address(grai));
+        grinders = Grinders(payable(address(new ERC1967Proxy(address(impl), init))));
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         usdcFeed = new MockAggregator(8, 1e8);
         wethFeed = new MockAggregator(8, 2000e8);
 
+        // setFeed lists the asset (yield split defaults to 0); set the split explicitly.
         _setChainlinkFeed(address(usdc), address(usdcFeed));
         _setChainlinkFeed(address(weth), address(wethFeed));
-        graiToken.addAsset(address(usdc), DEFAULT_YIELD_SPLIT);
-        graiToken.addAsset(address(weth), DEFAULT_YIELD_SPLIT);
+        _setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, false);
+        _setAssetConfig(address(weth), DEFAULT_YIELD_SPLIT, false);
         _registerTestCustodian();
         vm.stopPrank();
 
@@ -69,9 +67,7 @@ abstract contract GRAIFixture is Test {
 
     function _deployGraiToken(address tokenAdmin) internal returns (address) {
         GRAI impl = new GRAI();
-        return address(
-            new ERC1967Proxy(address(impl), abi.encodeCall(GRAI.initialize, (tokenAdmin)))
-        );
+        return address(new ERC1967Proxy(address(impl), abi.encodeCall(GRAI.initialize, (tokenAdmin))));
     }
 
     function _registerTestCustodian() internal virtual {
@@ -79,23 +75,44 @@ abstract contract GRAIFixture is Test {
         custodian = address(
             new ERC1967Proxy(
                 address(impl),
-                abi.encodeCall(Custodian.initialize, (address(grai), IERC20(address(usdc)), IERC20(address(weth))))
+                abi.encodeCall(Custodian.initialize, (address(grinders), IERC20(address(usdc)), IERC20(address(weth))))
             )
         );
-        grai.register(custodian, admin);
+        grinders.register(custodian, admin);
     }
 
     function _allocate(address asset, address custodian_, uint256 amount) internal {
         vm.prank(admin);
-        grai.allocate(custodian_, asset, amount);
+        grinders.allocate(custodian_, asset, amount);
     }
 
     function _setChainlinkFeed(address asset, address aggregator) internal {
-        graiToken.setFeed(asset, _chainlinkFeed(asset, aggregator));
+        grai.setFeed(asset, _chainlinkFeed(asset, aggregator));
+    }
+
+    function _setAssetConfig(address asset, uint16 yieldSplit, bool paused) internal {
+        grai.setAssetConfig(asset, IGRAI.AssetConfig({asset: asset, yieldSplit: yieldSplit, paused: paused, id: 0}));
+    }
+
+    /// @dev Clearing a feed (FEED_NONE) delists the asset (must be paused with zero balance).
+    function _clearFeed(address asset) internal {
+        grai.setFeed(
+            asset,
+            IPriceOracleRouter.Feed({
+                feedType: 0,
+                asset: asset,
+                source: address(0),
+                data: bytes32(0),
+                decimals: 0,
+                storedPrice: 0,
+                storedUpdatedAt: 0,
+                maxStaleness: 0
+            })
+        );
     }
 
     function _setPythFeed(address asset, address pyth, bytes32 priceId) internal {
-        graiToken.setFeed(
+        grai.setFeed(
             asset,
             IPriceOracleRouter.Feed({
                 feedType: 3,
@@ -123,60 +140,41 @@ abstract contract GRAIFixture is Test {
         });
     }
 
-    function _auctionExit(address seller, address bidder, address asset, uint256 graiAmount, uint256 payment)
-        internal
-    {
-        vm.prank(seller);
-        graiToken.ask(asset, payment, payment, 1 days, graiAmount);
-        vm.startPrank(bidder);
-        if (asset != address(0)) {
-            IERC20(asset).approve(address(graiToken), payment);
-            graiToken.fulfillAsk(seller, type(uint256).max, payment);
-        } else {
-            graiToken.fulfillAsk{value: payment}(seller, type(uint256).max, payment);
-        }
-        vm.stopPrank();
+    function _setHedgeAsset(address asset) internal {
+        vm.prank(admin);
+        grai.setHedgeAsset(asset);
     }
 
-    function _redeem(address user, uint256 amount) internal {
-        vm.startPrank(user);
-        graiToken.redeem(amount);
+    /// @dev Fill the open yield auction for `asset` as `buyer`, paying with `hedgeAsset`.
+    function _fill(address buyer, address asset, uint256 amount, uint256 paymentMax) internal {
+        address payAsset = grai.hedgeAsset();
+        vm.startPrank(buyer);
+        if (payAsset != address(0)) {
+            IERC20(payAsset).approve(address(grai), paymentMax);
+            grai.fill(asset, amount, paymentMax);
+        } else {
+            grai.fill{value: paymentMax}(asset, amount, paymentMax);
+        }
         vm.stopPrank();
     }
 
     function _mint(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
         vm.startPrank(user);
-        token.approve(address(graiToken), amount);
-        (graiOut,) = graiToken.deposit(address(token), amount);
+        token.approve(address(grai), amount);
+        (graiOut,) = grai.mint(address(token), amount);
         vm.stopPrank();
     }
 
     function _fundGrinders(MockERC20 token, uint256 amount) internal {
-        token.mint(address(grai), amount);
-    }
-
-    /// @dev Test stand-in for removed `GRAI.take`: move idle out of the vault and bump `used`.
-    function _take(address asset, address to, uint256 amount) internal {
-        if (asset == address(0)) {
-            vm.deal(address(graiToken), address(graiToken).balance - amount);
-            vm.deal(to, to.balance + amount);
-        } else {
-            uint256 fromBal = IERC20(asset).balanceOf(address(graiToken));
-            uint256 toBal = IERC20(asset).balanceOf(to);
-            deal(asset, address(graiToken), fromBal - amount, true);
-            deal(asset, to, toBal + amount, true);
-        }
-        stdstore.target(address(graiToken)).sig("used(address)").with_key(asset).checked_write(
-            graiToken.used(asset) + amount
-        );
+        token.mint(address(grinders), amount);
     }
 
     function _assertFirstVaultSnapshot(address expectedAsset, uint256 expectedSenior, uint256 expectedJunior)
         internal
         view
     {
-        assertEq(graiToken.assetList(0), expectedAsset);
-        assertEq(grai.grai().balance(expectedAsset), expectedSenior);
-        assertEq(grai.balance(expectedAsset), expectedJunior);
+        assertEq(grai.assetList(0), expectedAsset);
+        assertEq(grinders.grai().balance(expectedAsset), expectedSenior);
+        assertEq(grinders.balance(expectedAsset), expectedJunior);
     }
 }

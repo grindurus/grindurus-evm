@@ -25,14 +25,14 @@ contract CustodyCowTest is GRAIFixture {
                     new ERC1967Proxy(
                         address(impl),
                         abi.encodeCall(
-                            CoWCustodian.initialize, (address(grai), usdc, weth)
+                            CoWCustodian.initialize, (address(grinders), usdc, weth)
                         )
                     )
                 )
             )
         );
         vm.startPrank(admin);
-        grai.register(address(custodyWallet), owner);
+        grinders.register(address(custodyWallet), owner);
         vm.stopPrank();
     }
 
@@ -58,8 +58,8 @@ contract CustodyCowTest is GRAIFixture {
     }
 
     function test_InitializeApprovesVaultRelayer() public view {
-        assertEq(custodyWallet.grinders(), address(grai));
-        assertEq(custodyWallet.grinders(), address(grai));
+        assertEq(custodyWallet.grinders(), address(grinders));
+        assertEq(custodyWallet.grinders(), address(grinders));
         assertEq(custodyWallet.custodianId(), 1);
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
         assertEq(weth.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
@@ -193,7 +193,7 @@ contract CustodyCowTest is GRAIFixture {
         custodyWallet.upgradeToAndCall(address(implV2), "");
 
         assertEq(custodyWallet.owner(), owner);
-        assertEq(custodyWallet.grinders(), address(grai));
+        assertEq(custodyWallet.grinders(), address(grinders));
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(weth));
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);

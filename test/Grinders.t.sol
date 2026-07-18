@@ -28,6 +28,8 @@ contract GrindersTest is GRAIFixture {
     function _registerTestCustodian() internal override {}
 
     function test_DistributePaysProtocolProfitToOwner() public {
+        _setHedgeAsset(address(usdc)); // yieldShare of USDC accrues as insurance (no auction)
+
         vm.prank(admin);
         address custodyWallet = grinders.mint(cowKind, grinder, usdc, weth);
 
@@ -36,20 +38,18 @@ contract GrindersTest is GRAIFixture {
         vm.prank(admin);
         grinders.allocate(custodyWallet, address(usdc), 50e6);
 
+        uint256 graiUsdcBefore = usdc.balanceOf(address(grai));
         vm.prank(grinder);
         CoWCustodian(payable(custodyWallet)).distribute(address(usdc), 20e6);
 
-        assertEq(usdc.balanceOf(admin), 4e6);
+        assertEq(usdc.balanceOf(admin), 4e6); // 20% treasury
+        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 80% insurance
         assertEq(grinders.balance(address(usdc)), 0);
     }
 
     function test_MintCoWCustodian() public {
         vm.prank(admin);
-        CoWCustodian custodyWallet = CoWCustodian(
-            payable(
-                grinders.mint(cowKind, grinder, usdc, weth)
-            )
-        );
+        CoWCustodian custodyWallet = CoWCustodian(payable(grinders.mint(cowKind, grinder, usdc, weth)));
 
         assertEq(custodyWallet.owner(), grinder);
         assertEq(custodyWallet.grinders(), address(grinders));
@@ -79,11 +79,7 @@ contract GrindersTest is GRAIFixture {
 
     function test_MintLiFiCustodian() public {
         vm.prank(admin);
-        LiFiCustodian custodyWallet = LiFiCustodian(
-            payable(
-                grinders.mint(lifiKind, grinder, usdc, weth)
-            )
-        );
+        LiFiCustodian custodyWallet = LiFiCustodian(payable(grinders.mint(lifiKind, grinder, usdc, weth)));
 
         assertEq(custodyWallet.owner(), grinder);
         assertEq(custodyWallet.grinders(), address(grinders));

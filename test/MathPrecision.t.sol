@@ -2,52 +2,58 @@
 pragma solidity ^0.8.30;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract MathPrecisionProbe is GRAIFixture {
-  /// Micro redeem is allowed when NAV covers mint-price value.
-  function test_MicroRedeemSucceeds() public {
-    _mint(alice, usdc, 100e6);
-    _mint(alice, weth, 1e18);
+    /// Mint is 1 GRAI per $1 of deposited value (USD_DECIMALS = 6).
+    function test_MintIsOneToOneUsd() public {
+        _mint(alice, usdc, 100e6);
+        _mint(alice, weth, 1e18);
+        assertEq(grai.balanceOf(alice), 100e6 + 2000e6);
+        assertEq(grai.totalValue(), 2100e6);
+    }
 
-    uint256 before = graiToken.balanceOf(alice);
-    vm.prank(alice);
-    graiToken.redeem(1);
-    assertEq(graiToken.balanceOf(alice), before - 1);
-  }
+    /// Auction payment scales linearly with fill size at t=0.
+    function test_AuctionPaymentProRataAtStart() public {
+        vm.startPrank(admin);
+        grai.setHedgeAsset(address(usdc));
+        _setAssetConfig(address(weth), 10_000, false);
+        vm.stopPrank();
 
-  /// Redeem burns GRAI and reduces totalValue by the redeemed USD share.
-  function test_RedeemReducesTotalValue() public {
-    _mint(alice, usdc, 100e6);
-    uint256 tv0 = grai.grai().totalValue();
-    uint256 stBefore = grai.grai().balanceOf(alice);
+        deal(address(weth), alice, 1e18);
+        vm.startPrank(alice);
+        weth.approve(address(grai), 1e18);
+        grai.distribute(address(weth), 1e18);
+        vm.stopPrank();
 
-    vm.prank(alice);
-    graiToken.redeem(1);
+        (uint256 out1, uint256 pay1) = grai.previewFill(address(weth), 0.25e18, block.timestamp);
+        (uint256 out2, uint256 pay2) = grai.previewFill(address(weth), 0.75e18, block.timestamp);
+        assertEq(out1, 0.25e18);
+        assertEq(out2, 0.75e18);
+        assertEq(pay1, 500e6);
+        assertEq(pay2, 1500e6);
+        assertEq(pay1 + pay2, 2000e6);
+    }
 
-    assertEq(grai.grai().balanceOf(alice), stBefore - 1);
-    assertEq(grai.grai().totalValue(), tv0 - 1);
-  }
+    /// Mint works again after an asset is drained, delisted and re-listed.
+    function test_MintAfterAssetRelistWorks() public {
+        _mint(alice, usdc, 100e6);
 
-  /// Mint works again after an asset is drained, delisted and re-listed.
-  function test_MintAfterAssetRelistWorks() public {
-    _mint(alice, usdc, 100e6);
+        // Idle USDC may sit on GRAI when grinders == this; drain it before delist.
+        uint256 idle = IERC20(address(usdc)).balanceOf(address(grai));
+        if (idle > 0) {
+            deal(address(usdc), address(grai), 0, true);
+        }
 
-    vm.startPrank(admin);
-    graiToken.setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, true);
-    vm.stopPrank();
+        vm.startPrank(admin);
+        _setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, true);
+        _clearFeed(address(usdc)); // delist (paused + drained)
+        _setChainlinkFeed(address(usdc), address(usdcFeed)); // re-list
+        _setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, false);
+        vm.stopPrank();
 
-    _redeem(alice, graiToken.balanceOf(alice));
-
-    vm.startPrank(admin);
-    graiToken.removeAsset(address(usdc), 0);
-    _setChainlinkFeed(address(usdc), address(usdcFeed));
-    graiToken.addAsset(address(usdc), DEFAULT_YIELD_SPLIT);
-    vm.stopPrank();
-
-    assertEq(grai.grai().seniorNAV(), 0);
-
-    _mint(bob, usdc, 100e6);
-    assertEq(grai.grai().seniorNAV(), 100e6);
-    assertEq(grai.grai().balanceOf(bob), 100e6);
-  }
+        _mint(bob, usdc, 100e6);
+        assertEq(grai.balanceOf(bob), 100e6);
+        assertEq(grai.totalValue(), 200e6);
+    }
 }

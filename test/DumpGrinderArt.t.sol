@@ -13,25 +13,15 @@ contract DumpGrinderArtTest is Test {
     function test_DumpGrinderArt() public {
         address admin = address(0xA11CE);
 
-        GRAI graiToken = GRAI(
-            payable(
-                address(
-                    new ERC1967Proxy(
-                        address(new GRAI()), abi.encodeCall(GRAI.initialize, (admin))
-                    )
-                )
-            )
-        );
+        GRAI grai =
+            GRAI(payable(address(new ERC1967Proxy(address(new GRAI()), abi.encodeCall(GRAI.initialize, (admin))))));
 
-        Grinders grai = Grinders(
-            payable(
-                address(
+        Grinders grinders = Grinders(
+            payable(address(
                     new ERC1967Proxy(
-                        address(new Grinders()),
-                        abi.encodeCall(Grinders.initialize, (admin, address(graiToken)))
+                        address(new Grinders()), abi.encodeCall(Grinders.initialize, (admin, address(grai)))
                     )
-                )
-            )
+                ))
         );
 
         MockERC20 usdc = new MockERC20("USDC", "USDC", 6);
@@ -39,14 +29,11 @@ contract DumpGrinderArtTest is Test {
         CoWCustodian cow = new CoWCustodian();
 
         vm.startPrank(admin);
-        graiToken.toggleGrinders(address(grai));
-        grai.setCustodianImplementation(cow.custodianKind(), address(cow));
+        grinders.setCustodianImplementation(cow.custodianKind(), address(cow));
         for (uint256 i; i < 10; ++i) {
-            grai.mint(cow.custodianKind(), admin, usdc, weth);
+            grinders.mint(cow.custodianKind(), admin, usdc, weth);
             // forge-lint: disable-next-line(unsafe-cheatcode)
-            vm.writeFile(
-                string.concat("out/bull-tokenuri-", vm.toString(i), ".txt"), grai.tokenURI(i)
-            );
+            vm.writeFile(string.concat("out/bull-tokenuri-", vm.toString(i), ".txt"), grinders.tokenURI(i));
         }
         vm.stopPrank();
     }

@@ -57,14 +57,14 @@ contract CustodySwapTest is GRAIFixture {
                     new ERC1967Proxy(
                         address(impl),
                         abi.encodeCall(
-                            SwapCustodian.initialize, (address(grai), usdc, weth)
+                            SwapCustodian.initialize, (address(grinders), usdc, weth)
                         )
                     )
                 )
             )
         );
         vm.startPrank(admin);
-        grai.register(address(custodyWallet), owner);
+        grinders.register(address(custodyWallet), owner);
         vm.stopPrank();
 
         usdc.mint(address(custodyWallet), 100e6);
