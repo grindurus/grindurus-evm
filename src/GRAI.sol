@@ -18,7 +18,6 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     using SafeERC20 for IERC20;
 
     uint16 public constant BPS = 100_00; // 100%
-    uint256 public constant AUCTION_DURATION = 365 days;
 
     // bytes32 public constant DEFAULT_ADMIN_ROLE = keccak256("DEFAULT_ADMIN_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -63,7 +62,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
     /** SLOT end 20 + 1 + 6 */
 
-    /// @notice Bribe premium, liquidation quorum, and liquidation timing.
+    /// @notice Bribe premium, liquidation quorum, and timing.
     ProtocolConfig public config;
 
     /// @dev Storage gap for future upgrades.
@@ -84,6 +83,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         config = ProtocolConfig({
             bribePremiumBps: 2_00, // 2%
             liquidationQuorumBps: 66_67, // 66.67%
+            auctionDuration: uint32(365 days),
             liquidationPeriod: uint32(24 hours),
             redeemPeriod: uint32(7 days)
         });
@@ -211,7 +211,12 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
         uint32 id = uint32(assetList.length);
         // Preserve a previously configured yield split; defaults to 0 for a new asset.
-        assets[asset] = AssetConfig({asset: asset, yieldSplit: assets[asset].yieldSplit, paused: false, id: id});
+        assets[asset] = AssetConfig({
+            asset: asset,
+            id: id,
+            paused: false,
+            treasuryShare: assets[asset].treasuryShare
+        });
         assetList.push(asset);
         emit AssetUpdate(asset, true);
     }
@@ -239,8 +244,8 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     /// @dev `cfg.asset` and `cfg.id` are ignored: the `asset` param is authoritative and the `assetList` index is managed internally.
     function setAssetConfig(address asset, AssetConfig calldata cfg) external onlyRole(ADMIN_ROLE) {
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
-        if (cfg.yieldSplit > BPS) revert BpsTooHigh();
-        assets[asset].yieldSplit = cfg.yieldSplit;
+        if (cfg.treasuryShare > BPS) revert BpsTooHigh();
+        assets[asset].treasuryShare = cfg.treasuryShare;
         assets[asset].paused = cfg.paused;
         emit AssetConfigUpdate(asset, assets[asset]);
     }
@@ -257,8 +262,8 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
         uint256 received = _pay(msg.sender, address(this), asset, yieldAmount);
         yieldBy[msg.sender][asset] += received;
-        uint256 treasuryShare = (received * cfg.yieldSplit) / BPS;
-        uint256 yieldShare = received - yieldShare;
+        uint256 treasuryShare = (received * cfg.treasuryShare) / BPS;
+        uint256 yieldShare = received - treasuryShare;
 
         if (treasuryShare > 0) _withdraw(treasury, asset, treasuryShare);
         if (yieldShare > 0 && asset != hedgeAsset) _put(asset, yieldShare);
@@ -319,7 +324,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Dutch payment in `hedgeAsset`: `maxPayment` → `minPayment` over `AUCTION_DURATION`,
+    /// @dev Dutch payment in `hedgeAsset`: `maxPayment` → `minPayment` over `config.auctionDuration`,
     ///      scaled by fill size. Caps fill to auction remaining.
     function previewFill(
         address asset,
@@ -335,8 +340,47 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
         amountOut = amount;
         uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
-        uint256 price = dutchPrice(entry.maxPayment, entry.minPayment, elapsed, AUCTION_DURATION);
+        uint256 price = dutchPrice(entry.maxPayment, entry.minPayment, elapsed, config.auctionDuration);
         payment = entry.initial == 0 ? 0 : (price * amountOut) / entry.initial;
+    }
+
+    //////////////////// BUYBACK ////////////////////
+
+    /// @inheritdoc IGRAI
+    /// @dev Approves the full ERC20 hedge balance (or forwards the full native balance), executes the
+    ///      DEX calldata, clears approval, verifies GRAI output, and burns the received GRAI.
+    function buyback(
+        address target,
+        bytes calldata data,
+        uint256 graiMin
+    ) public onlyRole(ADMIN_ROLE) returns (uint256 payment, uint256 graiOut) {
+        if (liquidation) revert LiquidationOpen();
+        if (target == address(0)) revert TargetZero();
+        if (data.length == 0) revert DataEmpty();
+
+        uint256 hedgeBefore = balance(hedgeAsset);
+        if (hedgeBefore == 0) revert AmountZero();
+        uint256 graiBefore = balanceOf(address(this));
+
+        bool ok;
+        if (hedgeAsset == address(0)) {
+            (ok,) = target.call{value: hedgeBefore}(data);
+        } else {
+            IERC20 hedge = IERC20(hedgeAsset);
+            hedge.forceApprove(target, hedgeBefore);
+            (ok,) = target.call(data);
+            hedge.forceApprove(target, 0);
+        }
+        if (!ok) revert SwapFailed();
+
+        uint256 hedgeAfter = balance(hedgeAsset);
+        if (hedgeAfter >= hedgeBefore) revert SwapFailed();
+        payment = hedgeBefore - hedgeAfter;
+        graiOut = balanceOf(address(this)) - graiBefore;
+        if (graiOut < graiMin || graiOut == 0) revert Slippage();
+
+        _burn(address(this), graiOut);
+        emit Buyback(target, payment, graiOut);
     }
 
     //////////////////// VOTE ////////////////////
@@ -423,10 +467,23 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     /// @inheritdoc IGRAI
     /// @dev Flips the liquidation flag and pauses/unpauses every asset accordingly. Opening requires quorum.
     function liquidate() public onlyRole(ADMIN_ROLE) {
-        bool opening = !liquidation;
-        if (opening && !hasQuorum()) revert LiquidationQuorumNotMet();
-        if (opening) {
-            uint256 len = assetList.length;
+        uint256 len = assetList.length;
+        if (liquidation) {
+            if (block.timestamp < liquidationAt + config.liquidationPeriod + config.redeemPeriod) {
+                revert RedeemPeriodActive();
+            }
+            for (uint256 i; i < len;) {
+                address asset = assetList[i];
+                assets[asset].paused = false;
+                uint256 remaining = balance(asset);
+                if (remaining > 0) _withdraw(address(grinders), asset, remaining);
+                emit AssetConfigUpdate(asset, assets[asset]);
+                unchecked { ++i; }
+            }
+            liquidation = false;
+            liquidationAt = 0;
+        } else {
+            if (!hasQuorum()) revert LiquidationQuorumNotMet();
             for (uint256 i; i < len;) {
                 address asset = assetList[i];
                 // Auction inventory becomes part of the pro-rata liquidation basket.
@@ -438,21 +495,10 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
                 emit AssetConfigUpdate(asset, assets[asset]);
                 unchecked { ++i; }
             }
-        } else {
-            if (block.timestamp < liquidationAt + config.liquidationPeriod + config.redeemPeriod) {
-                revert RedeemPeriodActive();
-            }
-            uint256 len = assetList.length;
-            for (uint256 i; i < len;) {
-                address asset = assetList[i];
-                assets[asset].paused = false;
-                emit AssetConfigUpdate(asset, assets[asset]);
-                unchecked { ++i; }
-            }
+            liquidation = true;
+            liquidationAt = uint48(block.timestamp);
         }
-        liquidation = opening;
-        liquidationAt = opening ? uint48(block.timestamp) : 0;
-        emit Liquidate(opening, totalVoted, totalSupply());
+        emit Liquidate(liquidation, totalVoted, totalSupply());
     }
 
     //////////////////// REDEMPTION ////////////////////
@@ -497,14 +543,10 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
                 if (amount > 0) {
                     assetOuts[count] = asset;
                     amounts[count] = amount;
-                    unchecked {
-                        ++count;
-                    }
+                    unchecked { ++count; }
                 }
             }
-            unchecked {
-                ++i;
-            }
+            unchecked { ++i; }
         }
         assembly ("memory-safe") {
             mstore(assetOuts, count)

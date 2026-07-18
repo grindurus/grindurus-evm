@@ -28,6 +28,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error LiquidationDelay();
     error RedeemPeriodActive();
     error HedgeAssetUnset();
+    error TargetZero();
+    error DataEmpty();
+    error SwapFailed();
 
     struct AssetConfig {
         /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
@@ -35,7 +38,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
         bool paused;
-        uint16 yieldSplit;
+        /// @notice Share of distributed yield sent to `treasury`, in bps.
+        uint16 treasuryShare;
     }
 
     /// @notice One Dutch auction of distributed yield for a single sold asset, paid in `hedgeAsset`.
@@ -58,11 +62,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 id;
     }
 
-    /// @notice Bribe premium, liquidation quorum, and liquidation timing.
+    /// @notice Bribe premium, liquidation quorum, and timing.
     struct ProtocolConfig {
         /// @notice Premium over book value paid to the bought-out voter.
         uint16 bribePremiumBps;
         uint16 liquidationQuorumBps;
+        /// @notice Dutch auction duration from `maxPayment` to `minPayment`.
+        uint32 auctionDuration;
         /// @notice Delay after liquidation opens before `redeem` is allowed.
         uint32 liquidationPeriod;
         /// @notice Extra window after `liquidationPeriod` before liquidation can be closed.
@@ -79,6 +85,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     );
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
     event AuctionFill(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
+    event Buyback(address indexed target, uint256 payment, uint256 graiOut);
     event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event Bribe(
@@ -90,7 +97,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function config()
         external
         view
-        returns (uint16 bribePremiumBps, uint16 liquidationQuorumBps, uint32 liquidationPeriod, uint32 redeemPeriod);
+        returns (
+            uint16 bribePremiumBps,
+            uint16 liquidationQuorumBps,
+            uint32 auctionDuration,
+            uint32 liquidationPeriod,
+            uint32 redeemPeriod
+        );
 
     function ADMIN_ROLE() external view returns (bytes32);
 
@@ -134,7 +147,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
     function liquidationAt() external view returns (uint48);
 
-    function assets(address asset) external view returns (address asset_, uint32 id, bool paused, uint16 yieldSplit);
+    function assets(address asset) external view returns (address asset_, uint32 id, bool paused, uint16 treasuryShare);
 
     function assetList(uint256 index) external view returns (address);
 
@@ -176,6 +189,12 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function fill(address asset, uint256 amount, uint256 paymentMax) external payable;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
+
+    /// @notice Swap all GRAI-held `hedgeAsset` through `target` for GRAI and burn the received GRAI.
+    /// @dev DEX calldata must route the bought GRAI to this contract.
+    function buyback(address target, bytes calldata data, uint256 graiMin)
+        external
+        returns (uint256 payment, uint256 graiOut);
 
     /// @notice Pro-rata asset amounts paid for burning `graiAmount` after the liquidation delay.
     function previewRedeem(uint256 graiAmount)
