@@ -20,16 +20,12 @@ contract CustodyCowTest is GRAIFixture {
 
         CoWCustodian impl = new CoWCustodian();
         custodyWallet = CoWCustodian(
-            payable(
-                address(
+            payable(address(
                     new ERC1967Proxy(
                         address(impl),
-                        abi.encodeCall(
-                            CoWCustodian.initialize, (address(grinders), usdc, weth)
-                        )
+                        abi.encodeCall(CoWCustodian.initialize, (address(grinders), address(usdc), address(weth)))
                     )
-                )
-            )
+                ))
         );
         vm.startPrank(admin);
         grinders.register(address(custodyWallet), owner);
@@ -58,8 +54,8 @@ contract CustodyCowTest is GRAIFixture {
     }
 
     function test_InitializeApprovesVaultRelayer() public view {
-        assertEq(custodyWallet.grinders(), address(grinders));
-        assertEq(custodyWallet.grinders(), address(grinders));
+        assertEq(address(custodyWallet.grinders()), address(grinders));
+        assertEq(address(custodyWallet.grinders()), address(grinders));
         assertEq(custodyWallet.custodianId(), 1);
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
         assertEq(weth.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
@@ -163,7 +159,7 @@ contract CustodyCowTest is GRAIFixture {
         vm.prank(owner);
         vm.expectEmit(true, true, false, true);
         emit Custodian.AssetsUpdated(address(usdc), address(dai));
-        custodyWallet.setAssets(usdc, dai);
+        custodyWallet.setAssets(address(usdc), address(dai));
 
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(dai));
@@ -173,7 +169,7 @@ contract CustodyCowTest is GRAIFixture {
     function test_SetAssets_revertsSameAsset() public {
         vm.prank(owner);
         vm.expectRevert(Custodian.SameAsset.selector);
-        custodyWallet.setAssets(usdc, usdc);
+        custodyWallet.setAssets(address(usdc), address(usdc));
     }
 
     function test_SetAssets_revertsNonZeroBalance() public {
@@ -183,7 +179,7 @@ contract CustodyCowTest is GRAIFixture {
 
         vm.prank(owner);
         vm.expectRevert(Custodian.NonZeroBalance.selector);
-        custodyWallet.setAssets(usdc, dai);
+        custodyWallet.setAssets(address(usdc), address(dai));
     }
 
     function test_UpgradePreservesState() public {
@@ -193,7 +189,7 @@ contract CustodyCowTest is GRAIFixture {
         custodyWallet.upgradeToAndCall(address(implV2), "");
 
         assertEq(custodyWallet.owner(), owner);
-        assertEq(custodyWallet.grinders(), address(grinders));
+        assertEq(address(custodyWallet.grinders()), address(grinders));
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(weth));
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);

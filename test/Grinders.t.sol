@@ -20,20 +20,20 @@ contract GrindersTest is GRAIFixture {
         LiFiCustodian lifiImpl = new LiFiCustodian();
         cowKind = cowImpl.custodianKind();
         lifiKind = lifiImpl.custodianKind();
-        grinders.setCustodianImplementation(cowKind, address(cowImpl));
-        grinders.setCustodianImplementation(lifiKind, address(lifiImpl));
+        grinders.set(cowKind, address(cowImpl));
+        grinders.set(lifiKind, address(lifiImpl));
         vm.stopPrank();
     }
 
     function _registerTestCustodian() internal override {}
 
     function test_DistributePaysProtocolProfitToOwner() public {
-        _setHedgeAsset(address(usdc)); // yieldShare of USDC accrues as insurance (no auction)
+        _setSettlementAsset(address(usdc)); // yieldShare of USDC accrues on GRAI (no auction)
 
         vm.prank(admin);
-        address custodyWallet = grinders.mint(cowKind, grinder, usdc, weth);
+        address custodyWallet = grinders.mint(cowKind, address(usdc), address(weth), grinder);
 
-        _mint(alice, usdc, 100e6);
+        _deposit(alice, usdc, 100e6);
         _fundGrinders(usdc, 50e6);
         vm.prank(admin);
         grinders.allocate(custodyWallet, address(usdc), 50e6);
@@ -43,16 +43,17 @@ contract GrindersTest is GRAIFixture {
         CoWCustodian(payable(custodyWallet)).distribute(address(usdc), 20e6);
 
         assertEq(usdc.balanceOf(admin), 4e6); // 20% treasury
-        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 80% insurance
+        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 80% settlement
         assertEq(grinders.balance(address(usdc)), 0);
     }
 
     function test_MintCoWCustodian() public {
         vm.prank(admin);
-        CoWCustodian custodyWallet = CoWCustodian(payable(grinders.mint(cowKind, grinder, usdc, weth)));
+        CoWCustodian custodyWallet =
+            CoWCustodian(payable(grinders.mint(cowKind, address(usdc), address(weth), grinder)));
 
         assertEq(custodyWallet.owner(), grinder);
-        assertEq(custodyWallet.grinders(), address(grinders));
+        assertEq(address(custodyWallet.grinders()), address(grinders));
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(weth));
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
@@ -79,10 +80,11 @@ contract GrindersTest is GRAIFixture {
 
     function test_MintLiFiCustodian() public {
         vm.prank(admin);
-        LiFiCustodian custodyWallet = LiFiCustodian(payable(grinders.mint(lifiKind, grinder, usdc, weth)));
+        LiFiCustodian custodyWallet =
+            LiFiCustodian(payable(grinders.mint(lifiKind, address(usdc), address(weth), grinder)));
 
         assertEq(custodyWallet.owner(), grinder);
-        assertEq(custodyWallet.grinders(), address(grinders));
+        assertEq(address(custodyWallet.grinders()), address(grinders));
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(weth));
         assertEq(custodyWallet.custodianId(), 0);
@@ -92,13 +94,13 @@ contract GrindersTest is GRAIFixture {
 
     function test_Mint_reusesImplementationPerType() public {
         vm.startPrank(admin);
-        grinders.mint(cowKind, grinder, usdc, weth);
+        grinders.mint(cowKind, address(usdc), address(weth), grinder);
         address cowImpl = grinders.custodianImplementations(cowKind);
-        grinders.mint(cowKind, bob, usdc, weth);
+        grinders.mint(cowKind, address(usdc), address(weth), bob);
 
-        grinders.mint(lifiKind, grinder, usdc, weth);
+        grinders.mint(lifiKind, address(usdc), address(weth), grinder);
         address lifiImpl = grinders.custodianImplementations(lifiKind);
-        grinders.mint(lifiKind, bob, usdc, weth);
+        grinders.mint(lifiKind, address(usdc), address(weth), bob);
         vm.stopPrank();
 
         assertEq(grinders.custodianImplementations(cowKind), cowImpl);
@@ -110,7 +112,7 @@ contract GrindersTest is GRAIFixture {
     function test_Mint_revertsNotAdmin() public {
         vm.prank(alice);
         vm.expectRevert();
-        grinders.mint(cowKind, grinder, usdc, weth);
+        grinders.mint(cowKind, address(usdc), address(weth), grinder);
     }
 
     function test_Mint_revertsUnknownKind() public {
@@ -118,14 +120,14 @@ contract GrindersTest is GRAIFixture {
 
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(IGrinders.UnknownCustodianKind.selector, unknownKind));
-        grinders.mint(unknownKind, grinder, usdc, weth);
+        grinders.mint(unknownKind, address(usdc), address(weth), grinder);
     }
 
     function test_MintRegistersMultipleCustodians() public {
         vm.startPrank(admin);
-        address cow0 = grinders.mint(cowKind, grinder, usdc, weth);
-        address lifi1 = grinders.mint(lifiKind, grinder, usdc, weth);
-        address cow2 = grinders.mint(cowKind, bob, usdc, weth);
+        address cow0 = grinders.mint(cowKind, address(usdc), address(weth), grinder);
+        address lifi1 = grinders.mint(lifiKind, address(usdc), address(weth), grinder);
+        address cow2 = grinders.mint(cowKind, address(usdc), address(weth), bob);
         vm.stopPrank();
 
         assertEq(grinders.ownerOf(0), grinder);
@@ -139,7 +141,7 @@ contract GrindersTest is GRAIFixture {
 
     function test_CustodianOwnerFollowsOwnershipTransfer() public {
         vm.prank(admin);
-        address custodyAddr = grinders.mint(cowKind, grinder, usdc, weth);
+        address custodyAddr = grinders.mint(cowKind, address(usdc), address(weth), grinder);
         CoWCustodian custodyWallet = CoWCustodian(payable(custodyAddr));
 
         assertEq(custodyWallet.owner(), grinder);
@@ -155,7 +157,7 @@ contract GrindersTest is GRAIFixture {
         CoWCustodian customImpl = new CoWCustodian();
 
         vm.prank(admin);
-        grinders.setCustodianImplementation(cowKind, address(customImpl));
+        grinders.set(cowKind, address(customImpl));
 
         assertEq(grinders.custodianImplementations(cowKind), address(customImpl));
     }
@@ -165,11 +167,11 @@ contract GrindersTest is GRAIFixture {
         vm.deal(address(grinders), 1 ether);
 
         vm.prank(admin);
-        grinders.mint(cowKind, grinder, usdc, weth);
+        grinders.mint(cowKind, address(usdc), address(weth), grinder);
         address cowImpl = grinders.custodianImplementations(cowKind);
 
         vm.prank(admin);
-        grinders.mint(lifiKind, grinder, usdc, weth);
+        grinders.mint(lifiKind, address(usdc), address(weth), grinder);
         address lifiImpl = grinders.custodianImplementations(lifiKind);
 
         Grinders implV2 = new Grinders();

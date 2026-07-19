@@ -5,10 +5,10 @@ import {GRAIFixture} from "./GRAIFixture.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract MathPrecisionProbe is GRAIFixture {
-    /// Mint is 1 GRAI per $1 of deposited value (USD_DECIMALS = 6).
-    function test_MintIsOneToOneUsd() public {
-        _mint(alice, usdc, 100e6);
-        _mint(alice, weth, 1e18);
+    /// Deposit is 1 GRAI per $1 of deposited value (USD_DECIMALS = 6).
+    function test_DepositIsOneToOneUsd() public {
+        _deposit(alice, usdc, 100e6);
+        _deposit(alice, weth, 1e18);
         assertEq(grai.balanceOf(alice), 100e6 + 2000e6);
         assertEq(grai.totalValue(), 2100e6);
     }
@@ -16,8 +16,8 @@ contract MathPrecisionProbe is GRAIFixture {
     /// Auction payment scales linearly with fill size at t=0.
     function test_AuctionPaymentProRataAtStart() public {
         vm.startPrank(admin);
-        grai.setHedgeAsset(address(usdc));
-        _setAssetConfig(address(weth), 10_000, false);
+        grai.setSettlementAsset(address(usdc));
+        _setAssetConfig(address(weth), 0, false);
         vm.stopPrank();
 
         deal(address(weth), alice, 1e18);
@@ -35,9 +35,9 @@ contract MathPrecisionProbe is GRAIFixture {
         assertEq(pay1 + pay2, 2000e6);
     }
 
-    /// Mint works again after an asset is drained, delisted and re-listed.
-    function test_MintAfterAssetRelistWorks() public {
-        _mint(alice, usdc, 100e6);
+    /// Deposit works again after an asset is drained, delisted and re-listed.
+    function test_DepositAfterAssetRelistWorks() public {
+        _deposit(alice, usdc, 100e6);
 
         // Idle USDC may sit on GRAI when grinders == this; drain it before delist.
         uint256 idle = IERC20(address(usdc)).balanceOf(address(grai));
@@ -46,13 +46,13 @@ contract MathPrecisionProbe is GRAIFixture {
         }
 
         vm.startPrank(admin);
-        _setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, true);
+        _setAssetConfig(address(usdc), DEFAULT_TREASURY_SHARE, true);
         _clearFeed(address(usdc)); // delist (paused + drained)
         _setChainlinkFeed(address(usdc), address(usdcFeed)); // re-list
-        _setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, false);
+        _setAssetConfig(address(usdc), DEFAULT_TREASURY_SHARE, false);
         vm.stopPrank();
 
-        _mint(bob, usdc, 100e6);
+        _deposit(bob, usdc, 100e6);
         assertEq(grai.balanceOf(bob), 100e6);
         assertEq(grai.totalValue(), 200e6);
     }

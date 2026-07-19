@@ -30,7 +30,7 @@ abstract contract GRAIFixture is Test {
     MockAggregator wethFeed; // 8 decimals, $2000
 
     uint16 constant BPS = 10_000;
-    uint16 constant DEFAULT_YIELD_SPLIT = 8_000;
+    uint16 constant DEFAULT_TREASURY_SHARE = 2_000;
     uint256 constant DEFAULT_MAX_STALENESS = 1 hours;
 
     function setUp() public virtual {
@@ -50,8 +50,8 @@ abstract contract GRAIFixture is Test {
         // setFeed lists the asset (yield split defaults to 0); set the split explicitly.
         _setChainlinkFeed(address(usdc), address(usdcFeed));
         _setChainlinkFeed(address(weth), address(wethFeed));
-        _setAssetConfig(address(usdc), DEFAULT_YIELD_SPLIT, false);
-        _setAssetConfig(address(weth), DEFAULT_YIELD_SPLIT, false);
+        _setAssetConfig(address(usdc), DEFAULT_TREASURY_SHARE, false);
+        _setAssetConfig(address(weth), DEFAULT_TREASURY_SHARE, false);
         _registerTestCustodian();
         vm.stopPrank();
 
@@ -74,8 +74,7 @@ abstract contract GRAIFixture is Test {
         LiFiCustodian impl = new LiFiCustodian();
         custodian = address(
             new ERC1967Proxy(
-                address(impl),
-                abi.encodeCall(Custodian.initialize, (address(grinders), IERC20(address(usdc)), IERC20(address(weth))))
+                address(impl), abi.encodeCall(Custodian.initialize, (address(grinders), address(usdc), address(weth)))
             )
         );
         grinders.register(custodian, admin);
@@ -90,8 +89,10 @@ abstract contract GRAIFixture is Test {
         grai.setFeed(asset, _chainlinkFeed(asset, aggregator));
     }
 
-    function _setAssetConfig(address asset, uint16 yieldSplit, bool paused) internal {
-        grai.setAssetConfig(asset, IGRAI.AssetConfig({asset: asset, yieldSplit: yieldSplit, paused: paused, id: 0}));
+    function _setAssetConfig(address asset, uint16 treasuryShare, bool paused) internal {
+        grai.setAssetConfig(
+            asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: paused, treasuryShare: treasuryShare})
+        );
     }
 
     /// @dev Clearing a feed (FEED_NONE) delists the asset (must be paused with zero balance).
@@ -140,14 +141,14 @@ abstract contract GRAIFixture is Test {
         });
     }
 
-    function _setHedgeAsset(address asset) internal {
+    function _setSettlementAsset(address asset) internal {
         vm.prank(admin);
-        grai.setHedgeAsset(asset);
+        grai.setSettlementAsset(asset);
     }
 
-    /// @dev Fill the open yield auction for `asset` as `buyer`, paying with `hedgeAsset`.
+    /// @dev Fill the open yield auction for `asset` as `buyer`, paying with `settlementAsset`.
     function _fill(address buyer, address asset, uint256 amount, uint256 paymentMax) internal {
-        address payAsset = grai.hedgeAsset();
+        address payAsset = grai.settlementAsset();
         vm.startPrank(buyer);
         if (payAsset != address(0)) {
             IERC20(payAsset).approve(address(grai), paymentMax);
@@ -158,10 +159,10 @@ abstract contract GRAIFixture is Test {
         vm.stopPrank();
     }
 
-    function _mint(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
+    function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
         vm.startPrank(user);
         token.approve(address(grai), amount);
-        (graiOut,) = grai.mint(address(token), amount);
+        (graiOut,) = grai.deposit(address(token), amount);
         vm.stopPrank();
     }
 

@@ -13,9 +13,14 @@ contract PythForkTest is ForkFixture {
     bytes32 internal constant PYTH_ETH_USD = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
     bytes32 internal constant PYTH_BTC_USD = 0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43;
 
-    function _assertPythFeed(address asset, address pyth, bytes32 id, string memory desc, uint256 minUsd, uint256 maxUsd)
-        internal
-    {
+    function _assertPythFeed(
+        address asset,
+        address pyth,
+        bytes32 id,
+        string memory desc,
+        uint256 minUsd,
+        uint256 maxUsd
+    ) internal {
         PythStructs.Price memory raw = IPyth(pyth).getPriceUnsafe(id);
         assertGt(raw.price, 0, "price must be positive");
         assertGt(raw.publishTime, 0, "missing publish time");

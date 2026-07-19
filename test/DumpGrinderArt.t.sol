@@ -29,9 +29,9 @@ contract DumpGrinderArtTest is Test {
         CoWCustodian cow = new CoWCustodian();
 
         vm.startPrank(admin);
-        grinders.setCustodianImplementation(cow.custodianKind(), address(cow));
+        grinders.set(cow.custodianKind(), address(cow));
         for (uint256 i; i < 10; ++i) {
-            grinders.mint(cow.custodianKind(), admin, usdc, weth);
+            grinders.mint(cow.custodianKind(), address(usdc), address(weth), admin);
             // forge-lint: disable-next-line(unsafe-cheatcode)
             vm.writeFile(string.concat("out/bull-tokenuri-", vm.toString(i), ".txt"), grinders.tokenURI(i));
         }

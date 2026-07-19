@@ -52,16 +52,12 @@ contract CustodySwapTest is GRAIFixture {
 
         SwapCustodian impl = new SwapCustodian();
         custodyWallet = SwapCustodian(
-            payable(
-                address(
+            payable(address(
                     new ERC1967Proxy(
                         address(impl),
-                        abi.encodeCall(
-                            SwapCustodian.initialize, (address(grinders), usdc, weth)
-                        )
+                        abi.encodeCall(SwapCustodian.initialize, (address(grinders), address(usdc), address(weth)))
                     )
-                )
-            )
+                ))
         );
         vm.startPrank(admin);
         grinders.register(address(custodyWallet), owner);
@@ -74,9 +70,7 @@ contract CustodySwapTest is GRAIFixture {
     }
 
     function test_swap_sellBase_passesLimit() public {
-        bytes memory data = abi.encodeCall(
-            MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT)
-        );
+        bytes memory data = abi.encodeCall(MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT));
         vm.prank(owner);
         custodyWallet.swap(SELL_EXEC_PRICE - 1, address(router), data);
 
@@ -87,18 +81,14 @@ contract CustodySwapTest is GRAIFixture {
     }
 
     function test_swap_sellBase_revertsPriceLimit() public {
-        bytes memory data = abi.encodeCall(
-            MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT)
-        );
+        bytes memory data = abi.encodeCall(MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT));
         vm.prank(owner);
         vm.expectRevert(SwapCustodian.ExceededPriceLimit.selector);
         custodyWallet.swap(SELL_EXEC_PRICE + 1, address(router), data);
     }
 
     function test_swap_buyBase_passesLimit() public {
-        bytes memory data = abi.encodeCall(
-            MockSwapRouter.buyBaseWithQuote, (usdc, weth, BUY_QUOTE_IN, BUY_BASE_OUT)
-        );
+        bytes memory data = abi.encodeCall(MockSwapRouter.buyBaseWithQuote, (usdc, weth, BUY_QUOTE_IN, BUY_BASE_OUT));
         vm.prank(owner);
         custodyWallet.swap(BUY_EXEC_PRICE + 1, address(router), data);
 
@@ -107,9 +97,7 @@ contract CustodySwapTest is GRAIFixture {
     }
 
     function test_swap_buyBase_revertsPriceLimit() public {
-        bytes memory data = abi.encodeCall(
-            MockSwapRouter.buyBaseWithQuote, (usdc, weth, BUY_QUOTE_IN, BUY_BASE_OUT)
-        );
+        bytes memory data = abi.encodeCall(MockSwapRouter.buyBaseWithQuote, (usdc, weth, BUY_QUOTE_IN, BUY_BASE_OUT));
         vm.prank(owner);
         vm.expectRevert(SwapCustodian.ExceededPriceLimit.selector);
         custodyWallet.swap(BUY_EXEC_PRICE - 1, address(router), data);
@@ -122,9 +110,7 @@ contract CustodySwapTest is GRAIFixture {
     }
 
     function test_swap_revertsForNonOwner() public {
-        bytes memory data = abi.encodeCall(
-            MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT)
-        );
+        bytes memory data = abi.encodeCall(MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT));
 
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Custodian.NotOwner.selector, stranger));
