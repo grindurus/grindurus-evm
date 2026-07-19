@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+import {
+    ERC721EnumerableUpgradeable
+} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -25,17 +27,17 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     IGRAI public grai;
 
     mapping(bytes32 custodianKind => address) public custodianImplementations;
-    
+
     mapping(uint256 custodianId => address) public custodians;
-    
+
     mapping(address custodian => uint256) public custodianIds;
-    
+
     /// @notice Issuance ledger: how much of `asset` was sent to `custodian` via `allocate`.
     /// @dev Not an escrow balance and not a cap on returns. Custodians swap base↔quote, so they may
     ///      `deallocate` an arbitrary amount of any held asset (often a different token than allocated).
     ///      On deallocate the ledger is floored toward zero for that asset only; it must not gate the pull.
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
-    
+
     mapping(address asset => uint256) public active;
 
     /// @dev Storage gap for future upgrades (includes slots formerly used by local liquidation state).
@@ -117,7 +119,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     }
 
     /// @inheritdoc IGrinders
-    /// @dev Reads `liquidation` and asset list from GRAI. Permissionless while open; pages custodians and `put`s to GRAI.
+    /// @dev Permissionless while `grai.liquidation()` is open. Pages custodians, pulls eth/base/quote into
+    ///      this contract, then forwards those amounts to GRAI as idle liquidation inventory for `redeem`.
     function liquidate(uint256 fromId, uint256 toId) external {
         if (!grai.liquidation()) revert NoLiquidation();
         if (fromId >= toId) revert InvalidLiquidationRange(fromId, toId);
@@ -182,10 +185,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
         uint256 custodianId = totalSupply();
 
         custodian = address(
-            new ERC1967Proxy(
-                impl,
-                abi.encodeCall(Custodian.initialize, (address(this), baseAsset_, quoteAsset_))
-            )
+            new ERC1967Proxy(impl, abi.encodeCall(Custodian.initialize, (address(this), baseAsset_, quoteAsset_)))
         );
 
         custodians[custodianId] = custodian;
@@ -222,7 +222,12 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
         }
     }
 
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721EnumerableUpgradeable, IERC165) returns (bool) {
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721EnumerableUpgradeable, IERC165)
+        returns (bool)
+    {
         return super.supportsInterface(interfaceId);
     }
 
