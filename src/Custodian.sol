@@ -107,7 +107,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     /// @notice USD NAV of `baseAsset` and `quoteAsset` balances (6 decimals).
     /// @dev Returns 0 if grinders/GRAI is missing or price lookups fail.
-    function nav() public virtual view returns (uint256) {
+    function nav() public view virtual returns (uint256) {
         if (address(grinders).code.length == 0) return 0;
         try grinders.grai() returns (IGRAI grai) {
             uint256 baseAssetValue = grai.usdValue(address(baseAsset), balance(address(baseAsset)));
@@ -116,7 +116,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         } catch {
             return 0;
         }
-        
     }
 
     /// @dev Safe against non-contract / non-IGrinders `grinders` (same pattern as `custodianId` / `owner`).
@@ -136,6 +135,11 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
         emit AssetsUpdated(baseAsset_, quoteAsset_);
     }
 
+    /// @notice Forward reported yield to GRAI for treasury sharing and auctioning.
+    /// @dev This is intentionally not capped by `Grinders.allocated`: custodians may swap principal
+    ///      between assets, making a reliable on-chain `balance - allocated` profit check complex.
+    ///      Any principal reported as yield remains observable in Grinders' public allocation ledger
+    ///      and GRAI's per-custodian yield analytics, allowing monitoring and governance response.
     function distribute(address asset, uint256 yieldAmount) public virtual {
         _onlyOwner();
         if (liquidation()) revert LiquidationOpen();
