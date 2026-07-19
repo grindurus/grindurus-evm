@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
 import {IERC1046} from "./IERC1046.sol";
 
@@ -11,15 +10,10 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error ZeroAddress();
     error OwnerZero();
     error GraiTokenZero();
-    error AssetUnknown();
-    error ToZero();
     error AmountZero();
     error EthTransferFailed();
-    error MintingPaused();
-    error ValueZero();
     error ValueMismatch();
     error UnexpectedValue();
-    error ActiveJuniorCapital();
     error UnknownCustodianKind(bytes32 custodianKind);
     error CustodianKindMismatch(bytes32 expected, bytes32 actual);
     error CustodianZero();
@@ -28,8 +22,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error CustodianNonexistent(uint256 custodianId);
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
-    error CustodianOwnerMismatch();
-    error NotOpen();
+    error NoLiquidation();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
 
     event GraiTokenUpdate(address indexed graiToken);
@@ -59,15 +52,14 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function allocated(address custodian, address asset) external view returns (uint256);
     function active(address asset) external view returns (uint256);
 
-
     function isCustodian(address custodian) external view returns (bool);
 
     function custodianKindOf(address custodian) external view returns (bytes32);
 
     function sweep(address asset) external;
 
-    function setCustodianImplementation(bytes32 custodianKind, address implementation) external;
-    function mint(bytes32 custodianKind, address owner_, IERC20 baseAsset_, IERC20 quoteAsset_)
+    function set(bytes32 custodianKind, address implementation) external;
+    function mint(bytes32 custodianKind, address baseAsset_, address quoteAsset_, address owner_)
         external
         returns (address custodian);
     function register(address custodian, address owner_) external;
@@ -75,6 +67,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice Custodian returns `amount` of `asset`. Not capped by `allocated` (post-swap inventory).
     function deallocate(address asset, uint256 amount) external payable;
 
-    /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and `put` swept amounts to GRAI.
+    /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and transfer swept amounts to GRAI.
     function liquidate(uint256 fromId, uint256 toId) external;
 }

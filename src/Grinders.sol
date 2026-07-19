@@ -19,24 +19,23 @@ import {IGRAI} from "./interfaces/IGRAI.sol";
 /// @title Grinders (implementation)
 /// @notice Protocol registry: custodian NFTs and junior capital from GRAI.
 /// @dev Do not call this contract directly. Use the ERC1967Proxy address only.
-contract Grinders is
-    IGrinders,
-    ERC721EnumerableUpgradeable,
-    OwnableUpgradeable,
-    UUPSUpgradeable
-{
+contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     IGRAI public grai;
 
     mapping(bytes32 custodianKind => address) public custodianImplementations;
+    
     mapping(uint256 custodianId => address) public custodians;
+    
     mapping(address custodian => uint256) public custodianIds;
+    
     /// @notice Issuance ledger: how much of `asset` was sent to `custodian` via `allocate`.
     /// @dev Not an escrow balance and not a cap on returns. Custodians swap base↔quote, so they may
     ///      `deallocate` an arbitrary amount of any held asset (often a different token than allocated).
     ///      On deallocate the ledger is floored toward zero for that asset only; it must not gate the pull.
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
+    
     mapping(address asset => uint256) public active;
 
     /// @dev Storage gap for future upgrades (includes slots formerly used by local liquidation state).
@@ -75,7 +74,7 @@ contract Grinders is
     }
 
     function allocate(address custodian, address asset, uint256 amount) public onlyOwner {
-        _onlyCustodian(custodian);
+        _isCustodian(custodian);
         if (amount == 0) revert AmountZero();
         if (balance(asset) < amount) revert InsufficientReserve();
 
@@ -97,7 +96,7 @@ contract Grinders is
     ///      what was allocated. Ledger is best-effort decreased (floored at 0) for accounting only.
     function deallocate(address asset, uint256 amount) external payable {
         address custodian = msg.sender;
-        _onlyCustodian(custodian);
+        _isCustodian(custodian);
         if (amount == 0) revert AmountZero();
 
         if (asset == address(0)) {
@@ -118,28 +117,25 @@ contract Grinders is
     }
 
     /// @inheritdoc IGrinders
-    /// @dev Reads `liquidation` / senior asset list from GRAI. Permissionless while open; pages custodians and `put`s to GRAI.
+    /// @dev Reads `liquidation` and asset list from GRAI. Permissionless while open; pages custodians and `put`s to GRAI.
     function liquidate(uint256 fromId, uint256 toId) external {
-        if (!grai.liquidation()) revert NotOpen();
+        if (!grai.liquidation()) revert NoLiquidation();
         if (fromId >= toId) revert InvalidLiquidationRange(fromId, toId);
 
         uint256 n = totalSupply();
         if (toId > n) toId = n;
 
-        address[] memory assets_ = grai.getAssets();
-        uint256 assetsLen = assets_.length;
+        address[] memory assets = grai.getAssets();
+        uint256 assetsLen = assets.length;
         for (uint256 i = fromId; i < toId; ++i) {
             address c = custodians[i];
             if (c == address(0)) continue;
 
             (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = Custodian(payable(c)).liquidate();
             for (uint256 j; j < assetsLen; ++j) {
-                address asset = assets_[j];
-                uint256 was = allocated[c][asset];
-                if (was == 0) continue;
-                allocated[c][asset] = 0;
-                uint256 prevActive = active[asset];
-                active[asset] = prevActive > was ? prevActive - was : 0;
+                address asset = assets[j];
+                delete allocated[c][asset];
+                delete active[asset];
             }
 
             IERC20 base = Custodian(payable(c)).baseAsset();
@@ -155,14 +151,14 @@ contract Grinders is
     function _putLiquidated(address asset, uint256 amount) private {
         if (amount == 0) return;
         if (asset == address(0)) {
-            grai.put{value: amount}(asset, amount);
+            (bool ok,) = address(grai).call{value: amount}("");
+            require(ok, "eth transfer failed");
         } else {
-            IERC20(asset).forceApprove(address(grai), amount);
-            grai.put(asset, amount);
+            IERC20(asset).safeTransfer(address(grai), amount);
         }
     }
 
-    function setCustodianImplementation(bytes32 custodianKind, address implementation) public onlyOwner {
+    function set(bytes32 custodianKind, address implementation) public onlyOwner {
         if (implementation == address(0)) revert ZeroAddress();
         bytes32 implKind = Custodian(payable(implementation)).custodianKind();
         if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
@@ -171,7 +167,11 @@ contract Grinders is
     }
 
     /// @notice Deploy a custodian proxy, mint its Grinder NFT, and register it with `owner_`.
-    function mint(bytes32 custodianKind, address owner_, IERC20 baseAsset_, IERC20 quoteAsset_) public onlyOwner returns (address custodian) {
+    function mint(bytes32 custodianKind, address baseAsset_, address quoteAsset_, address owner_)
+        public
+        onlyOwner
+        returns (address custodian)
+    {
         if (owner_ == address(0)) revert OwnerZero();
 
         address impl = custodianImplementations[custodianKind];
@@ -184,10 +184,7 @@ contract Grinders is
         custodian = address(
             new ERC1967Proxy(
                 impl,
-                abi.encodeCall(
-                    Custodian.initialize,
-                    (address(this), baseAsset_, quoteAsset_)
-                )
+                abi.encodeCall(Custodian.initialize, (address(this), baseAsset_, quoteAsset_))
             )
         );
 
@@ -195,7 +192,7 @@ contract Grinders is
         custodianIds[custodian] = custodianId;
         _safeMint(owner_, custodianId);
 
-        emit CustodianDeployed(custodianKind, custodian, owner_, address(baseAsset_), address(quoteAsset_));
+        emit CustodianDeployed(custodianKind, custodian, owner_, baseAsset_, quoteAsset_);
     }
 
     /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
@@ -203,7 +200,7 @@ contract Grinders is
         if (custodian == address(0)) revert CustodianZero();
         if (owner_ == address(0)) revert OwnerZero();
         if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
-        if (Custodian(payable(custodian)).grinders() != address(this)) revert GrindersMismatch();
+        if (address(Custodian(payable(custodian)).grinders()) != address(this)) revert GrindersMismatch();
 
         uint256 custodianId = totalSupply();
         if (custodians[custodianId] != address(0)) revert CustodianAlreadyRegistered(custodianId);
@@ -253,7 +250,7 @@ contract Grinders is
         return custodians[custodianIds[custodian]] == custodian;
     }
 
-    function _onlyCustodian(address account) internal view {
+    function _isCustodian(address account) internal view {
         if (!isCustodian(account)) revert UnknownCustodian();
     }
 
