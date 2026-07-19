@@ -18,6 +18,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     using SafeERC20 for IERC20;
 
     uint16 public constant BPS = 100_00; // 100%
+    uint256 private constant BUYBACK_VOTE_REWARD_PRECISION = 1e18;
 
     // bytes32 public constant DEFAULT_ADMIN_ROLE = keccak256("DEFAULT_ADMIN_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -44,6 +45,12 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     /// @notice Accounts with an open vote; `votes[account].id` is the index here.
     address[] public voters;
 
+    /// @notice Cumulative buyback-funded GRAI per voted GRAI, scaled by 1e18.
+    uint256 public rewardPerVote;
+
+    /// @notice Buyback-funded GRAI waiting for the first active vote position.
+    uint256 public pendingVoteRewards;
+
     uint256 public totalVoted;
 
     uint256 public totalValue;
@@ -54,7 +61,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     /// @dev If zero address, asset is the native token (ETH); otherwise, it's an ERC20.
     address public settlementAsset;
 
-    /// @notice True after `liquidate` opens until it closes.
+    /// @notice True after `resolve` opens until it closes.
     bool public liquidation;
 
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
@@ -66,7 +73,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     ProtocolConfig public config;
 
     /// @dev Storage gap for future upgrades.
-    uint256[25] private _gap;
+    uint256[23] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -293,17 +300,12 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Mints shares at total value. Yield held by GRAI is not included because it is an extra
-    ///      reward for buying GRAI and voting for liquidation. The first deposit mints 1:1.
+    /// @dev Mints shares at book value. Yield held by GRAI is not included because it is an extra
+    ///      reward for buying GRAI and voting for liquidation. The first deposit mints 1:1 only when
+    ///      both supply and `totalValue` are empty.
     function previewDeposit(address asset, uint256 amount) public view returns (uint256 value, uint256 graiOut) {
         value = usdValue(asset, amount);
-        uint256 supply = totalSupply();
-        if (supply == 0) {
-            graiOut = value;
-        } else {
-            if (totalValue == 0) revert InvalidAmount();
-            graiOut = (value * supply) / totalValue;
-        }
+        graiOut = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
     }
 
     //////////////////// AUCTION FILL ////////////////////
@@ -313,13 +315,12 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     function fill(address asset, uint256 amount, uint256 paymentMax) public payable {
         if (liquidation) revert LiquidationOpen();
         address buyer = msg.sender;
-        DutchAuction storage entry = auctions[asset];
-        if (entry.startTime == 0) revert AuctionNotFound();
 
         (uint256 amountOut, uint256 payment) = previewFill(asset, amount, block.timestamp);
         if (amountOut == 0) revert AmountZero();
         if (payment > paymentMax) revert Slippage();
 
+        DutchAuction storage entry = auctions[asset];
         uint256 remaining = entry.remaining;
         uint256 newRemaining = remaining - amountOut;
         if (newRemaining == 0) {
@@ -357,15 +358,14 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
     /// @inheritdoc IGRAI
     /// @dev Approves the full ERC20 settlement balance (or forwards the full native balance), executes the
-    ///      DEX calldata, clears approval, verifies GRAI output, and burns the received GRAI.
+    ///      DEX calldata, and clears approval. The bought-back GRAI is held on this contract.
     function buyback(
         address target,
         bytes calldata data,
-        uint256 graiMin
+        uint256 graiOutMin
     ) public onlyRole(ADMIN_ROLE) returns (uint256 payment, uint256 graiOut) {
         if (liquidation) revert LiquidationOpen();
         if (target == address(0)) revert TargetZero();
-        if (data.length == 0) revert DataEmpty();
 
         uint256 settlementBefore = balance(settlementAsset);
         if (settlementBefore == 0) revert AmountZero();
@@ -386,100 +386,90 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         if (settlementAfter >= settlementBefore) revert SwapFailed();
         payment = settlementBefore - settlementAfter;
         graiOut = balanceOf(address(this)) - graiBefore;
-        if (graiOut < graiMin || graiOut == 0) revert Slippage();
+        if (graiOut < graiOutMin || graiOut == 0) revert Slippage();
 
-        _burn(address(this), graiOut);
+        _distributeVoteRewards(graiOut);
         emit Buyback(target, payment, graiOut);
     }
 
     //////////////////// VOTE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev `vote(0)` withdraws all of the caller's escrowed GRAI (full unvote).
+    /// @dev Voting is irreversible for the voter. Escrowed GRAI can leave only through a third-party `bribe`.
     function vote(uint256 graiAmount) public {
+        if (liquidation) revert LiquidationOpen();
+        if (graiAmount == 0) revert AmountZero();
         address voter = msg.sender;
         VoteEscrow storage entry = votes[voter];
 
-        if (graiAmount == 0) {
-            uint256 voted = entry.amount;
-            if (voted == 0) revert AmountZero();
-            totalVoted -= voted;
-            _removeVoter(voter);
-            _transfer(address(this), voter, voted);
-            emit Vote(voter, 0, totalVoted);
-            return;
-        }
-
         if (graiAmount > balanceOf(voter)) revert InvalidAmount();
-
-        _transfer(voter, address(this), graiAmount);
-        uint32 id = entry.id;
-        if (entry.amount == 0) {
-            id = uint32(voters.length);
-            voters.push(voter);
-        }
+        _accrueVoteReward(voter);
+        totalVoted += graiAmount;
+        if (entry.amount == 0) _addVoter(voter);
         entry.amount += graiAmount;
         entry.votedAt = uint48(block.timestamp);
-        entry.id = id;
-        totalVoted += graiAmount;
+        entry.rewardDebt = (entry.amount * rewardPerVote) / BUYBACK_VOTE_REWARD_PRECISION;
+
+        // Rewards bought back while there were no voters go to the first active vote position(s).
+        if (pendingVoteRewards > 0) {
+            _distributeVoteRewards(0);
+            _accrueVoteReward(voter);
+        }
+
+        _transfer(voter, address(this), graiAmount);
         emit Vote(voter, graiAmount, totalVoted);
     }
 
     //////////////////// BRIBE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Briber (`msg.sender`) buys out `voter`'s vote of `graiAmount`: pays book value + premium to the voter
-    ///      in `settlementAsset`, then receives the escrowed GRAI.
+    /// @dev Briber buys out `graiAmount` for `bribeAmount` in `settlementAsset` paid to the voter,
+    ///      then receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) public payable {
+        if (liquidation) revert LiquidationOpen();
         address briber = msg.sender;
-        (address asset, uint256 bribeAmount, uint256 premium) = previewBribe(voter, graiAmount);
-        uint256 total = bribeAmount + premium;
+
+        uint256 bribeAmount = previewBribe(voter, graiAmount);
+        address asset = settlementAsset;
 
         VoteEscrow storage entry = votes[voter];
+        _accrueVoteReward(voter);
+        _payVoteReward(voter);
+        totalVoted -= graiAmount;
         uint256 voted = entry.amount - graiAmount;
         entry.amount = voted;
-        totalVoted -= graiAmount;
+        entry.rewardDebt = (voted * rewardPerVote) / BUYBACK_VOTE_REWARD_PRECISION;
         if (voted == 0) _removeVoter(voter);
 
-        // Voter receives book value; premium stays in this contract.
         if (asset == address(0)) {
-            if (msg.value != total) revert ValueMismatch();
             if (bribeAmount > 0) _withdraw(voter, asset, bribeAmount);
-            // premium stays in this contract (already held via msg.value).
         } else {
             if (bribeAmount > 0) _pay(briber, voter, asset, bribeAmount);
-            if (premium > 0) _pay(briber, address(this), asset, premium);
         }
 
-        // Escrowed GRAI is released to the briber.
         _transfer(address(this), briber, graiAmount);
-        emit Bribe(briber, voter, graiAmount, total, totalVoted);
+        emit Bribe(briber, voter, graiAmount, bribeAmount, totalVoted);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Book value of `graiAmount` = `graiAmount * totalValue / totalSupply`, converted to `settlementAsset`.
-    ///      Pricing intentionally excludes yield inventory held by GRAI. When its market value exceeds book value,
-    ///      holders are incentivized to vote for liquidation, while a briber can buy out those votes at book value
-    ///      plus the configured premium and assume the corresponding GRAI position.
-    function previewBribe(address voter, uint256 graiAmount) public view returns (address asset, uint256 bribeAmount, uint256 premium) {
+    /// @dev `bribePremiumBps` of the book value of `graiAmount`, converted to `settlementAsset`.
+    function previewBribe(address voter, uint256 graiAmount) public view returns (uint256 bribeAmount) {
+        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
         if (graiAmount == 0) revert AmountZero();
         VoteEscrow storage entry = votes[voter];
         if (graiAmount > entry.amount) revert InvalidAmount();
-        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
 
-        asset = settlementAsset;
         uint256 supply = totalSupply();
-        uint256 bookUsd = supply == 0 ? 0 : (graiAmount * totalValue) / supply;
-        bribeAmount = settlementAmount(bookUsd);
-        premium = (bribeAmount * config.bribePremiumBps) / BPS;
+        uint256 value = supply > 0 ? (graiAmount * totalValue) / supply : 0;
+        bribeAmount = settlementAmount(value) * (BPS + config.bribePremiumBps) / BPS;
     }
 
-    //////////////////// LIQUIDATE ////////////////////
+    //////////////////// RESOLVE ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev Flips the liquidation flag and pauses/unpauses every asset accordingly. Opening requires quorum.
     ///      Closing returns any unredeemed basket balances to Grinders; unredeemed shares retain their book value.
-    function liquidate() public onlyRole(ADMIN_ROLE) {
+    function resolve() public onlyRole(ADMIN_ROLE) {
         uint256 len = assetList.length;
         if (liquidation) {
             if (block.timestamp < liquidationAt + config.liquidationPeriod + config.redeemPeriod) {
@@ -515,40 +505,57 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
             liquidation = true;
             liquidationAt = uint48(block.timestamp);
         }
-        emit Liquidate(liquidation, totalVoted, totalSupply());
+        emit Resolve(liquidation, totalVoted, totalSupply());
     }
 
-    //////////////////// REDEMPTION ////////////////////
+    //////////////////// LIQUIDATE ////////////////////
 
     /// @inheritdoc IGRAI
-    function redeem(uint256 graiAmount) external {
+    function liquidate(uint256 graiAmount) external {
+        address holder = msg.sender;
         if (!liquidation) revert LiquidationClosed();
-        if (block.timestamp < liquidationAt + config.liquidationPeriod) revert LiquidationDelay();
-        if (graiAmount == 0 || graiAmount > balanceOf(msg.sender)) revert InvalidAmount();
 
+        (address[] memory assetOuts, uint256[] memory amounts) = previewLiquidate(holder, graiAmount);
         uint256 supply = totalSupply();
-        (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(graiAmount);
-        uint256 depositValue = graiAmount == supply ? totalValue : (totalValue * graiAmount) / supply;
+        uint256 value = supply > 0 ? (totalValue * graiAmount) / supply : 0;
 
-        _burn(msg.sender, graiAmount);
-        totalValue -= depositValue;
+        uint256 walletAmount = balanceOf(holder);
+        _accrueVoteReward(holder);
+        _payVoteReward(holder);
+        uint256 walletBurn = graiAmount < walletAmount ? graiAmount : walletAmount;
+        if (walletBurn > 0) _burn(holder, walletBurn);
+
+        uint256 voteEscrowBurn = graiAmount - walletBurn;
+        if (voteEscrowBurn > 0) {
+            VoteEscrow storage entry = votes[holder];
+            totalVoted -= voteEscrowBurn;
+            entry.amount -= voteEscrowBurn;
+            entry.rewardDebt = (entry.amount * rewardPerVote) / BUYBACK_VOTE_REWARD_PRECISION;
+            _burn(address(this), voteEscrowBurn);
+            if (entry.amount == 0) _removeVoter(holder);
+        }
+        totalValue -= value;
 
         uint256 len = assetOuts.length;
         for (uint256 i; i < len;) {
-            _withdraw(msg.sender, assetOuts[i], amounts[i]);
+            _withdraw(holder, assetOuts[i], amounts[i]);
             unchecked {
                 ++i;
             }
         }
-        emit Redeem(msg.sender, graiAmount, depositValue);
+        emit Liquidate(holder, graiAmount, value);
     }
 
     /// @inheritdoc IGRAI
-    function previewRedeem(uint256 graiAmount) public view returns (address[] memory assetOuts, uint256[] memory amounts) {
+    function previewLiquidate(
+        address holder,
+        uint256 graiAmount
+    ) public view returns (address[] memory assetOuts, uint256[] memory amounts) {
         if (!liquidation) revert LiquidationClosed();
         if (block.timestamp < liquidationAt + config.liquidationPeriod) revert LiquidationDelay();
         uint256 supply = totalSupply();
-        if (graiAmount == 0 || graiAmount > supply) revert InvalidAmount();
+        uint256 holderAmount = balanceOf(holder) + votes[holder].amount;
+        if (graiAmount == 0 || graiAmount > holderAmount) revert InvalidAmount();
 
         uint256 len = assetList.length;
         assetOuts = new address[](len);
@@ -558,7 +565,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
             address asset = assetList[i];
             uint256 assetBalance = balance(asset);
             if (assetBalance > 0) {
-                uint256 amount = graiAmount == supply ? assetBalance : (assetBalance * graiAmount) / supply;
+                uint256 amount = (assetBalance * graiAmount) / supply;
                 if (amount > 0) {
                     assetOuts[count] = asset;
                     amounts[count] = amount;
@@ -599,7 +606,48 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         emit AuctionUpdate(asset, remaining, maxPayment, block.timestamp);
     }
 
+    function _distributeVoteRewards(uint256 amount) private {
+        uint256 rewards = pendingVoteRewards + amount;
+        if (rewards == 0 || totalVoted == 0) {
+            pendingVoteRewards = rewards;
+            return;
+        }
+
+        uint256 indexIncrease = (rewards * BUYBACK_VOTE_REWARD_PRECISION) / totalVoted;
+        if (indexIncrease == 0) {
+            pendingVoteRewards = rewards;
+            return;
+        }
+
+        uint256 distributed = (indexIncrease * totalVoted) / BUYBACK_VOTE_REWARD_PRECISION;
+        pendingVoteRewards = rewards - distributed;
+        rewardPerVote += indexIncrease;
+    }
+
+    function _accrueVoteReward(address voter) private {
+        VoteEscrow storage entry = votes[voter];
+        uint256 accumulated = (entry.amount * rewardPerVote) / BUYBACK_VOTE_REWARD_PRECISION;
+        entry.claimableReward += accumulated - entry.rewardDebt;
+        entry.rewardDebt = accumulated;
+    }
+
+    function _payVoteReward(address voter) private returns (uint256 reward) {
+        VoteEscrow storage entry = votes[voter];
+        reward = entry.claimableReward;
+        if (reward == 0) return 0;
+
+        entry.claimableReward = 0;
+        _transfer(address(this), voter, reward);
+        emit VoteReward(voter, reward);
+    }
+
+    function _addVoter(address voter) private {
+        votes[voter].id = uint32(voters.length);
+        voters.push(voter);
+    }
+
     function _removeVoter(address voter) private {
+        _payVoteReward(voter);
         uint256 index = votes[voter].id;
         uint256 lastIndex = voters.length - 1;
         if (index != lastIndex) {

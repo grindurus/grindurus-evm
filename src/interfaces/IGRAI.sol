@@ -62,20 +62,24 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint48 votedAt;
         /// @notice Index of this account in `voters` while the vote is open.
         uint32 id;
+        /// @notice Reward index already accounted for this position.
+        uint256 rewardDebt;
+        /// @notice Buyback-funded GRAI accrued but not yet claimed.
+        uint256 claimableReward;
     }
 
     /// @notice Bribe premium, liquidation quorum, and timing.
     struct ProtocolConfig {
-        /// @notice Premium over book value paid to the bought-out voter.
+        /// @notice Settlement payment for a vote buyout, in bps of book value.
         uint16 bribePremiumBps;
         uint16 liquidationQuorumBps;
         /// @notice Dutch auction duration from `maxPayment` to `minPayment`.
         uint32 auctionDuration;
-        /// @notice Delay after liquidation opens before `redeem` is allowed.
+        /// @notice Delay after liquidation opens before `liquidate` (claim) is allowed.
         /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
-        ///      where they sit as idle inventory for the subsequent pro-rata `redeem` basket.
+        ///      where they sit as idle inventory for the subsequent pro-rata `liquidate` basket.
         uint32 liquidationPeriod;
-        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed.
+        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `resolve`.
         uint32 redeemPeriod;
     }
 
@@ -90,12 +94,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
     event AuctionFill(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
     event Buyback(address indexed target, uint256 payment, uint256 graiOut);
-    event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
+    event Liquidate(address indexed account, uint256 graiAmount, uint256 depositValue);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
+    event VoteReward(address indexed account, uint256 amount);
     event Bribe(
         address indexed briber, address indexed voter, uint256 graiAmount, uint256 bribeAmount, uint256 totalVoted
     );
-    event Liquidate(bool liquidation, uint256 totalVoted, uint256 supply);
+    event Resolve(bool liquidation, uint256 totalVoted, uint256 supply);
     event ConfigUpdate(ProtocolConfig config);
 
     function config()
@@ -134,7 +139,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Listed assets that currently have an open yield auction.
     function getAuctions() external view returns (address[] memory);
 
-    function votes(address account) external view returns (uint256 amount, uint48 votedAt, uint32 id);
+    function votes(address account)
+        external
+        view
+        returns (uint256 amount, uint48 votedAt, uint32 id, uint256 rewardDebt, uint256 claimableReward);
 
     function voters(uint256 index) external view returns (address);
 
@@ -145,7 +153,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice True when voted GRAI is at least `config.liquidationQuorumBps` of `totalSupply`.
     function hasQuorum() external view returns (bool);
 
-    /// @notice True after `liquidate` opens until it closes.
+    /// @notice True after `resolve` opens until it closes.
     function liquidation() external view returns (bool);
 
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
@@ -194,36 +202,32 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    /// @notice Swap all GRAI-held `settlementAsset` through `target` for GRAI and burn the received GRAI.
+    /// @notice Swap all GRAI-held `settlementAsset` through `target` for GRAI, held on this contract.
     /// @dev DEX calldata must route the bought GRAI to this contract.
-    function buyback(address target, bytes calldata data, uint256 graiMin)
+    function buyback(address target, bytes calldata data, uint256 graiOutMin)
         external
         returns (uint256 payment, uint256 graiOut);
 
-    /// @notice Pro-rata asset amounts paid for burning `graiAmount` after the liquidation delay.
-    function previewRedeem(uint256 graiAmount)
+    /// @notice Pro-rata asset amounts paid for burning wallet-held and/or vote-escrowed GRAI.
+    function previewLiquidate(address holder, uint256 graiAmount)
         external
         view
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
-    /// @notice Burn GRAI for a pro-rata share of all assets held by GRAI, after `config.liquidationPeriod`.
-    function redeem(uint256 graiAmount) external;
+    /// @notice Burn wallet-held and/or vote-escrowed GRAI for a pro-rata share of the liquidation basket.
+    function liquidate(uint256 graiAmount) external;
 
-    /// @notice Vote GRAI toward the liquidation quorum (escrowed on this contract; resets vote timer).
+    /// @notice Irreversibly escrow GRAI toward liquidation quorum; only a third-party `bribe` can buy it out.
     function vote(uint256 graiAmount) external;
 
-    /// @notice Preview a vote buyout: settlement `asset`, `bribeAmount` (book value), and `premium`.
-    function previewBribe(address voter, uint256 graiAmount)
-        external
-        view
-        returns (address asset, uint256 bribeAmount, uint256 premium);
+    /// @notice Preview the `settlementAsset` payment for a vote buyout.
+    function previewBribe(address voter, uint256 graiAmount) external view returns (uint256 bribeAmount);
 
-    /// @notice Buy out `voter`'s vote: briber pays book value + premium to the voter (settled in
-    ///         `settlementAsset`), and receives the escrowed GRAI.
+    /// @notice Buy out `voter` for `previewBribe` settlement and receive the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets; closing is available
     ///         after the liquidation and redeem periods, returns leftover balances to Grinders,
     ///         and unpauses all assets. Unredeemed shares retain their book value.
-    function liquidate() external;
+    function resolve() external;
 }
