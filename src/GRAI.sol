@@ -11,8 +11,8 @@ import {IERC1046} from "./interfaces/IERC1046.sol";
 import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 
 /// @title GRAI (implementation)
-/// @notice Non-redeemable fund-share ERC20: deposits mint GRAI 1:$ into Grinders; distributed yield is
-///         Dutch-auctioned into `hedgeAsset` insurance liquidity.
+/// @notice Condition-redeemable fund-share ERC20: deposits issue GRAI at book value into Grinders; distributed yield is
+///         Dutch-auctioned into `settlementAsset`.
 /// @dev Interact only via the ERC1967Proxy.
 contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
@@ -52,7 +52,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
     /// @notice Asset used for dutch auction settlement and bribes.
     /// @dev If zero address, asset is the native token (ETH); otherwise, it's an ERC20.
-    address public hedgeAsset;
+    address public settlementAsset;
 
     /// @notice True after `liquidate` opens until it closes.
     bool public liquidation;
@@ -95,7 +95,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         if (cfg.bribePremiumBps > BPS || cfg.liquidationQuorumBps > BPS) {
             revert BpsTooHigh();
         }
-        // No period checks needed here; only BPS bounds are validated above.
+        if (cfg.auctionDuration <= 7 days) revert AuctionDurationTooShort();
         config = cfg;
         emit ConfigUpdate(cfg);
     }
@@ -116,10 +116,11 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         emit TreasuryUpdate(treasury_);
     }
 
-    function setHedgeAsset(address hedgeAsset_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (feeds[hedgeAsset_].feedType == FEED_NONE) revert AssetUnknown();
-        hedgeAsset = hedgeAsset_;
-        emit HedgeAssetUpdate(hedgeAsset_);
+    function setSettlementAsset(address settlementAsset_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (feeds[settlementAsset_].feedType == FEED_NONE) revert AssetUnknown();
+        if (getAuctions().length != 0) revert AuctionsOpen();
+        settlementAsset = settlementAsset_;
+        emit SettlementAssetUpdate(settlementAsset_);
     }
 
     receive() external payable {}
@@ -187,10 +188,10 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         return supply > 0 && totalVoted * BPS >= supply * config.liquidationQuorumBps;
     }
 
-    /// @notice Convert a USD amount (`USD_DECIMALS`) into `hedgeAsset` base units via oracle.
-    function hedgeAmountFromUsd(uint256 usdAmount) public view returns (uint256) {
-        (uint256 price, uint8 pdec) = getPrice(hedgeAsset);
-        uint8 adec = hedgeAsset == address(0) ? 18 : IERC20Metadata(hedgeAsset).decimals();
+    /// @notice Convert a USD amount (`USD_DECIMALS`) into `settlementAsset` base units via oracle.
+    function settlementAmount(uint256 usdAmount) public view returns (uint256) {
+        (uint256 price, uint8 pdec) = getPrice(settlementAsset);
+        uint8 adec = settlementAsset == address(0) ? 18 : IERC20Metadata(settlementAsset).decimals();
         return (usdAmount * (10 ** adec) * (10 ** pdec)) / (price * (10 ** USD_DECIMALS));
     }
 
@@ -253,9 +254,10 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     //////////////////// DISTRIBUTE ////////////////////
 
     /// @notice Pull yield, send `treasuryShare` to treasury, and auction (or retain) `yieldShare`.
-    /// @dev If `asset == hedgeAsset`, yield accrues directly as insurance liquidity. Otherwise the
+    /// @dev If `asset == settlementAsset`, yield accrues directly on GRAI. Otherwise the
     ///      yield lot is merged into a 1-year Dutch auction restarting at current oracle fair value.
     function distribute(address asset, uint256 yieldAmount) public payable {
+        if (liquidation) revert LiquidationOpen();
         AssetConfig storage cfg = assets[asset];
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (yieldAmount == 0) revert AmountZero();
@@ -266,14 +268,14 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         uint256 yieldShare = received - treasuryShare;
 
         if (treasuryShare > 0) _withdraw(treasury, asset, treasuryShare);
-        if (yieldShare > 0 && asset != hedgeAsset) _put(asset, yieldShare);
+        if (yieldShare > 0 && asset != settlementAsset) _put(asset, yieldShare);
 
         emit Distribute(msg.sender, asset, received, yieldShare, treasuryShare);
     }
 
-    //////////////////// MINT ////////////////////
+    //////////////////// DEPOSIT ////////////////////
 
-    function mint(address asset, uint256 amount) public payable returns (uint256 graiOut, uint256 value) {
+    function deposit(address asset, uint256 amount) public payable returns (uint256 graiOut, uint256 value) {
         if (liquidation) revert LiquidationOpen();
         if (amount == 0) revert AmountZero();
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
@@ -281,26 +283,33 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
         uint256 received = _pay(msg.sender, address(grinders), asset, amount);
 
-        (graiOut, value) = previewMint(asset, received);
+        (value, graiOut) = previewDeposit(asset, received);
         if (value == 0) revert AmountZero();
         if (graiOut == 0) revert AmountZero();
 
         totalValue += value;
         _mint(msg.sender, graiOut);
-        emit Mint(msg.sender, graiOut, asset, received, value);
+        emit Deposit(msg.sender, graiOut, asset, received, value);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Non-redeemable fund share: mint 1 GRAI per $1 of deposited asset value.
-    function previewMint(address asset, uint256 amount) public view returns (uint256 graiOut, uint256 value) {
+    /// @dev Mints shares at total value. Yield held by GRAI is not included because it is an extra
+    ///      reward for buying GRAI and voting for liquidation. The first deposit mints 1:1.
+    function previewDeposit(address asset, uint256 amount) public view returns (uint256 value, uint256 graiOut) {
         value = usdValue(asset, amount);
-        graiOut = value;
+        uint256 supply = totalSupply();
+        if (supply == 0) {
+            graiOut = value;
+        } else {
+            if (totalValue == 0) revert InvalidAmount();
+            graiOut = (value * supply) / totalValue;
+        }
     }
 
     //////////////////// AUCTION FILL ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Buyer pays `hedgeAsset` into this contract (insurance liquidity) and receives the sold yield asset.
+    /// @dev Buyer pays `settlementAsset` into this contract and receives the yield asset.
     function fill(address asset, uint256 amount, uint256 paymentMax) public payable {
         if (liquidation) revert LiquidationOpen();
         address buyer = msg.sender;
@@ -318,13 +327,13 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         } else {
             entry.remaining = newRemaining;
         }
-        if (payment > 0) _pay(buyer, address(this), hedgeAsset, payment);
+        if (payment > 0) _pay(buyer, address(this), settlementAsset, payment);
         _withdraw(buyer, asset, amountOut);
         emit AuctionFill(buyer, asset, amountOut, payment);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Dutch payment in `hedgeAsset`: `maxPayment` → `minPayment` over `config.auctionDuration`,
+    /// @dev Dutch payment in `settlementAsset`: `maxPayment` → `minPayment` over `config.auctionDuration`,
     ///      scaled by fill size. Caps fill to auction remaining.
     function previewFill(
         address asset,
@@ -347,7 +356,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     //////////////////// BUYBACK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Approves the full ERC20 hedge balance (or forwards the full native balance), executes the
+    /// @dev Approves the full ERC20 settlement balance (or forwards the full native balance), executes the
     ///      DEX calldata, clears approval, verifies GRAI output, and burns the received GRAI.
     function buyback(
         address target,
@@ -358,24 +367,24 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         if (target == address(0)) revert TargetZero();
         if (data.length == 0) revert DataEmpty();
 
-        uint256 hedgeBefore = balance(hedgeAsset);
-        if (hedgeBefore == 0) revert AmountZero();
+        uint256 settlementBefore = balance(settlementAsset);
+        if (settlementBefore == 0) revert AmountZero();
         uint256 graiBefore = balanceOf(address(this));
 
         bool ok;
-        if (hedgeAsset == address(0)) {
-            (ok,) = target.call{value: hedgeBefore}(data);
+        if (settlementAsset == address(0)) {
+            (ok,) = target.call{value: settlementBefore}(data);
         } else {
-            IERC20 hedge = IERC20(hedgeAsset);
-            hedge.forceApprove(target, hedgeBefore);
+            IERC20 settlement = IERC20(settlementAsset);
+            settlement.forceApprove(target, settlementBefore);
             (ok,) = target.call(data);
-            hedge.forceApprove(target, 0);
+            settlement.forceApprove(target, 0);
         }
         if (!ok) revert SwapFailed();
 
-        uint256 hedgeAfter = balance(hedgeAsset);
-        if (hedgeAfter >= hedgeBefore) revert SwapFailed();
-        payment = hedgeBefore - hedgeAfter;
+        uint256 settlementAfter = balance(settlementAsset);
+        if (settlementAfter >= settlementBefore) revert SwapFailed();
+        payment = settlementBefore - settlementAfter;
         graiOut = balanceOf(address(this)) - graiBefore;
         if (graiOut < graiMin || graiOut == 0) revert Slippage();
 
@@ -420,7 +429,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
     /// @inheritdoc IGRAI
     /// @dev Briber (`msg.sender`) buys out `voter`'s vote of `graiAmount`: pays book value + premium to the voter
-    ///      in `hedgeAsset`, then receives the escrowed GRAI.
+    ///      in `settlementAsset`, then receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) public payable {
         address briber = msg.sender;
         (address asset, uint256 bribeAmount, uint256 premium) = previewBribe(voter, graiAmount);
@@ -432,7 +441,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         totalVoted -= graiAmount;
         if (voted == 0) _removeVoter(voter);
 
-        // Voter receives book value; premium accrues to insurance liquidity in this contract.
+        // Voter receives book value; premium stays in this contract.
         if (asset == address(0)) {
             if (msg.value != total) revert ValueMismatch();
             if (bribeAmount > 0) _withdraw(voter, asset, bribeAmount);
@@ -448,17 +457,20 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Book value of `graiAmount` = `graiAmount * totalValue / totalSupply`, converted to `hedgeAsset`.
+    /// @dev Book value of `graiAmount` = `graiAmount * totalValue / totalSupply`, converted to `settlementAsset`.
+    ///      Pricing intentionally excludes yield inventory held by GRAI. When its market value exceeds book value,
+    ///      holders are incentivized to vote for liquidation, while a briber can buy out those votes at book value
+    ///      plus the configured premium and assume the corresponding GRAI position.
     function previewBribe(address voter, uint256 graiAmount) public view returns (address asset, uint256 bribeAmount, uint256 premium) {
         if (graiAmount == 0) revert AmountZero();
         VoteEscrow storage entry = votes[voter];
         if (graiAmount > entry.amount) revert InvalidAmount();
-        if (feeds[hedgeAsset].feedType == FEED_NONE) revert HedgeAssetUnset();
+        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
 
-        asset = hedgeAsset;
+        asset = settlementAsset;
         uint256 supply = totalSupply();
         uint256 bookUsd = supply == 0 ? 0 : (graiAmount * totalValue) / supply;
-        bribeAmount = hedgeAmountFromUsd(bookUsd);
+        bribeAmount = settlementAmount(bookUsd);
         premium = (bribeAmount * config.bribePremiumBps) / BPS;
     }
 
@@ -466,6 +478,7 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
     /// @inheritdoc IGRAI
     /// @dev Flips the liquidation flag and pauses/unpauses every asset accordingly. Opening requires quorum.
+    ///      Closing returns any unredeemed basket balances to Grinders; unredeemed shares retain their book value.
     function liquidate() public onlyRole(ADMIN_ROLE) {
         uint256 len = assetList.length;
         if (liquidation) {
@@ -478,7 +491,9 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
                 uint256 remaining = balance(asset);
                 if (remaining > 0) _withdraw(address(grinders), asset, remaining);
                 emit AssetConfigUpdate(asset, assets[asset]);
-                unchecked { ++i; }
+                unchecked {
+                    ++i;
+                }
             }
             liquidation = false;
             liquidationAt = 0;
@@ -493,7 +508,9 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
                 }
                 assets[asset].paused = true;
                 emit AssetConfigUpdate(asset, assets[asset]);
-                unchecked { ++i; }
+                unchecked {
+                    ++i;
+                }
             }
             liquidation = true;
             liquidationAt = uint48(block.timestamp);
@@ -519,7 +536,9 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
         uint256 len = assetOuts.length;
         for (uint256 i; i < len;) {
             _withdraw(msg.sender, assetOuts[i], amounts[i]);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
         emit Redeem(msg.sender, graiAmount, depositValue);
     }
@@ -543,10 +562,14 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
                 if (amount > 0) {
                     assetOuts[count] = asset;
                     amounts[count] = amount;
-                    unchecked { ++count; }
+                    unchecked {
+                        ++count;
+                    }
                 }
             }
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
         assembly ("memory-safe") {
             mstore(assetOuts, count)
@@ -556,13 +579,15 @@ contract GRAI is IGRAI, PriceOracleRouter, ERC20Upgradeable, AccessControlEnumer
 
     //////////////////// INTERNAL HELPERS ////////////////////
 
-    /// @dev Merge `amount` into the asset auction and restart the 1-year Dutch clock at current oracle fair value.
+    /// @dev Merge `amount` into the asset auction and restart the Dutch clock at current oracle fair value.
+    ///      This is intentional: it incentivizes frequent `distribute` calls, while the protocol benefits
+    ///      from selling accumulated yield as close to market value as possible.
     function _put(address asset, uint256 amount) internal {
-        if (feeds[hedgeAsset].feedType == FEED_NONE) revert HedgeAssetUnset();
+        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
 
         DutchAuction storage entry = auctions[asset];
         uint256 remaining = entry.remaining + amount;
-        uint256 maxPayment = hedgeAmountFromUsd(usdValue(asset, remaining));
+        uint256 maxPayment = settlementAmount(usdValue(asset, remaining));
         if (maxPayment == 0) revert AmountZero();
 
         entry.asset = asset;

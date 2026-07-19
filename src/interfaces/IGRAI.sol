@@ -27,7 +27,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error LiquidationClosed();
     error LiquidationDelay();
     error RedeemPeriodActive();
-    error HedgeAssetUnset();
+    error SettlementAssetUnset();
+    error AuctionDurationTooShort();
+    error AuctionsOpen();
     error TargetZero();
     error DataEmpty();
     error SwapFailed();
@@ -42,14 +44,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 treasuryShare;
     }
 
-    /// @notice One Dutch auction of distributed yield for a single sold asset, paid in `hedgeAsset`.
+    /// @notice One Dutch auction of distributed yield for a single sold asset, paid in `settlementAsset`.
     struct DutchAuction {
         address asset;
         uint256 remaining;
         uint256 initial;
-        /// @notice Full-lot payment in `hedgeAsset` units at auction start (oracle fair value).
+        /// @notice Full-lot payment in `settlementAsset` units at auction start (oracle fair value).
         uint256 maxPayment;
-        /// @notice Full-lot payment in `hedgeAsset` units after the Dutch auction ends.
+        /// @notice Full-lot payment in `settlementAsset` units after the Dutch auction ends.
         uint256 minPayment;
         uint256 startTime;
     }
@@ -70,6 +72,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @notice Dutch auction duration from `maxPayment` to `minPayment`.
         uint32 auctionDuration;
         /// @notice Delay after liquidation opens before `redeem` is allowed.
+        /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
+        ///      where they sit as idle inventory for the subsequent pro-rata `redeem` basket.
         uint32 liquidationPeriod;
         /// @notice Extra window after `liquidationPeriod` before liquidation can be closed.
         uint32 redeemPeriod;
@@ -77,9 +81,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     event AssetUpdate(address indexed asset, bool listed);
     event AssetConfigUpdate(address indexed asset, AssetConfig cfg);
-    event Mint(address indexed minter, uint256 graiOut, address indexed asset, uint256 amount, uint256 value);
+    event Deposit(address indexed depositor, uint256 graiOut, address indexed asset, uint256 amount, uint256 value);
     event TreasuryUpdate(address indexed treasury);
-    event HedgeAssetUpdate(address indexed hedgeAsset);
+    event SettlementAssetUpdate(address indexed settlementAsset);
     event Distribute(
         address indexed from, address indexed asset, uint256 yieldAmount, uint256 yieldShare, uint256 treasuryShare
     );
@@ -157,18 +161,18 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function setTreasury(address treasury_) external;
 
-    function hedgeAsset() external view returns (address);
+    function settlementAsset() external view returns (address);
 
-    function setHedgeAsset(address hedgeAsset_) external;
+    function setSettlementAsset(address settlementAsset_) external;
 
     function setProtocolConfig(ProtocolConfig calldata cfg) external;
 
     function balance(address asset) external view returns (uint256);
 
-    /// @notice Convert a USD amount (`USD_DECIMALS`) into `hedgeAsset` base units via oracle.
-    function hedgeAmountFromUsd(uint256 usdAmount) external view returns (uint256);
+    /// @notice Convert a USD amount (`USD_DECIMALS`) into `settlementAsset` base units via oracle.
+    function settlementAmount(uint256 usdAmount) external view returns (uint256);
 
-    function previewMint(address asset, uint256 amount) external view returns (uint256 graiOut, uint256 value);
+    function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
     /// @notice Linear Dutch price: decays `maxPayment` → `minPayment` over `duration`.
     function dutchPrice(uint256 maxPayment, uint256 minPayment, uint256 elapsed, uint256 duration)
@@ -176,7 +180,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         pure
         returns (uint256);
 
-    /// @notice Yield-asset out (capped to auction remaining) and dutch `hedgeAsset` payment at `timestamp`.
+    /// @notice Yield-asset out (capped to auction remaining) and dutch `settlementAsset` payment at `timestamp`.
     function previewFill(address asset, uint256 amount, uint256 timestamp)
         external
         view
@@ -184,13 +188,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function setAssetConfig(address asset, AssetConfig calldata cfg) external;
 
-    function mint(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
+    function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
 
     function fill(address asset, uint256 amount, uint256 paymentMax) external payable;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    /// @notice Swap all GRAI-held `hedgeAsset` through `target` for GRAI and burn the received GRAI.
+    /// @notice Swap all GRAI-held `settlementAsset` through `target` for GRAI and burn the received GRAI.
     /// @dev DEX calldata must route the bought GRAI to this contract.
     function buyback(address target, bytes calldata data, uint256 graiMin)
         external
@@ -215,10 +219,11 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         returns (address asset, uint256 bribeAmount, uint256 premium);
 
     /// @notice Buy out `voter`'s vote: briber pays book value + premium to the voter (settled in
-    ///         `hedgeAsset`), and receives the escrowed GRAI.
+    ///         `settlementAsset`), and receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets; closing is available
-    ///         after the liquidation and redeem periods and unpauses all assets.
+    ///         after the liquidation and redeem periods, returns leftover balances to Grinders,
+    ///         and unpauses all assets. Unredeemed shares retain their book value.
     function liquidate() external;
 }
