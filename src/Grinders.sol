@@ -120,7 +120,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
 
     /// @inheritdoc IGrinders
     /// @dev Permissionless while `grai.liquidation()` is open. Pages custodians, pulls eth/base/quote into
-    ///      this contract, then forwards those amounts to GRAI as idle liquidation inventory for `redeem`.
+    ///      this contract, then forwards those amounts to GRAI as idle liquidation inventory for `liquidate`.
     function liquidate(uint256 fromId, uint256 toId) external {
         if (!grai.liquidation()) revert NoLiquidation();
         if (fromId >= toId) revert InvalidLiquidationRange(fromId, toId);
@@ -143,15 +143,15 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
 
             IERC20 base = Custodian(payable(c)).baseAsset();
             IERC20 quote = Custodian(payable(c)).quoteAsset();
-            _putLiquidated(address(0), ethOut);
-            _putLiquidated(address(base), baseOut);
-            _putLiquidated(address(quote), quoteOut);
+            _liquidate(address(0), ethOut);
+            _liquidate(address(base), baseOut);
+            _liquidate(address(quote), quoteOut);
         }
 
         emit Liquidate(fromId, toId, assetsLen);
     }
 
-    function _putLiquidated(address asset, uint256 amount) private {
+    function _liquidate(address asset, uint256 amount) private {
         if (amount == 0) return;
         if (asset == address(0)) {
             (bool ok,) = address(grai).call{value: amount}("");
