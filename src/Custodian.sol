@@ -72,7 +72,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable {
 
     function custodianId() public view returns (uint256) {
         if (address(grinders).code.length == 0) return type(uint256).max;
-        try grinders.custodianIds(address(this)) returns (uint256 id) {
+        try grinders.custodyIdOf(address(this)) returns (uint256 id) {
             return id;
         } catch {
             return type(uint256).max;

@@ -39,8 +39,9 @@ contract GRAITest is GRAIFixture {
         grai.setGrinders(address(grinders));
         ethFeed = new MockAggregator(8, 1000e8);
         _setChainlinkFeed(address(0), address(ethFeed));
-        _setAssetConfig(address(0), 0, false);
-        _setAssetConfig(address(usdc), 0, false);
+        _setAssetConfig(address(0), false);
+        _setTreasuryShare(0);
+        _setAssetConfig(address(usdc), false);
         grai.setSettlementAsset(address(usdc));
         vm.stopPrank();
     }
@@ -64,8 +65,8 @@ contract GRAITest is GRAIFixture {
         vm.prank(yielder);
         grai.distribute{value: 0.1 ether}(address(0), 0.1 ether);
 
-        (address asset, uint256 remaining, uint256 initial, uint256 maxPayment, uint256 minPayment, uint256 startTime) =
-            grai.auctions(address(0));
+        (address asset, uint256 remaining, uint256 initial, uint256 maxPayment, uint256 minPayment, uint256 startTime, uint32 duration)
+            = grai.auctions(address(0));
 
         assertEq(asset, address(0));
         assertEq(remaining, 0.1 ether);
@@ -73,6 +74,7 @@ contract GRAITest is GRAIFixture {
         assertEq(maxPayment, 100e6);
         assertEq(minPayment, 0);
         assertEq(startTime, block.timestamp);
+        assertEq(duration, 365 days);
         assertEq(grai.getAuctions().length, 1);
 
         (uint256 amountOut, uint256 payment) = grai.previewFill(address(0), type(uint256).max, block.timestamp);
@@ -121,7 +123,8 @@ contract GRAITest is GRAIFixture {
     function test_DistributeMergesAndRestartsAuction() public {
         vm.startPrank(admin);
         grai.setGrinders(address(grinders));
-        _setAssetConfig(address(weth), 0, false);
+        _setAssetConfig(address(weth), false);
+        _setTreasuryShare(0);
         grai.setSettlementAsset(address(usdc));
         vm.stopPrank();
 
@@ -131,7 +134,7 @@ contract GRAITest is GRAIFixture {
         grai.distribute(address(weth), 1e18);
         vm.stopPrank();
 
-        (,,, uint256 max1,, uint256 start1) = grai.auctions(address(weth));
+        (,,, uint256 max1,, uint256 start1,) = grai.auctions(address(weth));
         assertEq(max1, 2000e6); // 1 WETH @ $2000
 
         vm.warp(block.timestamp + 30 days);
@@ -142,7 +145,7 @@ contract GRAITest is GRAIFixture {
         grai.distribute(address(weth), 1e18);
         vm.stopPrank();
 
-        (, uint256 remaining, uint256 initial, uint256 max2,, uint256 start2) = grai.auctions(address(weth));
+        (, uint256 remaining, uint256 initial, uint256 max2,, uint256 start2,) = grai.auctions(address(weth));
         assertEq(remaining, 2e18);
         assertEq(initial, 2e18);
         assertEq(max2, 4000e6);
@@ -153,7 +156,8 @@ contract GRAITest is GRAIFixture {
     function test_DistributeSettlementAssetSkipsAuction() public {
         vm.startPrank(admin);
         grai.setSettlementAsset(address(usdc));
-        _setAssetConfig(address(usdc), 2_000, false);
+        _setAssetConfig(address(usdc), false);
+        _setTreasuryShare(2_000);
         vm.stopPrank();
 
         usdc.mint(yielder, 100e6);
@@ -170,7 +174,8 @@ contract GRAITest is GRAIFixture {
 
     function test_PartialFillAuction() public {
         vm.startPrank(admin);
-        _setAssetConfig(address(weth), 0, false);
+        _setAssetConfig(address(weth), false);
+        _setTreasuryShare(0);
         grai.setSettlementAsset(address(usdc));
         vm.stopPrank();
 
@@ -187,7 +192,7 @@ contract GRAITest is GRAIFixture {
         assertEq(weth.balanceOf(bob), 0.5e18);
         assertEq(usdc.balanceOf(address(grai)), 1000e6);
 
-        (, uint256 remaining, uint256 initial, uint256 maxPayment,,) = grai.auctions(address(weth));
+        (, uint256 remaining, uint256 initial, uint256 maxPayment,,,) = grai.auctions(address(weth));
         assertEq(remaining, 0.5e18);
         assertEq(initial, 1e18);
         assertEq(maxPayment, 2000e6);
@@ -211,9 +216,52 @@ contract GRAITest is GRAIFixture {
         grai.setSettlementAsset(unknown);
     }
 
+    function test_SetSettlementAssetAuctionsPreviousInventory() public {
+        vm.startPrank(admin);
+        grai.setSettlementAsset(address(usdc));
+        _setAssetConfig(address(usdc), false);
+        _setTreasuryShare(0);
+        vm.stopPrank();
+
+        // Accrue settlement inventory on GRAI (no auction while it is settlement).
+        usdc.mint(yielder, 100e6);
+        vm.startPrank(yielder);
+        usdc.approve(address(grai), 100e6);
+        grai.distribute(address(usdc), 100e6);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(address(grai)), 100e6);
+        assertEq(grai.getAuctions().length, 0);
+
+        // Switch settlement to WETH: prior USDC must be listed for sale in WETH.
+        vm.prank(admin);
+        grai.setSettlementAsset(address(weth));
+
+        (address asset, uint256 remaining,,,,, uint32 duration) = grai.auctions(address(usdc));
+        assertEq(asset, address(usdc));
+        assertEq(remaining, 100e6);
+        assertEq(duration, 365 days);
+        assertEq(grai.getAuctions().length, 1);
+        assertEq(grai.settlementAsset(), address(weth));
+    }
+
+    function test_SetSettlementAssetRevertsWhileVotesOpen() public {
+        vm.prank(admin);
+        grai.setSettlementAsset(address(usdc));
+
+        _deposit(alice, usdc, 1000e6);
+        vm.prank(alice);
+        grai.vote(500e6);
+        assertGt(grai.totalVoted(), 0);
+
+        vm.prank(admin);
+        vm.expectRevert(IGRAI.VotesOpen.selector);
+        grai.setSettlementAsset(address(weth));
+    }
+
     function test_FillRevertsWhenPaymentMaxTooLow() public {
         vm.startPrank(admin);
-        _setAssetConfig(address(weth), 0, false);
+        _setAssetConfig(address(weth), false);
+        _setTreasuryShare(0);
         grai.setSettlementAsset(address(usdc));
         vm.stopPrank();
 
@@ -231,7 +279,7 @@ contract GRAITest is GRAIFixture {
         vm.stopPrank();
     }
 
-    function test_BuybackSwapsSettlementAssetForGraiAndBurnsIt() public {
+    function test_BuybackSwapsSettlementAssetForGraiAndHoldsIt() public {
         vm.startPrank(admin);
         grai.setGrinders(address(grinders));
         grai.setSettlementAsset(address(usdc));
@@ -252,14 +300,230 @@ contract GRAITest is GRAIFixture {
         assertEq(payment, 10e6);
         assertEq(graiOut, 10e6);
         assertEq(grai.totalValue(), 200e6);
-        assertEq(grai.totalSupply(), 190e6);
+        assertEq(grai.totalSupply(), 200e6);
         assertEq(usdc.balanceOf(address(grai)), 0);
-        assertEq(grai.balanceOf(address(grai)), 0);
+        assertEq(grai.balanceOf(address(grai)), 10e6);
 
         uint256 deposited = _deposit(alice, usdc, 10e6);
-        assertEq(deposited, 9.5e6);
+        assertEq(deposited, 10e6);
         assertEq(grai.totalValue(), 210e6);
-        assertEq(grai.totalSupply(), 199.5e6);
+        assertEq(grai.totalSupply(), 210e6);
+    }
+
+    function test_BribeBuysOutVoteForSettlementPayment() public {
+        vm.startPrank(admin);
+        grai.setGrinders(address(grinders));
+        grai.setSettlementAsset(address(usdc));
+        vm.stopPrank();
+
+        _deposit(alice, usdc, 100e6);
+        _deposit(bob, usdc, 100e6);
+
+        vm.prank(alice);
+        grai.vote(50e6);
+
+        uint256 bribeAmount = grai.previewBribe(alice, 50e6);
+        assertEq(bribeAmount, 51e6); // book value + 2%
+        uint256 bookAmount = 50e6;
+        uint256 premiumAmount = 1e6;
+        uint256 treasuryCut = (premiumAmount * DEFAULT_TREASURY_SHARE) / BPS;
+        uint256 buybackKeep = premiumAmount - treasuryCut;
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 treasuryBefore = usdc.balanceOf(admin);
+        uint256 graiUsdcBefore = usdc.balanceOf(address(grai));
+        vm.startPrank(bob);
+        usdc.approve(address(grai), bribeAmount);
+        grai.bribe(alice, 50e6);
+        vm.stopPrank();
+
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, bookAmount);
+        assertEq(usdc.balanceOf(admin) - treasuryBefore, treasuryCut);
+        assertEq(usdc.balanceOf(address(grai)) - graiUsdcBefore, buybackKeep);
+        assertEq(grai.balanceOf(bob), 150e6); // 100 held + 50 bought-out vote
+        assertEq(grai.totalVoted(), 0);
+    }
+
+    function test_NativeBribeRefundsExcessValue() public {
+        vm.startPrank(admin);
+        grai.setGrinders(address(grinders));
+        ethFeed = new MockAggregator(8, 1000e8);
+        _setChainlinkFeed(address(0), address(ethFeed));
+        _setAssetConfig(address(0), false);
+        _setTreasuryShare(DEFAULT_TREASURY_SHARE);
+        grai.setSettlementAsset(address(0));
+        vm.stopPrank();
+
+        _deposit(alice, usdc, 100e6);
+        _deposit(bob, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(50e6);
+
+        uint256 bribeAmount = grai.previewBribe(alice, 50e6);
+        // ETH @$1000: book for $50 = 0.05 ETH; premium 2% → bribeAmount = 0.051 ETH
+        uint256 bookAmount = bribeAmount * BPS / (BPS + 200);
+        uint256 premiumAmount = bribeAmount - bookAmount;
+        uint256 treasuryCut = (premiumAmount * DEFAULT_TREASURY_SHARE) / BPS;
+        uint256 buybackKeep = premiumAmount - treasuryCut;
+        uint256 excess = 1 ether;
+        vm.deal(bob, bribeAmount + excess);
+        uint256 aliceEthBefore = alice.balance;
+        uint256 treasuryBefore = admin.balance;
+
+        vm.prank(bob);
+        grai.bribe{value: bribeAmount + excess}(alice, 50e6);
+
+        assertEq(alice.balance - aliceEthBefore, bookAmount);
+        assertEq(bob.balance, excess);
+        assertEq(admin.balance - treasuryBefore, treasuryCut);
+        assertEq(address(grai).balance, buybackKeep);
+        assertEq(grai.balanceOf(bob), 150e6);
+    }
+
+    function test_BuybackRewardsArePaidBeforeVoterRemoval() public {
+        vm.startPrank(admin);
+        grai.setGrinders(address(grinders));
+        grai.setSettlementAsset(address(usdc));
+        vm.stopPrank();
+
+        _deposit(alice, usdc, 100e6);
+        _deposit(bob, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(100e6);
+
+        MockBuybackRouter router = new MockBuybackRouter();
+        vm.prank(bob);
+        grai.transfer(address(router), 10e6);
+        deal(address(usdc), address(grai), 10e6, true);
+        bytes memory data =
+            abi.encodeCall(router.swap, (IERC20(address(usdc)), IERC20(address(grai)), 10e6, 10e6, address(grai)));
+        vm.prank(admin);
+        grai.buyback(address(router), data, 10e6);
+
+        uint256 bribeAmount = grai.previewBribe(alice, 100e6);
+        uint256 aliceGraiBefore = grai.balanceOf(alice);
+        vm.startPrank(bob);
+        usdc.approve(address(grai), bribeAmount);
+        grai.bribe(alice, 100e6);
+        vm.stopPrank();
+
+        assertEq(grai.balanceOf(alice) - aliceGraiBefore, 10e6);
+        (uint256 amount,,,,) = grai.votes(alice);
+        assertEq(amount, 0);
+    }
+
+    function test_OneGraiBuybackRewardSplitsProRataBetweenAliceAndBob() public {
+        vm.startPrank(admin);
+        grai.setGrinders(address(grinders));
+        grai.setSettlementAsset(address(usdc));
+        vm.stopPrank();
+
+        _deposit(alice, usdc, 100e6);
+        _deposit(bob, usdc, 200e6);
+        usdc.mint(admin, 1e6);
+        _deposit(admin, usdc, 1e6);
+
+        vm.prank(alice);
+        grai.vote(100e6);
+        vm.prank(bob);
+        grai.vote(200e6);
+
+        MockBuybackRouter router = new MockBuybackRouter();
+        vm.prank(admin);
+        grai.transfer(address(router), 1e6);
+        deal(address(usdc), address(grai), 1e6, true);
+        bytes memory data =
+            abi.encodeCall(router.swap, (IERC20(address(usdc)), IERC20(address(grai)), 1e6, 1e6, address(grai)));
+        vm.prank(admin);
+        grai.buyback(address(router), data, 1e6);
+
+        assertEq(grai.rewardPerVote(), 3_333_333_333_333_333);
+        assertEq(grai.pendingVoteRewards(), 1); // one 1e-6 GRAI unit remains from integer rounding
+
+        uint256 aliceGraiBefore = grai.balanceOf(alice);
+        uint256 bobGraiBefore = grai.balanceOf(bob);
+        uint256 aliceBribe = grai.previewBribe(alice, 100e6);
+        uint256 bobBribe = grai.previewBribe(bob, 200e6);
+        usdc.mint(admin, aliceBribe + bobBribe);
+
+        vm.startPrank(admin);
+        usdc.approve(address(grai), aliceBribe + bobBribe);
+        grai.bribe(alice, 100e6);
+        grai.bribe(bob, 200e6);
+        vm.stopPrank();
+
+        assertEq(grai.balanceOf(alice) - aliceGraiBefore, 333_333);
+        assertEq(grai.balanceOf(bob) - bobGraiBefore, 666_666);
+        assertEq(grai.totalVoted(), 0);
+    }
+
+    function test_LiquidationCreditsVoteRewardToHolderBalance() public {
+        vm.startPrank(admin);
+        grai.setGrinders(address(grinders));
+        grai.setSettlementAsset(address(usdc));
+        vm.stopPrank();
+
+        _deposit(alice, usdc, 100e6);
+        _deposit(bob, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(100e6);
+
+        MockBuybackRouter router = new MockBuybackRouter();
+        vm.prank(bob);
+        grai.transfer(address(router), 10e6);
+        deal(address(usdc), address(grai), 10e6, true);
+        bytes memory data =
+            abi.encodeCall(router.swap, (IERC20(address(usdc)), IERC20(address(grai)), 10e6, 10e6, address(grai)));
+        vm.prank(admin);
+        grai.buyback(address(router), data, 10e6);
+
+        vm.prank(bob);
+        grai.vote(90e6);
+        vm.prank(admin);
+        grai.resolve();
+        deal(address(usdc), address(grai), 200e6, true);
+
+        (,,,, uint32 liquidationPeriod,) = grai.config();
+        vm.warp(block.timestamp + liquidationPeriod);
+        vm.prank(alice);
+        grai.liquidate(100e6);
+
+        assertEq(grai.balanceOf(alice), 10e6);
+    }
+
+    function test_VoterCanSelfBribePayingOnlyPremium() public {
+        vm.startPrank(admin);
+        grai.setGrinders(address(grinders));
+        grai.setSettlementAsset(address(usdc));
+        vm.stopPrank();
+
+        _deposit(alice, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(50e6);
+
+        vm.prank(alice);
+        vm.expectRevert(IGRAI.AmountZero.selector);
+        grai.vote(0);
+
+        uint256 bribeAmount = grai.previewBribe(alice, 50e6);
+        assertEq(bribeAmount, 51e6);
+        uint256 premiumAmount = 1e6;
+        uint256 treasuryCut = (premiumAmount * DEFAULT_TREASURY_SHARE) / BPS;
+        uint256 buybackKeep = premiumAmount - treasuryCut;
+
+        uint256 usdcBefore = usdc.balanceOf(alice);
+        uint256 treasuryBefore = usdc.balanceOf(admin);
+        uint256 graiUsdcBefore = usdc.balanceOf(address(grai));
+        vm.startPrank(alice);
+        usdc.approve(address(grai), bribeAmount);
+        grai.bribe(alice, 50e6);
+        vm.stopPrank();
+
+        assertEq(usdcBefore - usdc.balanceOf(alice), premiumAmount);
+        assertEq(usdc.balanceOf(admin) - treasuryBefore, treasuryCut);
+        assertEq(usdc.balanceOf(address(grai)) - graiUsdcBefore, buybackKeep);
+        assertEq(grai.balanceOf(alice), 100e6);
+        assertEq(grai.totalVoted(), 0);
     }
 
     function test_RedeemOnlyDuringLiquidationAndProRata() public {
@@ -271,42 +535,36 @@ contract GRAITest is GRAIFixture {
 
         vm.prank(alice);
         vm.expectRevert(IGRAI.LiquidationClosed.selector);
-        grai.redeem(100e6);
+        grai.liquidate(100e6);
 
         vm.prank(alice);
         grai.vote(100e6);
         vm.prank(bob);
         grai.vote(100e6);
         vm.prank(admin);
-        grai.liquidate();
+        grai.resolve();
         assertEq(grai.liquidationAt(), block.timestamp);
-
-        // Unlock voted shares once liquidation has opened.
-        vm.prank(alice);
-        grai.vote(0);
-        vm.prank(bob);
-        grai.vote(0);
 
         // Simulate Grinders returning liquidated USDC directly to GRAI.
         deal(address(usdc), address(grai), 200e6, true);
 
-        (,,, uint32 liquidationPeriod, uint32 redeemPeriod) = grai.config();
+        (,,,, uint32 liquidationPeriod, uint32 redeemPeriod) = grai.config();
 
         vm.prank(alice);
         vm.expectRevert(IGRAI.LiquidationDelay.selector);
-        grai.redeem(100e6);
+        grai.liquidate(100e6);
 
         vm.warp(block.timestamp + liquidationPeriod);
 
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
-        grai.redeem(100e6);
+        grai.liquidate(100e6);
         assertEq(usdc.balanceOf(alice) - aliceBefore, 100e6);
         assertEq(grai.totalValue(), 100e6);
 
         uint256 bobBefore = usdc.balanceOf(bob);
         vm.prank(bob);
-        grai.redeem(100e6);
+        grai.liquidate(100e6);
         assertEq(usdc.balanceOf(bob) - bobBefore, 100e6);
         assertEq(grai.totalValue(), 0);
         assertEq(grai.totalSupply(), 0);
@@ -316,14 +574,14 @@ contract GRAITest is GRAIFixture {
 
         vm.prank(admin);
         vm.expectRevert(IGRAI.RedeemPeriodActive.selector);
-        grai.liquidate();
+        grai.resolve();
 
         vm.warp(block.timestamp + redeemPeriod);
         vm.prank(admin);
-        grai.liquidate();
+        grai.resolve();
         assertFalse(grai.liquidation());
         assertEq(grai.liquidationAt(), 0);
-        (,, bool paused,) = grai.assets(address(usdc));
+        (,, bool paused) = grai.assets(address(usdc));
         assertFalse(paused);
         assertEq(usdc.balanceOf(address(grinders)) - grindersBefore, 1e6);
         assertEq(usdc.balanceOf(address(grai)), 0);
@@ -342,18 +600,14 @@ contract GRAITest is GRAIFixture {
         vm.prank(bob);
         grai.vote(100e6);
         vm.prank(admin);
-        grai.liquidate();
+        grai.resolve();
 
-        vm.prank(alice);
-        grai.vote(0);
-        vm.prank(bob);
-        grai.vote(0);
         deal(address(usdc), address(grai), 200e6, true);
 
-        (,,, uint32 liquidationPeriod, uint32 redeemPeriod) = grai.config();
+        (,,,, uint32 liquidationPeriod, uint32 redeemPeriod) = grai.config();
         vm.warp(block.timestamp + liquidationPeriod);
         vm.prank(alice);
-        grai.redeem(100e6);
+        grai.liquidate(100e6);
 
         assertEq(grai.totalValue(), 100e6);
         assertEq(grai.totalSupply(), 100e6);
@@ -361,7 +615,7 @@ contract GRAITest is GRAIFixture {
         uint256 grindersBefore = usdc.balanceOf(address(grinders));
         vm.warp(block.timestamp + redeemPeriod);
         vm.prank(admin);
-        grai.liquidate();
+        grai.resolve();
 
         assertEq(usdc.balanceOf(address(grinders)) - grindersBefore, 100e6);
         assertEq(grai.totalValue(), 100e6);
@@ -370,7 +624,8 @@ contract GRAITest is GRAIFixture {
 
     function test_LiquidationCancelsAuctionsIntoRedemptionBasket() public {
         vm.startPrank(admin);
-        _setAssetConfig(address(weth), 0, false);
+        _setAssetConfig(address(weth), false);
+        _setTreasuryShare(0);
         grai.setSettlementAsset(address(usdc));
         vm.stopPrank();
 
@@ -386,16 +641,14 @@ contract GRAITest is GRAIFixture {
         assertEq(grai.getAuctions().length, 1);
 
         vm.prank(admin);
-        grai.liquidate();
+        grai.resolve();
         assertEq(grai.getAuctions().length, 0);
-        (,,, uint32 liquidationPeriod,) = grai.config();
+        (,,,, uint32 liquidationPeriod,) = grai.config();
         vm.warp(block.timestamp + liquidationPeriod);
 
-        vm.prank(alice);
-        grai.vote(0);
         uint256 wethBefore = weth.balanceOf(alice);
         vm.prank(alice);
-        grai.redeem(100e6);
+        grai.liquidate(100e6);
         assertEq(weth.balanceOf(alice) - wethBefore, 1e18);
     }
 }

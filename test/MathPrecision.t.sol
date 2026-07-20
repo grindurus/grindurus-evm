@@ -17,7 +17,8 @@ contract MathPrecisionProbe is GRAIFixture {
     function test_AuctionPaymentProRataAtStart() public {
         vm.startPrank(admin);
         grai.setSettlementAsset(address(usdc));
-        _setAssetConfig(address(weth), 0, false);
+        _setAssetConfig(address(weth), false);
+        _setTreasuryShare(0);
         vm.stopPrank();
 
         deal(address(weth), alice, 1e18);
@@ -46,10 +47,10 @@ contract MathPrecisionProbe is GRAIFixture {
         }
 
         vm.startPrank(admin);
-        _setAssetConfig(address(usdc), DEFAULT_TREASURY_SHARE, true);
+        _setAssetConfig(address(usdc), true);
         _clearFeed(address(usdc)); // delist (paused + drained)
         _setChainlinkFeed(address(usdc), address(usdcFeed)); // re-list
-        _setAssetConfig(address(usdc), DEFAULT_TREASURY_SHARE, false);
+        _setAssetConfig(address(usdc), false);
         vm.stopPrank();
 
         _deposit(bob, usdc, 100e6);

@@ -50,8 +50,8 @@ abstract contract GRAIFixture is Test {
         // setFeed lists the asset (yield split defaults to 0); set the split explicitly.
         _setChainlinkFeed(address(usdc), address(usdcFeed));
         _setChainlinkFeed(address(weth), address(wethFeed));
-        _setAssetConfig(address(usdc), DEFAULT_TREASURY_SHARE, false);
-        _setAssetConfig(address(weth), DEFAULT_TREASURY_SHARE, false);
+        _setAssetConfig(address(usdc), false);
+        _setAssetConfig(address(weth), false);
         _registerTestCustodian();
         vm.stopPrank();
 
@@ -89,9 +89,28 @@ abstract contract GRAIFixture is Test {
         grai.setFeed(asset, _chainlinkFeed(asset, aggregator));
     }
 
-    function _setAssetConfig(address asset, uint16 treasuryShare, bool paused) internal {
-        grai.setAssetConfig(
-            asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: paused, treasuryShare: treasuryShare})
+    function _setAssetConfig(address asset, bool paused) internal {
+        grai.setAssetConfig(asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: paused}));
+    }
+
+    function _setTreasuryShare(uint16 treasuryShare) internal {
+        (
+            ,
+            uint16 bribePremiumBps,
+            uint16 liquidationQuorumBps,
+            uint32 auctionDuration,
+            uint32 liquidationPeriod,
+            uint32 redeemPeriod
+        ) = grai.config();
+        grai.setProtocolConfig(
+            IGRAI.ProtocolConfig({
+                treasuryShare: treasuryShare,
+                bribePremiumBps: bribePremiumBps,
+                liquidationQuorumBps: liquidationQuorumBps,
+                auctionDuration: auctionDuration,
+                liquidationPeriod: liquidationPeriod,
+                redeemPeriod: redeemPeriod
+            })
         );
     }
 

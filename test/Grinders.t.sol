@@ -47,6 +47,34 @@ contract GrindersTest is GRAIFixture {
         assertEq(grinders.balance(address(usdc)), 0);
     }
 
+    function test_LiquidateTransfersIdleListedAssetsToGrai() public {
+        vm.prank(admin);
+        grai.setGrinders(address(grinders));
+        _deposit(alice, usdc, 100e6);
+        _fundGrinders(weth, 2e18);
+
+        vm.prank(alice);
+        grai.vote(100e6);
+        vm.prank(admin);
+        grai.resolve();
+
+        assertEq(usdc.balanceOf(address(grinders)), 100e6);
+        assertEq(weth.balanceOf(address(grinders)), 2e18);
+
+        vm.prank(bob);
+        grinders.liquidate();
+
+        assertEq(usdc.balanceOf(address(grinders)), 0);
+        assertEq(weth.balanceOf(address(grinders)), 0);
+        assertEq(usdc.balanceOf(address(grai)), 100e6);
+        assertEq(weth.balanceOf(address(grai)), 2e18);
+    }
+
+    function test_LiquidateIdleRevertsWhileLiquidationClosed() public {
+        vm.expectRevert(IGrinders.NoLiquidation.selector);
+        grinders.liquidate();
+    }
+
     function test_MintCoWCustodian() public {
         vm.prank(admin);
         CoWCustodian custodyWallet =

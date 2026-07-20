@@ -30,6 +30,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error SettlementAssetUnset();
     error AuctionDurationTooShort();
     error AuctionsOpen();
+    error VotesOpen();
     error TargetZero();
     error DataEmpty();
     error SwapFailed();
@@ -40,8 +41,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
         bool paused;
-        /// @notice Share of distributed yield sent to `treasury`, in bps.
-        uint16 treasuryShare;
     }
 
     /// @notice One Dutch auction of distributed yield for a single sold asset, paid in `settlementAsset`.
@@ -54,6 +53,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @notice Full-lot payment in `settlementAsset` units after the Dutch auction ends.
         uint256 minPayment;
         uint256 startTime;
+        /// @notice Snapshot of `config.auctionDuration` at last `_put` (clock length for this lot).
+        uint32 duration;
     }
 
     struct VoteEscrow {
@@ -68,8 +69,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 claimableReward;
     }
 
-    /// @notice Bribe premium, liquidation quorum, and timing.
+    /// @notice Bribe premium, liquidation quorum, treasury cut, and timing.
     struct ProtocolConfig {
+        /// @notice Share of distributed yield and bribe premium sent to `treasury`, in bps.
+        uint16 treasuryShare;
         /// @notice Settlement payment for a vote buyout, in bps of book value.
         uint16 bribePremiumBps;
         uint16 liquidationQuorumBps;
@@ -107,6 +110,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         external
         view
         returns (
+            uint16 treasuryShare,
             uint16 bribePremiumBps,
             uint16 liquidationQuorumBps,
             uint32 auctionDuration,
@@ -133,7 +137,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint256 initial,
             uint256 maxPayment,
             uint256 minPayment,
-            uint256 startTime
+            uint256 startTime,
+            uint32 duration
         );
 
     /// @notice Listed assets that currently have an open yield auction.
@@ -159,7 +164,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
     function liquidationAt() external view returns (uint48);
 
-    function assets(address asset) external view returns (address asset_, uint32 id, bool paused, uint16 treasuryShare);
+    function assets(address asset) external view returns (address asset_, uint32 id, bool paused);
 
     function assetList(uint256 index) external view returns (address);
 
@@ -217,13 +222,15 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Burn wallet-held and/or vote-escrowed GRAI for a pro-rata share of the liquidation basket.
     function liquidate(uint256 graiAmount) external;
 
-    /// @notice Irreversibly escrow GRAI toward liquidation quorum; only a third-party `bribe` can buy it out.
+    /// @notice Escrow GRAI toward liquidation quorum. Exit via `bribe`: voter gets book value,
+    ///         premium is skimmed to treasury / buyback inventory (self-bribe therefore costs the premium).
     function vote(uint256 graiAmount) external;
 
     /// @notice Preview the `settlementAsset` payment for a vote buyout.
     function previewBribe(address voter, uint256 graiAmount) external view returns (uint256 bribeAmount);
 
-    /// @notice Buy out `voter` for `previewBribe` settlement and receive the escrowed GRAI.
+    /// @notice Buy out `voter` for `previewBribe` settlement: book to voter, premium to treasury/buybacks;
+    ///         briber receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets; closing is available

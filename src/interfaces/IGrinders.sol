@@ -26,7 +26,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
 
     event GraiTokenUpdate(address indexed graiToken);
-    event Sweep(address indexed asset, address indexed to, uint256 amount);
     event Liquidate(uint256 fromId, uint256 toId, uint256 assets);
     event CustodianImplementationUpdated(bytes32 indexed custodianKind, address implementation);
     event CustodianDeployed(
@@ -39,6 +38,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     event CustodianRegistered(address indexed custodian, address indexed owner, uint256 indexed custodianId);
     event Allocate(address indexed asset, address indexed custodian, uint256 amount);
     event Deallocate(address indexed asset, address indexed custodian, uint256 amount);
+    event IdleLiquidate(uint256 assets);
 
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
@@ -48,15 +48,15 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function custodianImplementations(bytes32 custodianKind) external view returns (address);
     function custodians(uint256 custodianId) external view returns (address);
     function custodianIds(address custodian) external view returns (uint256);
+    /// @notice Registered NFT id for `account`, or `type(uint256).max` if not a custodian.
+    function custodyIdOf(address account) external view returns (uint256);
     /// @notice Issuance ledger of `allocate` amounts (not a wallet balance / deallocate cap).
     function allocated(address custodian, address asset) external view returns (uint256);
-    function active(address asset) external view returns (uint256);
+    function totalAllocated(address asset) external view returns (uint256);
 
     function isCustodian(address custodian) external view returns (bool);
 
     function custodianKindOf(address custodian) external view returns (bytes32);
-
-    function sweep(address asset) external;
 
     function set(bytes32 custodianKind, address implementation) external;
     function mint(bytes32 custodianKind, address baseAsset_, address quoteAsset_, address owner_)
@@ -69,4 +69,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and transfer swept amounts to GRAI.
     function liquidate(uint256 fromId, uint256 toId) external;
+
+    /// @notice Permissionless while `grai.liquidation()`: transfer all listed idle assets to GRAI.
+    function liquidate() external;
 }

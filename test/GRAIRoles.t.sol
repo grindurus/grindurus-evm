@@ -87,9 +87,8 @@ contract GRAIRolesTest is Test {
         address asset = makeAddr("opsAsset");
         _setFeedAsAdmin(asset, new MockAggregator(8, 1e8));
 
-        // setFeed auto-lists the asset with a default (zero) yield split.
-        (, uint32 id,, uint16 split) = grai.assets(asset);
-        assertEq(split, 0);
+        // setFeed auto-lists the asset.
+        (, uint32 id,) = grai.assets(asset);
         assertEq(grai.assetList(id), asset);
     }
 
@@ -103,12 +102,11 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(
                 grai.setAssetConfig,
-                (asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: true, treasuryShare: 5_000}))
+                (asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: true}))
             )
         );
 
-        (,, bool paused, uint16 split) = grai.assets(asset);
-        assertEq(split, 5_000);
+        (,, bool paused) = grai.assets(asset);
         assertTrue(paused);
     }
 
@@ -118,7 +116,7 @@ contract GRAIRolesTest is Test {
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, DEPLOYER, adminRole)
         );
         vm.prank(DEPLOYER);
-        grai.setAssetConfig(address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true, treasuryShare: 0}));
+        grai.setAssetConfig(address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true}));
     }
 
     function test_OracleCannotCallAdminFunctions() public {
@@ -129,7 +127,7 @@ contract GRAIRolesTest is Test {
             )
         );
         vm.prank(address(oracleMultisig));
-        grai.setAssetConfig(address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true, treasuryShare: 0}));
+        grai.setAssetConfig(address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true}));
     }
 
     function test_UpgradeCannotCallAdminFunctions() public {
@@ -140,7 +138,7 @@ contract GRAIRolesTest is Test {
             )
         );
         vm.prank(address(upgradeMultisig));
-        grai.setAssetConfig(address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true, treasuryShare: 0}));
+        grai.setAssetConfig(address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true}));
     }
 
     //////////////////// SET FEED (ADMIN_ROLE) ////////////////////
@@ -183,6 +181,7 @@ contract GRAIRolesTest is Test {
 
     function test_UpgradeCanSetConfig() public {
         IGRAI.ProtocolConfig memory cfg = IGRAI.ProtocolConfig({
+            treasuryShare: 1_500,
             bribePremiumBps: 300,
             liquidationQuorumBps: 5_000,
             auctionDuration: uint32(180 days),
@@ -191,8 +190,15 @@ contract GRAIRolesTest is Test {
         });
         _exec(upgradeMultisig, upgradeOwner, address(grai), abi.encodeCall(grai.setProtocolConfig, (cfg)));
 
-        (uint16 bribePremiumBps, uint16 quorum, uint32 auctionDuration, uint32 liquidationPeriod, uint32 redeemPeriod) =
-            grai.config();
+        (
+            uint16 treasuryShare,
+            uint16 bribePremiumBps,
+            uint16 quorum,
+            uint32 auctionDuration,
+            uint32 liquidationPeriod,
+            uint32 redeemPeriod
+        ) = grai.config();
+        assertEq(treasuryShare, 1_500);
         assertEq(bribePremiumBps, 300);
         assertEq(quorum, 5_000);
         assertEq(auctionDuration, 180 days);
@@ -332,7 +338,7 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(
                 grai.setAssetConfig,
-                (address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true, treasuryShare: 0}))
+                (address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true}))
             )
         );
     }
