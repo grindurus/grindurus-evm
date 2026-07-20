@@ -176,6 +176,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function settlementAsset() external view returns (address);
 
+    /// @notice Canonical WETH for ETH→WETH fallback when a native push is rejected.
+    function weth() external view returns (address);
+
     function setSettlementAsset(address settlementAsset_) external;
 
     function setProtocolConfig(ProtocolConfig calldata cfg) external;

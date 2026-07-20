@@ -7,6 +7,7 @@ import {AccessControlEnumerableUpgradeable} from "@openzeppelin/contracts-upgrad
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IGRAI, IERC20, IERC20Metadata, IPriceOracleRouter} from "./interfaces/IGRAI.sol";
+import {IWETH} from "./interfaces/IWETH.sol";
 import {IGrinders} from "./interfaces/IGrinders.sol";
 import {IERC1046} from "./interfaces/IERC1046.sol";
 import {PriceOracleRouter} from "./PriceOracleRouter.sol";
@@ -80,25 +81,29 @@ contract GRAI is
 
     /** SLOT end 20 + 1 + 6 */
 
+    /// @notice Canonical WETH used when a native ETH `_withdraw` is rejected by the recipient.
+    address public weth;
+
     /// @notice Bribe premium, liquidation quorum, and timing.
     ProtocolConfig public config;
 
     /// @dev Storage gap for future upgrades.
-    uint256[23] private _gap;
+    uint256[22] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address admin_) public initializer {
-        if (admin_ == address(0)) revert ZeroAddress();
+    function initialize(address admin_, address weth_) public initializer {
+        if (admin_ == address(0) || weth_ == address(0)) revert ZeroAddress();
         __UUPSUpgradeable_init();
         __ERC20_init("Grinders Artificial Index", "GRAI");
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         grinders = IGrinders(address(this));
         treasury = admin_;
+        weth = weth_;
         config = ProtocolConfig({
             treasuryShare: 2_000, // 20%
             bribePremiumBps: 2_00, // 2%
@@ -587,6 +592,12 @@ contract GRAI is
         uint256 graiAmount
     ) public view returns (address[] memory assetOuts, uint256[] memory amounts) {
         if (!liquidation) revert LiquidationClosed();
+        /// @dev Consolidation window: when liquidation opens, backing is still on Grinders and
+        ///      custodians, while `liquidate` pays only from tokens already held here. Blocking
+        ///      claims until `liquidationPeriod` elapses gives keepers time to run permissionless
+        ///      `Grinders.liquidate` sweeps; without it, early redeemers could burn shares and cut
+        ///      `totalValue` while `previewLiquidate` returns zero assets, forfeiting backing to
+        ///      later claimants.
         if (block.timestamp < liquidationAt + config.liquidationPeriod) revert LiquidationDelay();
         uint256 supply = totalSupply();
         uint256 holderAmount = balanceOf(holder) + votes[holder].amount;
@@ -721,12 +732,17 @@ contract GRAI is
         if (!ok) revert EthTransferFailed();
     }
 
+    /// @dev Native ETH is pushed first. If the recipient rejects it (no payable fallback), wrap via
+    ///      `weth` and ERC20-transfer so bribes / liquidations / treasury cuts still settle.
     function _withdraw(address to, address asset, uint256 amount) internal {
         if (asset == address(0)) {
             if (to == address(0)) revert ZeroAddress();
             if (amount == 0) revert AmountZero();
             (bool ok,) = to.call{value: amount}("");
-            if (!ok) revert EthTransferFailed();
+            if (!ok) {
+                IWETH(weth).deposit{value: amount}();
+                IERC20(weth).safeTransfer(to, amount);
+            }
         } else {
             IERC20(asset).safeTransfer(to, amount);
         }
