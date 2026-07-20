@@ -59,6 +59,40 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
 
     receive() external payable {}
 
+    /// @inheritdoc IGrinders
+    /// @dev GRAI-only caller. Executes `target.call(swapCalldata)` against settlement inventory
+    ///      already forwarded by GRAI and forwards any GRAI received here back to GRAI.
+    ///      Upgrade surface for buyback routing lives here rather than on GRAI.
+    function buyback(bytes calldata data) external returns (uint256 payment, uint256 graiOut) {
+        _requireGrai();
+
+        (address target, bytes memory swapData) = abi.decode(data, (address, bytes));
+        if (target == address(0)) revert TargetZero();
+
+        address settlementAsset = grai.settlementAsset();
+        uint256 amount = balance(settlementAsset);
+        if (amount == 0) revert AmountZero();
+
+        uint256 settlementBefore = amount;
+        uint256 graiBefore = grai.balanceOf(address(this));
+
+        bool ok;
+        if (settlementAsset == address(0)) {
+            (ok,) = target.call{value: amount}(swapData);
+        } else {
+            IERC20(settlementAsset).forceApprove(target, amount);
+            (ok,) = target.call(swapData);
+            IERC20(settlementAsset).forceApprove(target, 0);
+        }
+        if (!ok) revert SwapFailed();
+
+        uint256 settlementAfter = balance(settlementAsset);
+        if (settlementAfter >= settlementBefore) revert SwapFailed();
+        payment = settlementBefore - settlementAfter;
+        graiOut = grai.balanceOf(address(this)) - graiBefore;
+        if (graiOut > 0) grai.transfer(address(grai), graiOut);
+    }
+
     function allocate(address custodian, address asset, uint256 amount) public onlyOwner {
         _requireCustodian(custodian);
         if (amount == 0) revert AmountZero();
@@ -263,6 +297,10 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
 
     function _requireCustodian(address account) internal view {
         if (!isCustodian(account)) revert UnknownCustodian();
+    }
+
+    function _requireGrai() internal view {
+        if (msg.sender != address(grai)) revert NotGrai();
     }
 
     function _requireLiquidation() internal view {
