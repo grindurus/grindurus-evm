@@ -1,137 +1,182 @@
 # GRAI — Grinders Artificial Index
 
-GRAI is a synthetic, USD-denominated index/share token backed by a two-tranche
-(senior/junior) NAV vault. Users deposit a supported asset and receive GRAI minted at the
-current NAV (Net Asset Value); on burn they redeem a proportional share of the senior
-(idle) reserve.
+GRAI is a USD-denominated fund-share token. Users `deposit` a supported asset
+into `Grinders` custody and receive GRAI at the current book value. Redemption
+is disabled during normal operation and becomes available only after liquidation opens.
 
-The price of one GRAI equals `NAV / totalSupply`. As the protocol's assets earn yield, NAV
-grows and each GRAI becomes worth more — even without new tokens being minted. It is, in
-effect, a tokenized fund share.
+Protocol yield flows through `distribute`: a global `treasuryShare` cut goes to `treasury`; the
+remainder is Dutch-auctioned (or kept when it is already `settlementAsset`).
 
-## Tranche model
+Buyback inventory (`settlementAsset` retained from bribes and settlement-yield) is swapped for GRAI
+via **`Grinders.buyback`**; acquired GRAI funds vote rewards for escrowed voters.
 
-Each supported asset is split across two on-chain stores:
-
-- **Senior vault (idle reserve)** — the calm, liquid portion. Burns (`burn`) are paid out
-  exclusively from here, so it backs instant redemptions.
-- **Junior vault (active capital)** — routed out to external strategies (custody wallets)
-  via `allocate`, where it earns yield that flows back through `distribute`.
-
-On every `mint` the deposit is divided between the two stores according to `mintSplit`
-(default 50% / 50%). Returned yield is divided by `yieldSplit` (default 80% to senior, which
-raises NAV for all holders, and 20% to the treasury).
-
-Both vaults are **multi-asset**: a single `SeniorVault` and a single `JuniorVault` hold all
-registered assets (ERC-20 and native ETH). Native ETH is represented by `address(0)`.
-
-## Architecture
+## Model
 
 ```
-                     ┌─────────────────────────────────────────────┐
-                     │  GRAI (UUPS upgradeable ERC20 + core)       │
-                     │  name: Grinders Artificial Index, symbol GRAI│
-                     │  mint / burn / allocate / distribute / NAV    │
-                     │  ERC-1046 tokenURI                            │
-                     └───────────────┬─────────────────────────────┘
-                                     │ proprietor
-                     ┌───────────────┴───────────────┐
-                     ▼                               ▼
-          ┌────────────────────┐         ┌────────────────────┐
-          │  SeniorVault        │         │  JuniorVault        │
-          │  (multi-asset idle) │         │  (multi-asset active)│
-          └────────────────────┘         └────────────────────┘
-                     ▲
-                     │ getPrice(asset)
-          ┌──────────┴──────────────────┐
-          │  PriceOracleRouter (UUPS)   │
-          │  Chainlink / Pyth / Custom  │
-          └─────────────────────────────┘
+deposit(asset) →  asset to Grinders  →  GRAI issued at book value (totalValue ↑)
+                      ↓
+              Grinders / custodians earn yield
+                      ↓
+distribute(asset)          [custodian or any payer]
+   ├─ treasuryShare → treasury
+   └─ yieldShare
+        ├─ asset == settlementAsset → stay on GRAI
+        └─ otherwise → Dutch auction → buyers pay settlementAsset into GRAI
+                      ↓
+fill(asset)                [permissionless]
+   buyer receives yield asset; settlementAsset payment accrues on GRAI
+                      ↓
+bribe(voter)               [permissionless; works even during liquidation]
+   briber pays settlementAsset; voter gets book body; premium → treasury / buyback inventory
+                      ↓
+buyback(data)              [ADMIN_ROLE on GRAI]
+   GRAI forwards settlement → Grinders → router swap → GRAI; vote rewards credited
 ```
 
 | Contract | Role |
 |----------|------|
-| `GRAI` | UUPS upgradeable ERC20 + protocol core. Asset registry, NAV accounting, `mint`/`burn`/`allocate`/`distribute`. Deploys one `SeniorVault` and one `JuniorVault` in `initialize`. Implements [ERC-1046](https://eips.ethereum.org/EIPS/eip-1046) via `tokenURI()`. |
-| `SeniorVault` / `JuniorVault` | Thin wrappers over `VaultBase`. Senior holds idle reserve (source of burns); junior holds active capital routed to custody. Both accept ERC-20 and native ETH (`address(0)`). |
-| `VaultBase` | Multi-asset custody: `balance(asset)`, `deposit(asset, amount)`, `withdraw(asset, to, amount)`. Only the proprietor (`GRAI`) may move funds. |
-| `PriceOracleRouter` | UUPS upgradeable oracle router. Maps each asset address to a Chainlink, Pyth, or custom on-chain price feed. Enforces positivity and `maxStaleness` (default 1 hour). |
+| `GRAI` | UUPS ERC20 fund share + oracle router + yield auctions + vote/liquidation/buyback entry. Implements [ERC-1046](https://eips.ethereum.org/EIPS/eip-1046). |
+| `Grinders` | ERC-721 **Grinders Custodians** collection, custodian proxy wallets, `allocate` / `deallocate`, **buyback swap routing** (upgrade surface for DEX calls). |
+| `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
+| `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
+| `PriceOracleRouter` | Base of `GRAI`. Chainlink / Pyth / custom feeds per asset. |
 
-There is no separate `GRAIVault` contract and no per-asset vault clones. Oracle adapters
-(`PythPriceFeed`, `CustomPriceFeed`) are not deployed separately — feed logic lives inside
-`PriceOracleRouter`.
+Native ETH is `address(0)`.
+
+## Grinders & custodians
+
+Each `Grinders.mint(custodianKind, base, quote, owner)` deploys an ERC-1967 proxy custodian wallet
+(NFT `#id`) and registers it in the custodian index. The NFT owner controls swaps; Grinders owner
+(`allocate`) moves working capital from the Grinders reserve into custodian wallets.
+
+| Kind constant | Implementation | Swap path |
+|---------------|----------------|-----------|
+| `keccak256("grindurus.custodian.explicit_swap")` | `SwapCustodian` | Arbitrary router `call` + on-chain price limit |
+| `keccak256("grindurus.custodian.cow")` | `CoWCustodian` | CoW Protocol EIP-1271 orders |
+| `keccak256("grindurus.custodian.lifi")` | `LiFiCustodian` | LiFi routing |
+
+`allocated[custodian][asset]` is an issuance ledger only — not a deallocate cap (custodians may
+return a different token/size after swaps).
 
 ## Lifecycle
 
 ```
-initialize(admin, oracle, treasury)   // deploys Senior + Junior vaults, sets tokenURI
+initialize(admin, weth)
    ↓
-oracle.addChainlinkFeed / addPythFeed / addCustomFeed   // register price per asset
-grai.addAsset(asset)                                     // register asset in GRAI
+setFeed(asset, feed) + setAssetConfig(paused)   // list asset
+setProtocolConfig({ treasuryShare, bribePremiumBps, … })
+setSettlementAsset(usdc)
+setGrinders(grinders)
    ↓
-mint(asset, amount)   → deposit split by mintSplit (senior/junior), GRAI minted at NAV
+deposit(asset, amount)                         // capital → Grinders; GRAI at book value
    ↓
-allocate(asset, custody, amount)   → junior capital sent to an external strategy wallet
-   ↓ (strategy earns yield)
-distribute(asset, yieldAmount)     → yield split by yieldSplit: senior (NAV ↑) + treasury
+distribute(asset, yieldAmount)                 // treasury skim + auction or retain settlement
    ↓
-burn(graiAmount)   → redeem a proportional share of senior idle per asset
+fill(asset, amount, paymentMax)                // buy yield lot; pay settlementAsset
+   ↓
+vote(graiAmount) / bribe(voter, graiAmount)    // liquidation quorum + buyouts
+   ↓
+resolve()                                      // open/close liquidation (ADMIN_ROLE)
+   ↓
+Grinders.liquidate(…) + GRAI.liquidate(…)     // sweep custodians; pro-rata redeem basket
+   ↓
+buyback(data)                                  // swap settlement inventory → GRAI → vote rewards
 ```
 
-For native ETH use `address(0)` as the asset and call `mint` / `distribute` with `{value: amount}`.
+For native ETH call `deposit` / `distribute` / `fill` / `bribe` with `{value: …}` when required.
 
-## Tokenomics (USD scaled to 18 decimals)
+## Tokenomics (USD scaled to 6 decimals)
 
-- `depositValue = amount * price * 10^18 / (10^assetDecimals * 10^priceDecimals)`
-- mint: bootstrap `grai = depositValue`; otherwise `grai = depositValue * supply / totalValue`
-- burn: `burnValue = graiAmount * totalValue / supply`; redeem per asset `= graiAmount * seniorIdle / supply`
-- splits (bps, 10000 = 100%): default `mintSplit = 5000`, `yieldSplit = 8000`
-- price staleness window: 1 hour (`PriceOracleRouter.maxStaleness`, configurable)
+- `depositValue = usdValue(asset, amount)` (oracle; `USD_DECIMALS = 6`)
+- **deposit:** `graiOut = depositValue * totalSupply / totalValue`; initial deposit is 1 GRAI per $1
+- **liquidate during open liquidation only** — burns GRAI for a pro-rata share of every asset
+  held by GRAI; Grinders returns liquidated custodian assets by transferring them to GRAI;
+  after the claim window closes via `resolve`, leftover balances return to Grinders and unclaimed GRAI
+  retains its proportionally reduced book value
+- **distribute:** `treasuryShare = received * config.treasuryShare / 10000`, rest auctioned as yield
+- **auction:** one open lot per sold asset; `maxPayment` = oracle fair value of the lot in
+  `settlementAsset` units; price decays linearly to **0** over `config.auctionDuration` (default
+  **365 days**); repeated distributes merge inventory and restart the clock at the new fair value
+- **fill:** buyer receives the yield asset; `settlementAsset` payment accrues on GRAI
+  (partial fills supported; zero price after duration expiry is valid)
+- **bribe:** `previewBribe` prices book value + premium in `settlementAsset`; body goes to voter,
+  premium split like yield (`treasuryShare` to treasury, remainder stays on GRAI as buyback inventory)
+- **buyback:** admin forwards all GRAI-held `settlementAsset` to Grinders, Grinders executes
+  `target.call(swapCalldata)`, forwards received GRAI back; GRAI credits `rewardPerVote` /
+  `pendingVoteRewards` from the GRAI balance delta
 
-> Because burns are paid only from the senior reserve, instant exit liquidity is bounded by
-> the senior idle balance — this is the intended tranche design, not a bug.
+> GRAI holders do not claim distributed yield directly. Yield is sold for `settlementAsset`, which
+> accrues on GRAI and is used by bribes / buybacks / vote rewards.
+
+### Buyback calldata
+
+GRAI is a thin entry point; router selection lives on upgradeable Grinders:
+
+```solidity
+// GRAI.buyback — ADMIN_ROLE
+bytes memory data = abi.encode(router, swapCalldata);
+(uint256 payment, uint256 graiOut) = grai.buyback(data);
+
+// Grinders.buyback — GRAI-only caller (called internally via CPI from GRAI)
+// Uses full settlement balance already forwarded by GRAI.
+```
+
+`payment` is the settlement spent; `graiOut` must be > 0 or GRAI reverts `InvalidBuyback`.
+Reverts while `liquidation` is open (same as `deposit`, `fill`, `distribute`, `buyback`).
 
 ## Access control
 
-`GRAI` uses OpenZeppelin `AccessControl` with two roles. `PriceOracleRouter` uses a separate
-`owner` (see [Production notes](#production-notes)).
+`GRAI` uses OpenZeppelin `AccessControlEnumerable` with three roles. The oracle router is a
+base class of `GRAI` (not a separate contract), so feed management is a `GRAI` role — there is
+no separate oracle `owner`.
 
 | Role | ID | Permissions |
 |------|----|-------------|
-| `DEFAULT_ADMIN_ROLE` | `0x00…00` (OZ default) | UUPS contract upgrades (`upgradeTo` / `upgradeToAndCall`); grant and revoke all roles |
-| `ADMIN_ROLE` | `keccak256("ADMIN_ROLE")` | Day-to-day protocol operations (see below) |
+| `DEFAULT_ADMIN_ROLE` | `0x00…00` (OZ default) | UUPS upgrades; protocol wiring (`setProtocolConfig`, `setGrinders`, `setTreasury`, `setSettlementAsset`); grant/revoke all roles |
+| `ADMIN_ROLE` | `keccak256("ADMIN_ROLE")` | Day-to-day asset ops: list/delist feeds, asset pause, liquidation resolve, **buyback** |
+| `GRINDERS_ROLE` | `keccak256("GRINDERS_ROLE")` | Granted to the wired Grinders proxy (internal; not for EOAs) |
 
-### `ADMIN_ROLE` functions
-
-- `addAsset` / `removeAsset`
-- `setPaused`
-- `setMintSplit` / `setYieldSplit`
-- `allocate`
-- `setTreasury`
-- `setTokenURI`
+`Grinders` is `OwnableUpgradeable`: owner registers custodian implementations, mints NFTs, `allocate`s
+capital. **`buyback` on Grinders is callable only by the wired GRAI contract** (`NotGrai` otherwise).
 
 ### `DEFAULT_ADMIN_ROLE` functions
 
-- `_authorizeUpgrade` (UUPS implementation swap)
+- `setProtocolConfig` — `treasuryShare`, `bribePremiumBps`, `liquidationQuorumBps`, auction/liquidation/redeem timing
+- `setGrinders` — wire the Grinders yield pool (validates `grinders.grai() == this`; grants `GRINDERS_ROLE`)
+- `setTreasury` — protocol profit recipient
+- `setSettlementAsset` — auction/bribe/buyback settlement asset (must have a feed; reverts with open auctions/votes)
+- `_authorizeUpgrade` — UUPS implementation swap
+
+### `ADMIN_ROLE` functions
+
+- `setFeed` — set a price feed (**lists** the asset); clearing it (`feedType = FEED_NONE`) **delists** it
+- `setAssetConfig` — per-asset `paused` flag only
+- `resolve` — flip the liquidation flag (opening requires vote quorum, `hasQuorum()`)
+- `buyback` — swap settlement inventory via Grinders and credit vote rewards
 
 ### Permissionless (any caller)
 
-- `mint`, `burn`, `distribute`
-- `nav`, `getAssets`, `getVaults`, `assetCount`, `tokenURI`
+- `deposit`, `distribute`, `fill`, `liquidate` (`liquidate` requires open liquidation)
+- `vote` (irreversible escrow toward liquidation quorum)
+- `bribe` (third-party or self buyout; **not** blocked during liquidation)
+- `Grinders.liquidate` / `Grinders.liquidate(fromId, toId)` while GRAI liquidation is open
+- views: `previewDeposit`, `previewFill`, `previewBribe`, `previewLiquidate`, `getAssets`, `getAuctions`, `getVoters`, `balance`, `tokenURI`
 
-On deploy, `initialize(admin, …)` grants **both** roles to the same `admin` address. For
-production, split them across separate multisigs:
+On deploy, `initialize(admin, weth)` grants `DEFAULT_ADMIN_ROLE` + `ADMIN_ROLE` to `admin`, sets
+`treasury = admin`, and points `grinders` at the contract itself until wired. For
+production, split roles across separate multisigs:
 
 ```solidity
-// Ops multisig — protocol management, no upgrade rights
+// Ops multisig — asset/liquidation/buyback ops, no upgrade or wiring rights
 grai.grantRole(grai.ADMIN_ROLE(), opsMultisig);
 grai.revokeRole(grai.ADMIN_ROLE(), deployer);
 
-// Upgrade multisig — implementation upgrades only
+// Upgrade/wiring multisig — upgrades + set{ProtocolConfig,Grinders,Treasury,SettlementAsset}
 grai.grantRole(grai.DEFAULT_ADMIN_ROLE(), upgradeMultisig);
 grai.revokeRole(grai.DEFAULT_ADMIN_ROLE(), deployer);
 ```
 
-`DEFAULT_ADMIN_ROLE` is the role admin for `ADMIN_ROLE` and can grant or revoke it.
+`DEFAULT_ADMIN_ROLE` is the role admin for every role and can grant or revoke it.
 
 ## Usage
 
@@ -144,38 +189,93 @@ forge fmt
 
 ### Deploy
 
-The deploy script creates **six** on-chain contracts: two implementation contracts, two
-ERC-1967 proxies (`GRAI`, `PriceOracleRouter`), and two vaults (`SeniorVault`, `JuniorVault`
-— deployed inside `GRAI.initialize`).
+`script/Deploy.s.sol` uses the CREATE2 factory (Nick's deterministic deployer) to create
+**four** contracts at deterministic addresses — the `GRAI` implementation + ERC-1967 proxy and
+the `Grinders` implementation + ERC-1967 proxy — then wires `GRAI.setGrinders(grinders)`.
 
 ```shell
-ADMIN=0x... TREASURY=0x... forge script script/Deploy.s.sol \
+# Predict addresses (no broadcast)
+PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
+
+# Deploy
+PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy \
   --rpc-url <your_rpc_url> --broadcast
 ```
 
-After deployment, register each asset on the oracle, then add it to GRAI:
+The deployer (`vm.addr(PRIVATE_KEY)`) becomes `admin`. Optional env vars split roles at deploy
+time: `OPS_MULTISIG` (receives `ADMIN_ROLE`), `UPGRADE_MULTISIG` (receives
+`DEFAULT_ADMIN_ROLE` and the `Grinders` ownership). `CREATE2_SALT_TAG` changes the salt
+namespace; `DRY_RUN=1` predicts without broadcasting.
+
+After deployment, list each asset by setting its feed (this also registers it in `GRAI`), then
+wire protocol config. All calls require `ADMIN_ROLE` unless noted:
 
 ```solidity
 // Chainlink (Ethereum mainnet USDC/USD)
-oracle.addChainlinkFeed(USDC, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6);
-grai.addAsset(USDC);
+grai.setFeed(USDC, IPriceOracleRouter.Feed({
+    feedType: 2, // FEED_CHAINLINK
+    asset: USDC,
+    source: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6, // USDC/USD aggregator
+    data: bytes32(0),
+    decimals: 0,          // read from the aggregator
+    storedPrice: 0,
+    storedUpdatedAt: 0,
+    maxStaleness: 1 hours
+}));
+grai.setAssetConfig(USDC, IGRAI.AssetConfig({ asset: USDC, id: 0, paused: false }));
 
-// Pyth (any network — pyth contract is per-network, priceId is shared)
-oracle.addPythFeed(WETH, PYTH, 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace);
-grai.addAsset(WETH);
+// Global treasury cut (20%) and bribe premium (2%) — DEFAULT_ADMIN_ROLE
+grai.setProtocolConfig(IGRAI.ProtocolConfig({
+    treasuryShare: 2_000,
+    bribePremiumBps: 200,
+    liquidationQuorumBps: 6_667,
+    auctionDuration: uint32(365 days),
+    liquidationPeriod: uint32(24 hours),
+    redeemPeriod: uint32(7 days)
+}));
 
-// Custom on-chain price (oracle signer pushes via setCustomPrice)
-oracle.addCustomFeed(TOKEN, 8, oracleSigner);
-grai.addAsset(TOKEN);
+// Pyth (source = per-network Pyth contract, data = shared price id)
+grai.setFeed(WETH, IPriceOracleRouter.Feed({
+    feedType: 3, // FEED_PYTH
+    asset: WETH,
+    source: 0x4305FB66699C3B2702D4d05CF36551390A4c69C6, // Ethereum Pyth
+    data: 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH/USD price id
+    decimals: 0,          // derived from Pyth expo
+    storedPrice: 0,
+    storedUpdatedAt: 0,
+    maxStaleness: 1 hours
+}));
 
-// Native ETH (use ETH/USD feed on address(0))
-oracle.addChainlinkFeed(address(0), 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
-grai.addAsset(address(0));
-// mint: grai.mint{value: 1 ether}(address(0), 1 ether);
+// Native ETH — use address(0) with an ETH/USD feed
+grai.setFeed(address(0), IPriceOracleRouter.Feed({
+    feedType: 2,
+    asset: address(0),
+    source: 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, // ETH/USD aggregator
+    data: bytes32(0),
+    decimals: 0,
+    storedPrice: 0,
+    storedUpdatedAt: 0,
+    maxStaleness: 1 hours
+}));
+// deposit ETH: grai.deposit{value: 1 ether}(address(0), 1 ether);
 ```
 
-Post-deploy admin calls require `ADMIN_ROLE` on `GRAI` and `owner` on `PriceOracleRouter`.
-See [Access control](#access-control).
+`cfg.asset` and `cfg.id` in `setAssetConfig` are ignored (the `asset` param and internal index
+are authoritative). To **delist** an asset, pause it, drain its balance, then
+`setFeed(asset, feed)` with `feedType = FEED_NONE` (0).
+
+Register custodian kinds on Grinders (owner), then mint custodian NFTs:
+
+```solidity
+grinders.set(keccak256("grindurus.custodian.explicit_swap"), swapCustodianImpl);
+address custodian = grinders.mint(
+    keccak256("grindurus.custodian.explicit_swap"),
+    USDC,
+    WETH,
+    grinder
+);
+grinders.allocate(custodian, USDC, amount);
+```
 
 ## Chainlink price feed addresses (mainnets)
 
@@ -223,16 +323,21 @@ before deploying.
 ## Pyth price feeds (any network)
 
 [Pyth](https://pyth.network) is a *pull* oracle: one contract per network, assets identified
-by a network-agnostic `bytes32` **price id**. The router reads Pyth directly via
-`addPythFeed(asset, pyth, priceId)` — no separate adapter contract is needed.
+by a network-agnostic `bytes32` **price id**. `GRAI` reads Pyth directly through `setFeed`
+(`feedType = FEED_PYTH`, `source = pyth`, `data = priceId`) — no separate adapter contract is
+needed.
 
 ```solidity
-oracle.addPythFeed(
-    WETH,
-    0x4305FB66699C3B2702D4d05CF36551390A4c69C6, // Ethereum Pyth contract
-    0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace  // ETH/USD price id
-);
-grai.addAsset(WETH);
+grai.setFeed(WETH, IPriceOracleRouter.Feed({
+    feedType: 3, // FEED_PYTH
+    asset: WETH,
+    source: 0x4305FB66699C3B2702D4d05CF36551390A4c69C6, // Ethereum Pyth contract
+    data: 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH/USD price id
+    decimals: 0,
+    storedPrice: 0,
+    storedUpdatedAt: 0,
+    maxStaleness: 1 hours
+}));
 ```
 
 A Pyth price is a fixed-point number `price * 10^expo`; the router maps the mantissa onto
@@ -266,7 +371,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 | USDT/USD | `0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b` |
 | ARB/USD  | `0x3fa4252848f9f0a1480be62745a4629d9eb1322aebab8a791e344b3b9c1adcf5` |
 
-### Common USDC token addresses (for `addAsset`)
+### Common USDC token addresses (for `setFeed` / `setAssetConfig`)
 
 | Network | USDC address |
 |---------|--------------|
@@ -278,20 +383,25 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 ## Production notes
 
 - Split GRAI roles across separate multisigs + timelocks:
-  - **`ADMIN_ROLE`** — ops (assets, splits, allocate, treasury, tokenURI)
-  - **`DEFAULT_ADMIN_ROLE`** — upgrades only
-- Use a separate multisig + timelock for `owner` on `PriceOracleRouter`.
+  - **`ADMIN_ROLE`** — asset ops (`setFeed`, `setAssetConfig`, `resolve`, `buyback`)
+  - **`DEFAULT_ADMIN_ROLE`** — upgrades + wiring (`setProtocolConfig` / `setGrinders` / `setTreasury` / `setSettlementAsset`)
+- **`buyback` router calldata is privileged** — treat Grinders upgrade authority and buyback callers as high-trust (arbitrary `target.call` on settlement inventory).
 - On L2s (Arbitrum, Base, Optimism), additionally check the Chainlink **L2 Sequencer Uptime
   Feed** before trusting a price, and apply a grace period after sequencer recovery:
   - Arbitrum: `0xFdB631F5EE196F0ed6FAa767959853A9F217697D`
   - Base: `0xBCF85224fc0756B9Fa45aA7892530B47e10b6433`
   - Optimism: `0x371EAD81c9102C9BF4874A9075FFFf170F2Ee389`
-- For assets without a Chainlink or Pyth feed, use `addCustomFeed` and keep the price fresh
-  via an off-chain keeper calling `setCustomPrice`.
+- For assets without a Chainlink or Pyth feed, register a `FEED_CUSTOM` feed (`source` = a view
+  oracle returning `(price, priceDecimals, updatedAt)`, `data` = `bytes32(selector)`) and keep
+  the price fresh via an off-chain keeper.
 - Pyth is a **pull** oracle: the on-chain price only updates when someone submits an update.
   For Pyth-priced assets, run a keeper that periodically calls
   `IPyth.updatePriceFeeds{value: fee}(updateData)` (with `fee = getUpdateFee(updateData)`,
-  using update blobs from Hermes) so the price stays within `maxStaleness`; otherwise
-  `mint`/`burn` will revert with `stale price`.
-- Serve ERC-1046 metadata at `tokenURI()` (default `https://grindurus.xyz/metadata.json` set
-  in `initialize`; updatable via `setTokenURI`).
+  using update blobs from Hermes) so the price stays within `maxStaleness`; otherwise any path
+  that touches oracle pricing (`deposit`, `distribute` auctions, `fill` previews) will
+  revert with `StalePrice`.
+- ERC-1046 metadata is served at `tokenURI()` on GRAI and Grinders (`https://grindurus.xyz/metadata.json`).
+
+## Related
+
+- Solana port: [`../grindurus-solana/`](../grindurus-solana/)
