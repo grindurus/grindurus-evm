@@ -30,8 +30,7 @@ library GPv2Order {
     /// @dev EIP-712 typehash for CoW `Order`:
     ///      `keccak256("Order(address sellToken,address buyToken,address receiver,uint256 sellAmount,uint256 buyAmount,uint32 validTo,bytes32 appData,uint256 feeAmount,bytes32 kind,bool partiallyFillable,bytes32 sellTokenBalance,bytes32 buyTokenBalance)")`.
     ///      Prepended to the ABI-encoded struct fields inside `hash()` to form the EIP-712 struct hash.
-    bytes32 internal constant TYPE_HASH =
-        hex"d5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489"; // Order(...) per GPv2
+    bytes32 internal constant TYPE_HASH = hex"d5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489"; // Order(...) per GPv2
 
     function hash(Data memory order, bytes32 domainSeparator) internal pure returns (bytes32 orderDigest) {
         bytes32 structHash;
@@ -107,13 +106,9 @@ contract CoWCustodian is Custodian, IERC1271 {
         )
     );
 
-    function initialize(
-        address grinders_,
-        IERC20 baseAsset_,
-        IERC20 quoteAsset_
-    ) public override initializer {
+    function initialize(address grinders_, address baseAsset_, address quoteAsset_) public override initializer {
         __Custodian_init(grinders_, baseAsset_, quoteAsset_);
-        _approveVaultRelayer(baseAsset_, quoteAsset_);
+        _approveVaultRelayer(IERC20(baseAsset_), IERC20(quoteAsset_));
     }
 
     /// @inheritdoc Custodian
@@ -171,9 +166,9 @@ contract CoWCustodian is Custodian, IERC1271 {
         token.forceApprove(COW_VAULT_RELAYER, amount);
     }
 
-    function setAssets(IERC20 baseAsset_, IERC20 quoteAsset_) public override {
+    function setAssets(address baseAsset_, address quoteAsset_) public override {
         super.setAssets(baseAsset_, quoteAsset_);
-        _approveVaultRelayer(baseAsset_, quoteAsset_);
+        _approveVaultRelayer(IERC20(baseAsset_), IERC20(quoteAsset_));
     }
 
     function _approveVaultRelayer(IERC20 base_, IERC20 quote_) internal {

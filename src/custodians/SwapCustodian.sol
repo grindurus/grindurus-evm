@@ -27,8 +27,7 @@ contract SwapCustodian is Custodian {
     error NoTrade();
     error ExceededPriceLimit();
 
-    bytes32 private constant _CUSTODY_KIND =
-        0xed402d39d17fde1cee5497b1836db076721aeed07c6337ad6f981559e69383ad; // keccak256("grindurus.custodian.explicit_swap")
+    bytes32 private constant _CUSTODY_KIND = 0xed402d39d17fde1cee5497b1836db076721aeed07c6337ad6f981559e69383ad; // keccak256("grindurus.custodian.explicit_swap")
 
     event Swap(
         address indexed target,
@@ -44,11 +43,7 @@ contract SwapCustodian is Custodian {
         return _CUSTODY_KIND;
     }
 
-    function initialize(
-        address grinders_,
-        IERC20 baseAsset_,
-        IERC20 quoteAsset_
-    ) public override initializer {
+    function initialize(address grinders_, address baseAsset_, address quoteAsset_) public override initializer {
         __Custodian_init(grinders_, baseAsset_, quoteAsset_);
     }
 
@@ -80,6 +75,10 @@ contract SwapCustodian is Custodian {
         uint256 quoteDelta;
         uint256 executionPrice;
 
+        /// @dev The swap is considered settled in custody only when one asset balance decreases and
+        ///      the opposite asset balance increases on this contract. The increase proves that the
+        ///      bought leg was credited here, while two positive deltas imply a non-zero economic rate
+        ///      before integer rounding; `limitPrice` defines the acceptable execution bound.
         if (baseAfter < baseBefore && quoteAfter > quoteBefore) {
             baseDelta = baseBefore - baseAfter;
             quoteDelta = quoteAfter - quoteBefore;
