@@ -81,7 +81,7 @@ contract GRAI is
 
     /** SLOT end 20 + 1 + 6 */
 
-    /// @notice Canonical WETH used when a native ETH `_withdraw` is rejected by the recipient.
+    /// @notice Canonical WETH used when a native ETH push is rejected by the recipient.
     address public weth;
 
     /// @notice Bribe premium, liquidation quorum, and timing.
@@ -712,8 +712,14 @@ contract GRAI is
 
     function _sendEth(address to, uint256 amount) private {
         (bool ok,) = payable(to).call{value: amount}("");
-        if (!ok && to != treasury) (ok,) = payable(treasury).call{value: amount}("");
-        if (!ok) revert EthTransferFailed();
+        if (!ok) {
+            try IWETH(weth).deposit{value: amount}() {
+                IERC20(weth).safeTransfer(to, amount);
+            } catch {
+                (bool treasuryOk,) = payable(treasury).call{value: amount}("");
+                if (!treasuryOk) revert EthTransferFailed();
+            }
+        }
     }
 
     /// @dev Native ETH is pushed first. If the recipient rejects it (no payable fallback), wrap via
