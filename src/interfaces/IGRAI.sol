@@ -18,6 +18,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice An amount/limit is out of range (exceeds balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
     error Slippage();
+    error InvalidBuyback();
     error EthTransferFailed();
     error GrindersGraiMismatch();
     error ValueMismatch();
@@ -58,6 +59,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     }
 
     struct VoteEscrow {
+        /// @notice The account this vote escrow belongs to (mirrors the `votes` mapping key).
+        address voter;
         uint256 amount;
         /// @notice Timestamp of the latest `vote` (resets on each vote).
         uint48 votedAt;
@@ -96,7 +99,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     );
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
     event AuctionFill(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
-    event Buyback(address indexed target, uint256 payment, uint256 graiOut);
+    event Buyback(uint256 payment, uint256 graiOut);
     event Liquidate(address indexed account, uint256 graiAmount, uint256 depositValue);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event VoteReward(address indexed account, uint256 amount);
@@ -147,7 +150,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function votes(address account)
         external
         view
-        returns (uint256 amount, uint48 votedAt, uint32 id, uint256 rewardDebt, uint256 claimableReward);
+        returns (address voter, uint256 amount, uint48 votedAt, uint32 id, uint256 rewardDebt, uint256 claimableReward);
 
     function voters(uint256 index) external view returns (address);
 
@@ -210,11 +213,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    /// @notice Swap all GRAI-held `settlementAsset` through `target` for GRAI, held on this contract.
-    /// @dev DEX calldata must route the bought GRAI to this contract.
-    function buyback(address target, bytes calldata data, uint256 graiOutMin)
-        external
-        returns (uint256 payment, uint256 graiOut);
+    /// @notice Swap idle settlement inventory held on Grinders for GRAI.
+    /// @dev Forwards settlement from GRAI, then delegates to upgradeable `Grinders` for router calldata
+    ///      and swap execution. GRAI only measures the balance delta and credits vote rewards.
+    function buyback(bytes calldata data) external returns (uint256 payment, uint256 graiOut);
 
     /// @notice Pro-rata asset amounts paid for burning wallet-held and/or vote-escrowed GRAI.
     function previewLiquidate(address holder, uint256 graiAmount)

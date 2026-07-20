@@ -384,39 +384,22 @@ contract GRAI is
     //////////////////// BUYBACK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Approves the full ERC20 settlement balance (or forwards the full native balance), executes the
-    ///      DEX calldata, and clears approval. The bought-back GRAI is held on this contract.
-    function buyback(
-        address target,
-        bytes calldata data,
-        uint256 graiOutMin
-    ) public onlyRole(ADMIN_ROLE) returns (uint256 payment, uint256 graiOut) {
+    /// @dev Thin entry point: forward settlement inventory to Grinders, delegate swap execution,
+    ///      credit vote rewards from the GRAI balance delta. Router/target selection and swap
+    ///      mechanics live on upgradeable `Grinders`, keeping this path stable for a fixed GRAI deployment.
+    function buyback(bytes calldata data) public onlyRole(ADMIN_ROLE) returns (uint256 payment, uint256 graiOut) {
         if (liquidation) revert LiquidationOpen();
-        if (target == address(0)) revert TargetZero();
 
-        uint256 settlementBefore = balance(settlementAsset);
-        if (settlementBefore == 0) revert AmountZero();
+        uint256 settlementBalance = balance(settlementAsset);
+        if (settlementBalance > 0) _withdraw(address(grinders), settlementAsset, settlementBalance);
         uint256 graiBefore = balanceOf(address(this));
-
-        bool ok;
-        if (settlementAsset == address(0)) {
-            (ok,) = target.call{value: settlementBefore}(data);
-        } else {
-            IERC20 settlement = IERC20(settlementAsset);
-            settlement.forceApprove(target, settlementBefore);
-            (ok,) = target.call(data);
-            settlement.forceApprove(target, 0);
-        }
-        if (!ok) revert SwapFailed();
-
-        uint256 settlementAfter = balance(settlementAsset);
-        if (settlementAfter >= settlementBefore) revert SwapFailed();
-        payment = settlementBefore - settlementAfter;
-        graiOut = balanceOf(address(this)) - graiBefore;
-        if (graiOut < graiOutMin || graiOut == 0) revert Slippage();
+        (payment,) = grinders.buyback(data);
+        uint256 graiAfter = balanceOf(address(this));
+        graiOut = graiAfter - graiBefore;
+        if (graiOut == 0) revert InvalidBuyback();
 
         _distributeVoteRewards(graiOut);
-        emit Buyback(target, payment, graiOut);
+        emit Buyback(payment, graiOut);
     }
 
     //////////////////// VOTE ////////////////////
@@ -690,6 +673,7 @@ contract GRAI is
     }
 
     function _addVoter(address voter) private {
+        votes[voter].voter = voter;
         votes[voter].id = uint32(voters.length);
         voters.push(voter);
     }
