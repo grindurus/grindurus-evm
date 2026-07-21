@@ -187,19 +187,13 @@ contract GRAI is
             address asset = assetList[i];
             if (auctions[asset].startTime != 0) {
                 list[count] = asset;
-                unchecked {
-                    ++count;
-                }
+                unchecked { ++count; }
             }
-            unchecked {
-                ++i;
-            }
+            unchecked { ++i; }
         }
         if (buybackOpen) {
             list[count] = address(this);
-            unchecked {
-                ++count;
-            }
+            unchecked { ++count; }
         }
         assembly ("memory-safe") {
             mstore(list, count)
@@ -361,7 +355,6 @@ contract GRAI is
         address buyer = msg.sender;
 
         (uint256 amountOut, uint256 payment) = previewBuy(asset, amount, block.timestamp);
-        if (amountOut == 0) revert AmountZero();
         if (payment > paymentMax) revert Slippage();
 
         DutchAuction storage entry = auctions[asset];
@@ -394,6 +387,7 @@ contract GRAI is
         uint256 amount, 
         uint256 timestamp
     ) public view returns (uint256 amountOut, uint256 payment) {
+        if (asset == address(this)) revert AuctionNotFound();
         DutchAuction storage entry = auctions[asset];
         if (entry.startTime == 0) revert AuctionNotFound();
 
@@ -473,8 +467,8 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Briber pays `previewBribe` in `settlementAsset` into this contract. `bribeBody` is forwarded
-    ///      to the voter; `bribePremium` is split like yield — `config.treasuryCutBps` to treasury, remainder stays
-    ///      here as buyback inventory. Self-bribe therefore costs only the premium (body nets to self).
+    ///      to the voter; `bribePremium` is split like yield — `config.treasuryCutBps` to treasury, remainder
+    ///      listed via `_placeBuyback`. Self-bribe therefore costs only the premium (body nets to self).
     ///      Exit price is intentional book-only (`totalValue` = deposited capital via mint/deposit). Protocol
     ///      yield (Dutch lots, retained settlement inventory) is a separate pool and is not part of the bribe
     ///      settlement; accrued buyback vote rewards are still paid via `_payVoteReward`.
@@ -483,12 +477,11 @@ contract GRAI is
         address briber = msg.sender;
 
         uint256 bribeAmount = previewBribe(voter, graiAmount);
-        if (bribeAmount == 0) revert AmountZero();
-
         // `bribeAmount` is already in settlementAsset: strip the premium bps to recover body.
         uint256 bribeBody = (bribeAmount * BPS) / (BPS + config.bribePremiumBps);
         uint256 bribePremium = bribeAmount - bribeBody;
         uint256 treasuryCut = (bribePremium * config.treasuryCutBps) / BPS;
+        uint256 buybackAmount = bribePremium - treasuryCut;
 
         VoteEscrow storage entry = votes[voter];
         _accrueVoteReward(voter);
@@ -502,8 +495,9 @@ contract GRAI is
         _transfer(address(this), briber, graiAmount);
         _pay(briber, address(this), settlementAsset, bribeAmount);
 
-        if (bribeBody > 0) _withdraw(voter, settlementAsset, bribeBody);
+        if (buybackAmount > 0) _placeBuyback(buybackAmount);
         if (treasuryCut > 0) _withdraw(treasury, settlementAsset, treasuryCut);
+        if (bribeBody > 0) _withdraw(voter, settlementAsset, bribeBody);
 
         emit Bribe(briber, voter, graiAmount, bribeAmount, totalVoted);
     }
@@ -520,6 +514,7 @@ contract GRAI is
         uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (graiAmount * totalValue) / supply : 0;
         bribeAmount = settlementAmount(value) * (BPS + config.bribePremiumBps) / BPS;
+        if (bribeAmount == 0) revert AmountZero();
     }
 
     //////////////////// LIQUIDATE ////////////////////
@@ -720,8 +715,10 @@ contract GRAI is
     /// `maxPayment=$2000` unchanged → `entryValue=$1000`; `spotOld=0.5*$1000=$500`;
     /// `$500 <= $1000` → `$1000 + 1*$1000 = $2000` (not naive `$1500` for 1.5 WETH).
     ///
-    /// Clock restart is intentional: frequent `distribute` refreshes toward market instead
-    /// of decaying to a stale floor.
+    /// Clock restart (`startTime = now`) is intentional and OK even on dust `distribute`:
+    /// each `_place` also rebuilds `maxPayment` at the current (max) listing — Dutch restarts
+    /// from the top ask, not from a half-decayed stale price. Prefer market refresh over
+    /// letting permissionless decay lock in a free/near-floor clear.
     function _place(address asset, uint256 amount) internal {
         if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
 
@@ -747,6 +744,7 @@ contract GRAI is
         entry.initial = remaining;
         entry.maxPayment = maxPayment;
         entry.minPayment = 0;
+        // OK to refresh: paired with maxPayment rebuild above — auction restarts at max ask.
         entry.startTime = block.timestamp;
         entry.duration = config.auctionDuration;
         emit AuctionUpdate(asset, remaining, maxPayment, block.timestamp);
