@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC1046} from "./IERC1046.sol";
 import {IPriceOracleRouter} from "./IPriceOracleRouter.sol";
+import {IWETH} from "./IWETH.sol";
 
 interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error AssetUnknown();
@@ -44,17 +45,21 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         bool paused;
     }
 
-    /// @notice One Dutch auction of distributed yield for a single sold asset, paid in `settlementAsset`.
+    /// @notice One Dutch auction lot.
+    /// @dev Yield lots (`auctions[asset]`): `remaining`/`initial` = sold asset; `maxPayment`/`minPayment`
+    ///      = `settlementAsset` payment (oracle FV → usually 0). Buyback lot (`auctions[GRAI]`):
+    ///      `remaining`/`initial` = settlement listed for sale; `maxPayment`/`minPayment` = GRAI ask
+    ///      (mint-price max → 1% min over `duration`).
     struct DutchAuction {
         address asset;
         uint256 remaining;
         uint256 initial;
-        /// @notice Full-lot payment in `settlementAsset` units at auction start (oracle fair value).
+        /// @notice Full-lot Dutch start: settlement payment (yield) or GRAI ask (buyback).
         uint256 maxPayment;
-        /// @notice Full-lot payment in `settlementAsset` units after the Dutch auction ends.
+        /// @notice Full-lot Dutch end: settlement payment (yield) or GRAI ask (buyback).
         uint256 minPayment;
         uint256 startTime;
-        /// @notice Snapshot of `config.auctionDuration` at last `_put` (clock length for this lot).
+        /// @notice Snapshot of `config.auctionDuration` at last `_place` / `_placeBuyback`.
         uint32 duration;
     }
 
@@ -75,17 +80,20 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Bribe premium, liquidation quorum, treasury cut, and timing.
     struct ProtocolConfig {
         /// @notice Share of distributed yield and bribe premium sent to `treasury`, in bps.
-        uint16 treasuryShare;
+        uint16 treasuryCutBps;
+        /// @notice Protocol fee on `buy` settlement payment, in bps of gross payment; sent entirely to `treasury`.
+        /// @dev Must be ≤ `treasuryCutBps`. Remainder of the payment stays on GRAI as buyback inventory.
+        uint16 buyFeeBps;
         /// @notice Settlement payment for a vote buyout, in bps of book value.
         uint16 bribePremiumBps;
-        uint16 liquidationQuorumBps;
+        uint16 quorumBps;
         /// @notice Dutch auction duration from `maxPayment` to `minPayment`.
         uint32 auctionDuration;
-        /// @notice Delay after liquidation opens before `liquidate` (claim) is allowed.
+        /// @notice Delay after liquidation opens before `redeem` (claim) is allowed.
         /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
-        ///      where they sit as idle inventory for the subsequent pro-rata `liquidate` basket.
+        ///      where they sit as idle inventory for the subsequent pro-rata `redeem` basket.
         uint32 liquidationPeriod;
-        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `resolve`.
+        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `resettle`.
         uint32 redeemPeriod;
     }
 
@@ -98,24 +106,26 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         address indexed from, address indexed asset, uint256 yieldAmount, uint256 yieldShare, uint256 treasuryShare
     );
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
-    event AuctionFill(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
+    event AuctionBuy(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
     event Buyback(uint256 payment, uint256 graiOut);
-    event Liquidate(address indexed account, uint256 graiAmount, uint256 depositValue);
+    event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event VoteReward(address indexed account, uint256 amount);
     event Bribe(
         address indexed briber, address indexed voter, uint256 graiAmount, uint256 bribeAmount, uint256 totalVoted
     );
-    event Resolve(bool liquidation, uint256 totalVoted, uint256 supply);
+    event Liquidate(bool liquidation, uint256 totalVoted, uint256 supply);
+    event Resettle(uint256 totalVoted, uint256 supply);
     event ConfigUpdate(ProtocolConfig config);
 
     function config()
         external
         view
         returns (
-            uint16 treasuryShare,
+            uint16 treasuryCutBps,
+            uint16 buyFeeBps,
             uint16 bribePremiumBps,
-            uint16 liquidationQuorumBps,
+            uint16 quorumBps,
             uint32 auctionDuration,
             uint32 liquidationPeriod,
             uint32 redeemPeriod
@@ -158,10 +168,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function totalVoted() external view returns (uint256);
 
-    /// @notice True when voted GRAI is at least `config.liquidationQuorumBps` of `totalSupply`.
+    /// @notice True when voted GRAI is at least `config.quorumBps` of `totalSupply`.
     function hasQuorum() external view returns (bool);
 
-    /// @notice True after `resolve` opens until it closes.
+    /// @notice True after `liquidate` opens until `resettle` closes it.
     function liquidation() external view returns (bool);
 
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
@@ -180,7 +190,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function settlementAsset() external view returns (address);
 
     /// @notice Canonical WETH for ETH→WETH fallback when a native push is rejected.
-    function weth() external view returns (address);
+    function weth() external view returns (IWETH);
 
     function setSettlementAsset(address settlementAsset_) external;
 
@@ -193,14 +203,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
-    /// @notice Linear Dutch price: decays `maxPayment` → `minPayment` over `duration`.
-    function dutchPrice(uint256 maxPayment, uint256 minPayment, uint256 elapsed, uint256 duration)
+    /// @notice Linear Dutch amount: decays `maxAmount` → `minAmount` over `duration`.
+    function dutchAmount(uint256 maxAmount, uint256 minAmount, uint256 elapsed, uint256 duration)
         external
         pure
         returns (uint256);
 
     /// @notice Yield-asset out (capped to auction remaining) and dutch `settlementAsset` payment at `timestamp`.
-    function previewFill(address asset, uint256 amount, uint256 timestamp)
+    function previewBuy(address asset, uint256 amount, uint256 timestamp)
         external
         view
         returns (uint256 amountOut, uint256 payment);
@@ -209,23 +219,21 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
 
-    function fill(address asset, uint256 amount, uint256 paymentMax) external payable;
+    function buy(address asset, uint256 amount, uint256 paymentMax) external payable;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
     /// @notice Swap idle settlement inventory held on Grinders for GRAI.
-    /// @dev Forwards settlement from GRAI, then delegates to upgradeable `Grinders` for router calldata
-    ///      and swap execution. GRAI only measures the balance delta and credits vote rewards.
     function buyback(bytes calldata data) external returns (uint256 payment, uint256 graiOut);
 
     /// @notice Pro-rata asset amounts paid for burning wallet-held and/or vote-escrowed GRAI.
-    function previewLiquidate(address holder, uint256 graiAmount)
+    function previewRedeem(address holder, uint256 graiAmount)
         external
         view
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
     /// @notice Burn wallet-held and/or vote-escrowed GRAI for a pro-rata share of the liquidation basket.
-    function liquidate(uint256 graiAmount) external;
+    function redeem(uint256 graiAmount) external;
 
     /// @notice Escrow GRAI toward liquidation quorum. Exit via `bribe`: voter gets book value,
     ///         premium is skimmed to treasury / buyback inventory (self-bribe therefore costs the premium).
@@ -238,8 +246,11 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         briber receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice Toggle `liquidation`: opening (requires quorum) pauses all assets; closing is available
-    ///         after the liquidation and redeem periods, returns leftover balances to Grinders,
-    ///         and unpauses all assets. Unredeemed shares retain their book value.
-    function resolve() external;
+    /// @notice Open liquidation (requires quorum): pauses all assets and cancels open yield auctions
+    ///         into the redeem basket. Unredeemed shares retain their book value.
+    function liquidate() external;
+
+    /// @notice Close liquidation after `liquidationPeriod + redeemPeriod`: returns leftover balances
+    ///         to Grinders, unpauses assets, and resets `totalValue` to leftover basket NAV.
+    function resettle() external;
 }
