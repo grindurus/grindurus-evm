@@ -14,7 +14,7 @@ import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 
 /// @title GRAI (implementation)
 /// @notice Condition-redeemable fund-share ERC20: deposits issue GRAI at book value into Grinders; distributed yield is
-///         Dutch-auctioned into `settlementAsset`.
+///         Dutch-auctioned for GRAI (buyback pressure + vote rewards in one `buyback`).
 /// @dev Interact only via the ERC1967Proxy.
 contract GRAI is
     IGRAI,
@@ -48,10 +48,7 @@ contract GRAI is
     /// @notice Per-asset listing config (`id` indexes `assetList`, `paused` gates user flows).
     mapping(address asset => AssetConfig) public assets;
 
-    /// @notice One open Dutch auction of distributed yield per sold asset.
-    /// @dev Buyback Dutch lives at `auctions[address(this)]`: `remaining`/`initial` = settlement
-    ///      (USDC etc.) listed for sale; `maxPayment`/`minPayment` = GRAI sought for the full lot
-    ///      (mint-price max → 1% min over `duration`).
+    /// @notice One open Dutch auction per sold asset (`remaining` = asset qty; payment = GRAI).
     mapping(address asset => DutchAuction) public auctions;
 
     mapping(address custodian => mapping(address asset => uint256)) public yieldBy;
@@ -74,12 +71,12 @@ contract GRAI is
 
     /** SLOT BEGIN */
 
-    /// @notice Asset used for dutch auction settlement and bribes.
+    /// @notice Asset used for bribe payments (and retained when yield is already that asset).
     /// @dev If zero address, asset is the native token (ETH); otherwise, it's an ERC20.
     ///      SHOULD NOT (RFC 2119) be a fee-on-transfer or otherwise deflationary token:
-    ///      `buy` and `bribe` price outs from the nominal `_pay` amount, not the credited
-    ///      balance delta (unlike `deposit` / `distribute`).
-    address public settlementAsset;
+    ///      `bribe` prices from the nominal `_pay` amount, not the credited balance delta
+    ///      (unlike `deposit` / `distribute`).
+    address public bribeAsset;
 
     /// @notice True after `liquidate` opens until `resettle` closes it.
     bool public liquidation;
@@ -111,7 +108,6 @@ contract GRAI is
         weth = IWETH(weth_);
         config = ProtocolConfig({
             treasuryCutBps: 2_000,  // 20%
-            buyFeeBps: 2_00,        // 2%
             bribePremiumBps: 2_00,  // 2%
             quorumBps: 66_67, // 66.67%
             auctionDuration: uint32(365 days),
@@ -124,7 +120,6 @@ contract GRAI is
 
     function setProtocolConfig(ProtocolConfig calldata cfg) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (cfg.treasuryCutBps > BPS 
-            || cfg.buyFeeBps > BPS / 2
             || cfg.bribePremiumBps > BPS
             || cfg.quorumBps > BPS
         ) {
@@ -151,23 +146,12 @@ contract GRAI is
         emit TreasuryUpdate(treasury_);
     }
 
-    /// @notice Set the asset used for bribes, auction payments, and buybacks.
-    /// @dev Requires a price feed. Reverts while any Dutch lot is open (their `maxPayment` is
-    ///      denominated in the current settlement) or while votes are open (`bribe`/`previewBribe`
-    ///      settle in the live settlement asset). After the switch, any held balance of the
-    ///      previous settlement asset is listed via `_place` so it clears into the new settlement.
-    function setSettlementAsset(address settlementAsset_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (feeds[settlementAsset_].feedType == FEED_NONE) revert AssetUnknown();
-        if (getAuctions().length != 0) revert AuctionsOpen();
-        if (totalVoted > 0) revert VotesOpen();
-
-        address previous = settlementAsset;
-        settlementAsset = settlementAsset_;
-        emit SettlementAssetUpdate(settlementAsset_);
-
-        if (previous == settlementAsset_ || feeds[previous].feedType == FEED_NONE) return;
-        uint256 held = balance(previous);
-        if (held > 0) _place(previous, held);
+    /// @notice Set the asset used for bribe payments.
+    /// @dev Requires a price feed. Auctions price in GRAI, so open lots / votes do not block the switch.
+    function setBribeAsset(address bribeAsset_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (feeds[bribeAsset_].feedType == FEED_NONE) revert AssetUnknown();
+        bribeAsset = bribeAsset_;
+        emit BribeAssetUpdate(bribeAsset_);
     }
 
     receive() external payable {}
@@ -180,8 +164,7 @@ contract GRAI is
     /// @inheritdoc IGRAI
     function getAuctions() public view returns (address[] memory list) {
         uint256 len = assetList.length;
-        bool buybackOpen = auctions[address(this)].startTime != 0;
-        list = new address[](len + (buybackOpen ? 1 : 0));
+        list = new address[](len);
         uint256 count;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
@@ -190,10 +173,6 @@ contract GRAI is
                 unchecked { ++count; }
             }
             unchecked { ++i; }
-        }
-        if (buybackOpen) {
-            list[count] = address(this);
-            unchecked { ++count; }
         }
         assembly ("memory-safe") {
             mstore(list, count)
@@ -237,10 +216,10 @@ contract GRAI is
         return totalVoted * BPS >= totalSupply() * config.quorumBps;
     }
 
-    /// @notice Convert a USD amount (`USD_DECIMALS`) into `settlementAsset` base units via oracle.
-    function settlementAmount(uint256 usdAmount) public view returns (uint256) {
-        (uint256 price, uint8 pdec) = getPrice(settlementAsset);
-        uint8 adec = settlementAsset == address(0) ? 18 : IERC20Metadata(settlementAsset).decimals();
+    /// @notice Convert a USD amount (`USD_DECIMALS`) into `bribeAsset` base units via oracle.
+    function bribeAssetAmount(uint256 usdAmount) public view returns (uint256) {
+        (uint256 price, uint8 pdec) = getPrice(bribeAsset);
+        uint8 adec = bribeAsset == address(0) ? 18 : IERC20Metadata(bribeAsset).decimals();
         return (usdAmount * (10 ** adec) * (10 ** pdec)) / (price * (10 ** USD_DECIMALS));
     }
 
@@ -295,7 +274,7 @@ contract GRAI is
     //////////////////// DISTRIBUTE ////////////////////
 
     /// @notice Pull yield, send `config.treasuryCutBps` to treasury, and auction (or retain) `yieldCut`.
-    /// @dev If `asset == settlementAsset`, yield accrues directly on GRAI. Otherwise the
+    /// @dev If `asset == bribeAsset`, yield accrues directly on GRAI. Otherwise the
     ///      yield lot is merged into a 1-year Dutch auction restarting at current oracle fair value.
     function distribute(address asset, uint256 yieldAmount) public payable {
         if (liquidation) revert LiquidationOpen();
@@ -308,7 +287,7 @@ contract GRAI is
         uint256 yieldCut = received - treasuryCut;
 
         if (treasuryCut > 0) _withdraw(treasury, asset, treasuryCut);
-        if (yieldCut > 0 && asset != settlementAsset) _place(asset, yieldCut);
+        if (yieldCut > 0 && asset != bribeAsset) _place(asset, yieldCut);
 
         emit Distribute(msg.sender, asset, received, yieldCut, treasuryCut);
     }
@@ -336,7 +315,7 @@ contract GRAI is
     /// @dev Mints shares at book value: `graiOut = value * totalSupply / totalValue`, or `value` when
     ///      `totalValue == 0` (bootstrap). While `totalSupply == totalValue`, that is 1 GRAI per $1 book
     ///      (USD_DECIMALS). Yield held by GRAI is excluded from `totalValue` — it is a separate pool for
-    ///      `buy` / liquidation upside, not part of the deposit exchange rate.
+    ///      `buyback` / liquidation upside, not part of the deposit exchange rate.
     function previewDeposit(address asset, uint256 amount) public view returns (uint256 value, uint256 graiOut) {
         value = usdValue(asset, amount);
         graiOut = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
@@ -345,49 +324,40 @@ contract GRAI is
     //////////////////// AUCTION BUY ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Buyer pays gross `settlementAsset` into this contract and receives the yield asset.
-    ///      `config.buyFeeBps` of the settlement payment is sent to `treasury`; the remainder stays
-    ///      here as buyback inventory (`buyFeeBps` ≤ `treasuryCutBps`). The yield asset is not fee-bearing.
-    ///      `payment == 0` is intentional: the Dutch curve decays toward `minPayment` (often 0) so
-    ///      leftover yield inventory can be cleared for free once the clock expires / floors.
-    function buy(address asset, uint256 amount, uint256 paymentMax) public payable {
+    /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; GRAI payment funds vote rewards.
+    ///      `payment == 0` is intentional: the curve decays toward `minPayment` (usually 0) so leftover
+    ///      inventory can clear for free.
+    function buyback(address asset, uint256 amount) public {
         if (liquidation) revert LiquidationOpen();
         address buyer = msg.sender;
 
-        (uint256 amountOut, uint256 payment) = previewBuy(asset, amount, block.timestamp);
-        if (payment > paymentMax) revert Slippage();
+        (uint256 amountOut, uint256 payment) = previewBuyback(asset, amount, block.timestamp);
 
         DutchAuction storage entry = auctions[asset];
-        
-        uint256 remaining = entry.remaining;
-        uint256 newRemaining = remaining - amountOut;
+        uint256 newRemaining = entry.remaining - amountOut;
         if (newRemaining == 0) {
             delete auctions[asset];
         } else {
             entry.remaining = newRemaining;
         }
-        // payment may be 0 once the Dutch price has decayed — still deliver amountOut.
+
+        // payment may be 0 once the Dutch ask has decayed — still deliver amountOut.
         if (payment > 0) {
-            _pay(buyer, address(this), settlementAsset, payment);
-            uint256 buyFee = (payment * config.buyFeeBps) / BPS;
-            if (buyFee > 0) _withdraw(treasury, settlementAsset, buyFee);
-            uint256 buybackAmount = payment - buyFee;
-            if (buybackAmount > 0) _placeBuyback(buybackAmount);
+            _transfer(buyer, address(this), payment);
+            _distributeVoteRewards(payment);
         }
         _withdraw(buyer, asset, amountOut);
-        emit AuctionBuy(buyer, asset, amountOut, payment);
+        emit Buyback(buyer, asset, amountOut, payment);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Dutch payment in `settlementAsset`: `maxPayment` → `minPayment` over `entry.duration`
-    ///      (snapshotted from `config.auctionDuration` at `_place`), scaled by buy size.
-    ///      Caps buy to auction remaining. Zero payment after decay is OK.
-    function previewBuy(
+    /// @dev Dutch GRAI ask: `maxPayment` → `minPayment` over `entry.duration` (snapshotted from
+    ///      `config.auctionDuration` at `_place`), scaled by buy size. Caps to auction remaining.
+    function previewBuyback(
         address asset,
-        uint256 amount, 
+        uint256 amount,
         uint256 timestamp
     ) public view returns (uint256 amountOut, uint256 payment) {
-        if (asset == address(this)) revert AuctionNotFound();
         DutchAuction storage entry = auctions[asset];
         if (entry.startTime == 0) revert AuctionNotFound();
 
@@ -398,47 +368,14 @@ contract GRAI is
         amountOut = amount;
         uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
         uint256 ask = dutchAmount(entry.maxPayment, entry.minPayment, elapsed, entry.duration);
-        payment = entry.initial == 0 ? 0 : (ask * amountOut) / entry.initial;
-    }
-
-    //////////////////// BUYBACK ////////////////////
-
-    /// @inheritdoc IGRAI
-    /// @dev Forward settlement inventory to Grinders for a DEX swap into GRAI. If a buyback Dutch lot
-    ///      is open, `graiOut` must be ≥ the live Dutch GRAI ask (`maxPayment` → `minPayment` over
-    ///      `duration`, mint-price max floored at 1%). Clears the lot on success.
-    function buyback(bytes calldata data) public onlyRole(ADMIN_ROLE) returns (uint256 payment, uint256 graiOut) {
-        if (liquidation) revert LiquidationOpen();
-
-        DutchAuction storage lot = auctions[address(this)];
-        uint256 graiMin;
-        if (lot.startTime != 0) {
-            uint256 elapsed = block.timestamp > lot.startTime ? block.timestamp - lot.startTime : 0;
-            graiMin = dutchAmount(lot.maxPayment, lot.minPayment, elapsed, lot.duration);
-        }
-
-        uint256 graiBefore = balanceOf(address(this));
-        uint256 settlementBalance = balance(settlementAsset);
-        if (settlementBalance > 0) _withdraw(address(grinders), settlementAsset, settlementBalance);
-        (payment,) = grinders.buyback(data);
-        uint256 graiAfter = balanceOf(address(this));
-        graiOut = graiAfter - graiBefore;
-        if (graiOut == 0 || graiOut < graiMin) revert InvalidBuyback();
-
-        if (lot.startTime != 0) {
-            delete auctions[address(this)];
-            emit AuctionUpdate(address(this), 0, 0, 0);
-        }
-
-        _distributeVoteRewards(graiOut);
-        emit Buyback(payment, graiOut);
+        payment = entry.initial > 0 ? (ask * amountOut) / entry.initial : 0;
     }
 
     //////////////////// VOTE ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev Escrows GRAI toward liquidation quorum. Exit is via `bribe`: the voter receives book value
-    ///      in settlementAsset, while the bribe premium is skimmed to treasury / kept for buybacks.
+    ///      in bribeAsset, while the bribe premium is skimmed to treasury / listed for GRAI buy.
     function vote(uint256 graiAmount) public {
         if (liquidation) revert LiquidationOpen();
         if (graiAmount == 0) revert AmountZero();
@@ -466,22 +403,22 @@ contract GRAI is
     //////////////////// BRIBE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Briber pays `previewBribe` in `settlementAsset` into this contract. `bribeBody` is forwarded
+    /// @dev Briber pays `previewBribe` in `bribeAsset` into this contract. `bribeBody` is forwarded
     ///      to the voter; `bribePremium` is split like yield — `config.treasuryCutBps` to treasury, remainder
-    ///      listed via `_placeBuyback`. Self-bribe therefore costs only the premium (body nets to self).
+    ///      listed via `_place(bribeAsset, …)` (sold for GRAI). Self-bribe therefore costs only the premium.
     ///      Exit price is intentional book-only (`totalValue` = deposited capital via mint/deposit). Protocol
-    ///      yield (Dutch lots, retained settlement inventory) is a separate pool and is not part of the bribe
-    ///      settlement; accrued buyback vote rewards are still paid via `_payVoteReward`.
+    ///      yield (Dutch lots) is a separate pool and is not part of the bribe settlement; accrued vote
+    ///      rewards are still paid via `_payVoteReward`.
     function bribe(address voter, uint256 graiAmount) public payable {
         if (liquidation) revert LiquidationOpen();
         address briber = msg.sender;
 
         uint256 bribeAmount = previewBribe(voter, graiAmount);
-        // `bribeAmount` is already in settlementAsset: strip the premium bps to recover body.
+        // `bribeAmount` is already in bribeAsset: strip the premium bps to recover body.
         uint256 bribeBody = (bribeAmount * BPS) / (BPS + config.bribePremiumBps);
         uint256 bribePremium = bribeAmount - bribeBody;
         uint256 treasuryCut = (bribePremium * config.treasuryCutBps) / BPS;
-        uint256 buybackAmount = bribePremium - treasuryCut;
+        uint256 auctionAmount = bribePremium - treasuryCut;
 
         VoteEscrow storage entry = votes[voter];
         _accrueVoteReward(voter);
@@ -493,27 +430,27 @@ contract GRAI is
         if (voted == 0) _removeVoter(voter);
         
         _transfer(address(this), briber, graiAmount);
-        _pay(briber, address(this), settlementAsset, bribeAmount);
+        _pay(briber, address(this), bribeAsset, bribeAmount);
 
-        if (buybackAmount > 0) _placeBuyback(buybackAmount);
-        if (treasuryCut > 0) _withdraw(treasury, settlementAsset, treasuryCut);
-        if (bribeBody > 0) _withdraw(voter, settlementAsset, bribeBody);
+        if (auctionAmount > 0) _place(bribeAsset, auctionAmount);
+        if (treasuryCut > 0) _withdraw(treasury, bribeAsset, treasuryCut);
+        if (bribeBody > 0) _withdraw(voter, bribeAsset, bribeBody);
 
         emit Bribe(briber, voter, graiAmount, bribeAmount, totalVoted);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev `bribePremiumBps` of the book value of `graiAmount`, converted to `settlementAsset`.
+    /// @dev `bribePremiumBps` of the book value of `graiAmount`, converted to `bribeAsset`.
     ///      Book = `totalValue` (deposited capital), not live GRAI balances / yield inventory.
     function previewBribe(address voter, uint256 graiAmount) public view returns (uint256 bribeAmount) {
-        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
+        if (feeds[bribeAsset].feedType == FEED_NONE) revert BribeAssetUnset();
         if (graiAmount == 0) revert AmountZero();
         VoteEscrow storage entry = votes[voter];
         if (graiAmount > entry.amount) revert InvalidAmount();
 
         uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (graiAmount * totalValue) / supply : 0;
-        bribeAmount = settlementAmount(value) * (BPS + config.bribePremiumBps) / BPS;
+        bribeAmount = bribeAssetAmount(value) * (BPS + config.bribePremiumBps) / BPS;
         if (bribeAmount == 0) revert AmountZero();
     }
 
@@ -539,10 +476,6 @@ contract GRAI is
             assets[asset].paused = true;
             emit AssetConfigUpdate(asset, assets[asset]);
             unchecked { ++i; }
-        }
-        if (auctions[address(this)].startTime != 0) {
-            delete auctions[address(this)];
-            emit AuctionUpdate(address(this), 0, 0, 0);
         }
         liquidation = true;
         liquidationAt = uint48(block.timestamp);
@@ -637,8 +570,8 @@ contract GRAI is
     ///      Sets `totalValue` to leftover basket NAV so mint/bribe book matches reserves (up or down).
     ///      If no shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
     function resettle() public onlyRole(ADMIN_ROLE) {
-        if (!liquidation) revert LiquidationClosed();
-        if (block.timestamp < liquidationAt + config.liquidationPeriod + config.redeemPeriod) {
+        if (!liquidation || liquidationAt == 0) revert LiquidationClosed();
+        if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
             revert RedeemPeriodActive();
         }
         uint256 totalNAV = 0;
@@ -664,87 +597,24 @@ contract GRAI is
 
     //////////////////// INTERNAL HELPERS ////////////////////
 
-    /// @dev List/merge settlement for sale at `auctions[address(this)]` against GRAI.
-    ///      `remaining`/`initial` = settlement posted; `maxPayment` = mint-price GRAI for the full lot;
-    ///      `minPayment` = 1% of that max. Restarts the Dutch clock on each top-up.
-    function _placeBuyback(uint256 amount) internal {
-        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
-        if (amount == 0) revert AmountZero();
-
-        DutchAuction storage entry = auctions[address(this)];
-        uint256 remaining = entry.remaining + amount;
-        (, uint256 graiMax) = previewDeposit(settlementAsset, remaining);
-        if (graiMax == 0) revert AmountZero();
-        uint256 graiMin = graiMax / 100; // 1% floor after full Dutch duration
-
-        entry.asset = address(this);
-        entry.remaining = remaining;
-        entry.initial = remaining;
-        entry.maxPayment = graiMax;
-        entry.minPayment = graiMin;
-        entry.startTime = block.timestamp;
-        entry.duration = config.auctionDuration;
-        emit AuctionUpdate(address(this), remaining, graiMax, block.timestamp);
-    }
-
-    /// @dev Merge `amount` into the asset auction and restart the Dutch clock.
-    ///
-    /// Pricing vs an open lot's entry (listed `maxPayment` for remaining):
-    /// ```
-    /// entryValue = maxPayment * oldRemaining / initial
-    /// spotOld    = settlementAmount(usdValue(asset, oldRemaining))
-    /// spotMax    = settlementAmount(usdValue(asset, oldRemaining + amount))
-    ///
-    /// if spotOld > entryValue  →  maxPayment = spotMax        (reprice up)
-    /// else                     →  maxPayment = entryValue + settlementAmount(usdValue(asset, amount))   (average)
-    /// ```
-    /// Fresh lots (`startTime == 0`) always use `spotMax`. Partial fills only shrink
-    /// `remaining`; `initial` and `maxPayment` stay until the next `_place`.
-    ///
-    /// Examples (WETH yield, USDC settlement, baseline oracle $2000/WETH):
-    /// | # | Scenario                  | Before merge        | +amount | Spot  | maxPayment | Naive spot | Rule     |
-    /// |---|---------------------------|---------------------|---------|-------|------------|------------|----------|
-    /// | 1 | fresh lot                 | —                   | 1 WETH  | $2000 | $2000      | $2000      | spot     |
-    /// | 2 | merge, spot unchanged     | 1 WETH, entry $2000 | 1 WETH  | $2000 | $4000      | $4000      | average  |
-    /// | 3 | merge, spot up            | 1 WETH, entry $2000 | 1 WETH  | $3000 | $6000      | $6000      | reprice  |
-    /// | 4 | merge, spot down          | 1 WETH, entry $2000 | 1 WETH  | $1000 | $3000      | $2000      | average  |
-    /// | 5 | partial fill + merge down | 0.5 WETH left of 1  | 1 WETH  | $1000 | $2000      | $1500      | average  |
-    /// | 6 | partial fill + merge up   | 0.5 WETH left of 1  | 1 WETH  | $3000 | $4500      | $4500      | reprice  |
-    ///
-    /// Case 5 detail: after half fill at t=0, `initial=1 WETH`, `remaining=0.5 WETH`,
-    /// `maxPayment=$2000` unchanged → `entryValue=$1000`; `spotOld=0.5*$1000=$500`;
-    /// `$500 <= $1000` → `$1000 + 1*$1000 = $2000` (not naive `$1500` for 1.5 WETH).
-    ///
-    /// Clock restart (`startTime = now`) is intentional and OK even on dust `distribute`:
-    /// each `_place` also rebuilds `maxPayment` at the current (max) listing — Dutch restarts
-    /// from the top ask, not from a half-decayed stale price. Prefer market refresh over
-    /// letting permissionless decay lock in a free/near-floor clear.
+    /// @dev Merge `amount` into the asset auction and restart the Dutch clock. Payment is always the
+    ///      current mint-price GRAI for the full lot (`previewDeposit`) — no average of a stale ask.
+    ///      Decays to `minPayment` (0) over `auctionDuration`. Clock restart is intentional: each
+    ///      `_place` rebuilds `maxPayment` at the live mint ask.
     function _place(address asset, uint256 amount) internal {
-        if (feeds[settlementAsset].feedType == FEED_NONE) revert SettlementAssetUnset();
+        if (asset == address(this)) revert AssetUnknown();
+        if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
 
         DutchAuction storage entry = auctions[asset];
-        uint256 oldRemaining = entry.remaining;
-        uint256 remaining = oldRemaining + amount;
-        uint256 spotMax = settlementAmount(usdValue(asset, remaining));
-        if (spotMax == 0) revert AmountZero();
-
-        uint256 maxPayment = spotMax;
-        if (entry.startTime != 0 && oldRemaining != 0) {
-            // Peak Dutch payment still attributable to `oldRemaining` at listed entry.
-            uint256 entryValue = entry.initial == 0 ? 0 : (entry.maxPayment * oldRemaining) / entry.initial;
-            uint256 spotOld = settlementAmount(usdValue(asset, oldRemaining));
-            if (spotOld <= entryValue) {
-                maxPayment = entryValue + settlementAmount(usdValue(asset, amount));
-                if (maxPayment == 0) revert AmountZero();
-            }
-        }
+        uint256 remaining = entry.remaining + amount;
+        (, uint256 maxPayment) = previewDeposit(asset, remaining);
+        if (maxPayment == 0) revert AmountZero();
 
         entry.asset = asset;
         entry.remaining = remaining;
         entry.initial = remaining;
         entry.maxPayment = maxPayment;
         entry.minPayment = 0;
-        // OK to refresh: paired with maxPayment rebuild above — auction restarts at max ask.
         entry.startTime = block.timestamp;
         entry.duration = config.auctionDuration;
         emit AuctionUpdate(asset, remaining, maxPayment, block.timestamp);

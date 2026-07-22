@@ -18,8 +18,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error AmountZero();
     /// @notice An amount/limit is out of range (exceeds balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
-    error Slippage();
-    error InvalidBuyback();
     error EthTransferFailed();
     error GrindersGraiMismatch();
     error ValueMismatch();
@@ -29,13 +27,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error LiquidationClosed();
     error LiquidationDelay();
     error RedeemPeriodActive();
-    error SettlementAssetUnset();
+    error BribeAssetUnset();
     error AuctionDurationTooShort();
-    error AuctionsOpen();
-    error VotesOpen();
-    error TargetZero();
-    error DataEmpty();
-    error SwapFailed();
 
     struct AssetConfig {
         /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
@@ -46,20 +39,18 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     }
 
     /// @notice One Dutch auction lot.
-    /// @dev Yield lots (`auctions[asset]`): `remaining`/`initial` = sold asset; `maxPayment`/`minPayment`
-    ///      = `settlementAsset` payment (oracle FV → usually 0). Buyback lot (`auctions[GRAI]`):
-    ///      `remaining`/`initial` = settlement listed for sale; `maxPayment`/`minPayment` = GRAI ask
-    ///      (mint-price max → 1% min over `duration`).
+    /// @dev `remaining`/`initial` = sold asset quantity; `maxPayment`/`minPayment` = full-lot GRAI ask
+    ///      (mint-price max → usually 0 over `duration`).
     struct DutchAuction {
         address asset;
         uint256 remaining;
         uint256 initial;
-        /// @notice Full-lot Dutch start: settlement payment (yield) or GRAI ask (buyback).
+        /// @notice Full-lot Dutch start: GRAI ask at listing (mint price).
         uint256 maxPayment;
-        /// @notice Full-lot Dutch end: settlement payment (yield) or GRAI ask (buyback).
+        /// @notice Full-lot Dutch end: GRAI ask after `duration` (usually 0).
         uint256 minPayment;
         uint256 startTime;
-        /// @notice Snapshot of `config.auctionDuration` at last `_place` / `_placeBuyback`.
+        /// @notice Snapshot of `config.auctionDuration` at last `_place`.
         uint32 duration;
     }
 
@@ -81,9 +72,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     struct ProtocolConfig {
         /// @notice Share of distributed yield and bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
-        /// @notice Protocol fee on `buy` settlement payment, in bps of gross payment; sent entirely to `treasury`.
-        /// @dev Must be ≤ `treasuryCutBps`. Remainder of the payment stays on GRAI as buyback inventory.
-        uint16 buyFeeBps;
         /// @notice Settlement payment for a vote buyout, in bps of book value.
         uint16 bribePremiumBps;
         uint16 quorumBps;
@@ -101,13 +89,12 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     event AssetConfigUpdate(address indexed asset, AssetConfig cfg);
     event Deposit(address indexed depositor, uint256 graiOut, address indexed asset, uint256 amount, uint256 value);
     event TreasuryUpdate(address indexed treasury);
-    event SettlementAssetUpdate(address indexed settlementAsset);
+    event BribeAssetUpdate(address indexed bribeAsset);
     event Distribute(
         address indexed from, address indexed asset, uint256 yieldAmount, uint256 yieldShare, uint256 treasuryShare
     );
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
-    event AuctionBuy(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
-    event Buyback(uint256 payment, uint256 graiOut);
+    event Buyback(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
     event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event VoteReward(address indexed account, uint256 amount);
@@ -123,7 +110,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (
             uint16 treasuryCutBps,
-            uint16 buyFeeBps,
             uint16 bribePremiumBps,
             uint16 quorumBps,
             uint32 auctionDuration,
@@ -187,19 +173,19 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function setTreasury(address treasury_) external;
 
-    function settlementAsset() external view returns (address);
+    function bribeAsset() external view returns (address);
 
     /// @notice Canonical WETH for ETH→WETH fallback when a native push is rejected.
     function weth() external view returns (IWETH);
 
-    function setSettlementAsset(address settlementAsset_) external;
+    function setBribeAsset(address bribeAsset_) external;
 
     function setProtocolConfig(ProtocolConfig calldata cfg) external;
 
     function balance(address asset) external view returns (uint256);
 
-    /// @notice Convert a USD amount (`USD_DECIMALS`) into `settlementAsset` base units via oracle.
-    function settlementAmount(uint256 usdAmount) external view returns (uint256);
+    /// @notice Convert a USD amount (`USD_DECIMALS`) into `bribeAsset` base units via oracle.
+    function bribeAssetAmount(uint256 usdAmount) external view returns (uint256);
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
@@ -209,8 +195,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         pure
         returns (uint256);
 
-    /// @notice Yield-asset out (capped to auction remaining) and dutch `settlementAsset` payment at `timestamp`.
-    function previewBuy(address asset, uint256 amount, uint256 timestamp)
+    /// @notice Asset out (capped to auction remaining) and dutch GRAI payment at `timestamp`.
+    function previewBuyback(address asset, uint256 amount, uint256 timestamp)
         external
         view
         returns (uint256 amountOut, uint256 payment);
@@ -219,12 +205,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
 
-    function buy(address asset, uint256 amount, uint256 paymentMax) external payable;
+    /// @notice Fill a Dutch lot: pay GRAI ask, receive `asset`, credit vote rewards.
+    function buyback(address asset, uint256 amount) external;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
-
-    /// @notice Swap idle settlement inventory held on Grinders for GRAI.
-    function buyback(bytes calldata data) external returns (uint256 payment, uint256 graiOut);
 
     /// @notice Pro-rata asset amounts paid for burning wallet-held and/or vote-escrowed GRAI.
     function previewRedeem(address holder, uint256 graiAmount)
@@ -236,13 +220,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function redeem(uint256 graiAmount) external;
 
     /// @notice Escrow GRAI toward liquidation quorum. Exit via `bribe`: voter gets book value,
-    ///         premium is skimmed to treasury / buyback inventory (self-bribe therefore costs the premium).
+    ///         premium is skimmed to treasury / listed for GRAI buy (self-bribe therefore costs the premium).
     function vote(uint256 graiAmount) external;
 
-    /// @notice Preview the `settlementAsset` payment for a vote buyout.
+    /// @notice Preview the `bribeAsset` payment for a vote buyout.
     function previewBribe(address voter, uint256 graiAmount) external view returns (uint256 bribeAmount);
 
-    /// @notice Buy out `voter` for `previewBribe` settlement: book to voter, premium to treasury/buybacks;
+    /// @notice Buy out `voter` for `previewBribe` settlement: book to voter, premium to treasury/auction;
     ///         briber receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
