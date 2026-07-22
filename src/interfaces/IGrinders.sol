@@ -24,11 +24,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error GrindersMismatch();
     error NoLiquidation();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
-    error NotGrai();
-    error SwapFailed();
-    error Slippage();
-    error TargetZero();
-    error DataEmpty();
 
     event GraiTokenUpdate(address indexed graiToken);
     event Liquidate(uint256 fromId, uint256 toId, uint256 assets);
@@ -77,9 +72,4 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
 
     /// @notice Permissionless while `grai.liquidation()`: transfer all listed idle assets to GRAI.
     function liquidate() external;
-
-    /// @notice Execute a GRAI buyback against settlement inventory held here (GRAI-only caller).
-    /// @dev `data` = `abi.encode(target, swapCalldata)`. Swap logic is upgradeable on Grinders;
-    ///      GRAI only forwards settlement and accounts for the returned GRAI balance delta.
-    function buyback(bytes calldata data) external returns (uint256 payment, uint256 graiOut);
 }
