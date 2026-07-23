@@ -27,8 +27,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error LiquidationClosed();
     error LiquidationDelay();
     error RedeemPeriodActive();
-    error BribeAssetUnset();
     error AuctionDurationTooShort();
+    error BribeAssetUnset();
+    error InvalidCuts();
 
     struct AssetConfig {
         /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
@@ -54,25 +55,33 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 duration;
     }
 
-    struct VoteEscrow {
-        /// @notice The account this vote escrow belongs to (mirrors the `votes` mapping key).
-        address voter;
+    /// @notice Per-user escrow: locked GRAI (dividends) and optional liquidation vote.
+    struct Escrow {
+        /// @notice The account this escrow belongs to (mirrors the `escrows` mapping key).
+        address account;
+        /// @notice Index of this account in `accounts` while `amount` is non-zero.
+        uint32 accountId;
+        /// @notice Actively locked GRAI (dividend share; max voting capacity).
         uint256 amount;
-        /// @notice Timestamp of the latest `vote` (resets on each vote).
+        /// @notice GRAI counted toward liquidation quorum (≤ `amount`).
+        uint256 voted;
+        /// @notice Timestamp of the latest `lock`.
+        uint48 lockedAt;
+        /// @notice Timestamp of the latest `vote`.
         uint48 votedAt;
-        /// @notice Index of this account in `voters` while the vote is open.
-        uint32 id;
-        /// @notice Reward index already accounted for this position.
-        uint256 rewardDebt;
-        /// @notice Buyback-funded GRAI accrued but not yet claimed.
-        uint256 claimableReward;
+        /// @notice Index of this account in `voters` while `voted` is non-zero.
+        uint32 voterId;
     }
 
-    /// @notice Bribe premium, liquidation quorum, treasury cut, and timing.
+    /// @notice Yield split, bribe premium, liquidation quorum, and timing.
     struct ProtocolConfig {
-        /// @notice Share of distributed yield and bribe premium sent to `treasury`, in bps.
+        /// @notice Share of distributed yield / bribe premium listed for GRAI buyback, in bps.
+        uint16 auctionCutBps;
+        /// @notice Share of distributed yield / bribe premium paid as lock dividends, in bps.
+        uint16 dividendCutBps;
+        /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
-        /// @notice Settlement payment for a vote buyout, in bps of book value.
+        /// @notice Settlement premium for a lock buyout, in bps of book value.
         uint16 bribePremiumBps;
         uint16 quorumBps;
         /// @notice Dutch auction duration from `maxPayment` to `minPayment`.
@@ -91,13 +100,21 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     event TreasuryUpdate(address indexed treasury);
     event BribeAssetUpdate(address indexed bribeAsset);
     event Distribute(
-        address indexed from, address indexed asset, uint256 yieldAmount, uint256 yieldShare, uint256 treasuryShare
+        address indexed from,
+        address indexed asset,
+        uint256 yieldAmount,
+        uint256 auctionShare,
+        uint256 dividendShare,
+        uint256 treasuryShare
     );
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
-    event Buyback(address indexed buyer, address indexed asset, uint256 amountOut, uint256 payment);
+    event Buyback(address indexed buyer, address indexed asset, uint256 graiIn, uint256 amountOut);
     event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
+    event Locked(address indexed account, uint256 amount, uint256 totalLocked);
+    event Unlock(address indexed account, uint256 amount, uint256 totalLocked);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event VoteReward(address indexed account, uint256 amount);
+    event Dividend(address indexed account, address indexed asset, uint256 amount);
     event Bribe(
         address indexed briber, address indexed voter, uint256 graiAmount, uint256 bribeAmount, uint256 totalVoted
     );
@@ -109,6 +126,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         external
         view
         returns (
+            uint16 auctionCutBps,
+            uint16 dividendCutBps,
             uint16 treasuryCutBps,
             uint16 bribePremiumBps,
             uint16 quorumBps,
@@ -143,16 +162,39 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Listed assets that currently have an open yield auction.
     function getAuctions() external view returns (address[] memory);
 
-    function votes(address account)
+    function escrows(address account)
         external
         view
-        returns (address voter, uint256 amount, uint48 votedAt, uint32 id, uint256 rewardDebt, uint256 claimableReward);
+        returns (
+            address account_,
+            uint32 accountId,
+            uint256 amount,
+            uint256 voted,
+            uint48 lockedAt,
+            uint48 votedAt,
+            uint32 voterId
+        );
+
+    function accounts(uint256 index) external view returns (address);
+
+    function getAccounts() external view returns (address[] memory);
+
+    function totalLocked() external view returns (uint256);
 
     function voters(uint256 index) external view returns (address);
 
+    /// @notice Accounts with an open liquidation vote (`voted > 0`).
     function getVoters() external view returns (address[] memory);
 
     function totalVoted() external view returns (uint256);
+
+    function accDividendShare(address asset) external view returns (uint256);
+
+    function pendingVoteRewards() external view returns (uint256);
+
+    function dividendDebt(address account, address asset) external view returns (uint256);
+
+    function claimableDividend(address account, address asset) external view returns (uint256);
 
     /// @notice True when voted GRAI is at least `config.quorumBps` of `totalSupply`.
     function hasQuorum() external view returns (bool);
@@ -195,39 +237,52 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         pure
         returns (uint256);
 
-    /// @notice Asset out (capped to auction remaining) and dutch GRAI payment at `timestamp`.
+    /// @notice Dutch GRAI in and asset out (capped to auction remaining) at `timestamp`.
     function previewBuyback(address asset, uint256 amount, uint256 timestamp)
         external
         view
-        returns (uint256 amountOut, uint256 payment);
+        returns (uint256 graiIn, uint256 amountOut);
 
     function setAssetConfig(address asset, AssetConfig calldata cfg) external;
 
-    function deposit(address asset, uint256 amount) external payable returns (uint256 graiOut, uint256 depositValue);
+    /// @notice Mint GRAI against deposited `asset`. If `lock`, escrow the minted `graiOut` for dividends in the same tx.
+    function deposit(address asset, uint256 amount, bool lock)
+        external
+        payable
+        returns (uint256 graiOut, uint256 depositValue);
 
-    /// @notice Fill a Dutch lot: pay GRAI ask, receive `asset`, credit vote rewards.
+    /// @notice Fill a Dutch lot: pay GRAI ask, receive `asset`, credit lock (vote) rewards.
     function buyback(address asset, uint256 amount) external;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
-    /// @notice Pro-rata asset amounts paid for burning wallet-held and/or vote-escrowed GRAI.
+    /// @notice Pro-rata asset amounts paid for burning wallet-held and/or locked GRAI.
     function previewRedeem(address holder, uint256 graiAmount)
         external
         view
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
-    /// @notice Burn wallet-held and/or vote-escrowed GRAI for a pro-rata share of the liquidation basket.
+    /// @notice Burn wallet-held and/or locked GRAI for a pro-rata share of the liquidation basket.
     function redeem(uint256 graiAmount) external;
 
-    /// @notice Escrow GRAI toward liquidation quorum. Exit via `bribe`: voter gets book value,
-    ///         premium is skimmed to treasury / listed for GRAI buy (self-bribe therefore costs the premium).
+    /// @notice Any GRAI holder may lock: non-transferable escrow with dividend eligibility.
+    ///         Exit unvoted lock via `unlock`; voted GRAI exits via `bribe` or unlock (clamps vote).
+    function lock(uint256 graiAmount) external;
+
+    /// @notice Any locker may commit locked GRAI toward liquidation quorum (`voted ≤ amount`).
     function vote(uint256 graiAmount) external;
 
-    /// @notice Preview the `bribeAsset` payment for a vote buyout.
+    /// @notice Accrue residual dividends/rewards and return `graiAmount` from the active lock to the wallet.
+    function unlock(uint256 graiAmount) external;
+
+    /// @notice Claim yield dividends for `asset` accrued to `holder`'s active lock; paid to `holder`.
+    function claim(address holder, address asset) external returns (uint256 amount);
+
+    /// @notice Preview the `bribeAsset` payment to buy out a voter's voted GRAI.
     function previewBribe(address voter, uint256 graiAmount) external view returns (uint256 bribeAmount);
 
-    /// @notice Buy out `voter` for `previewBribe` settlement: book to voter, premium to treasury/auction;
-    ///         briber receives the escrowed GRAI.
+    /// @notice Anyone may buy out `voter`'s vote for `previewBribe`: book to voter, premium to
+    ///         treasury/dividends/auction; briber receives the escrowed GRAI.
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Open liquidation (requires quorum): pauses all assets and cancels open yield auctions
