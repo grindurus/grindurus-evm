@@ -265,11 +265,12 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Burn wallet-held and/or locked GRAI for a pro-rata share of the liquidation basket.
     function redeem(uint256 graiAmount) external;
 
-    /// @notice Any GRAI holder may lock: non-transferable escrow with dividend eligibility.
+    /// @notice Escrow wallet GRAI for dividend eligibility (optional if only voting — `vote` auto-locks).
     ///         Exit unvoted lock via `unlock`; voted GRAI exits via `bribe` or unlock (clamps vote).
     function lock(uint256 graiAmount) external;
 
-    /// @notice Any locker may commit locked GRAI toward liquidation quorum (`voted ≤ amount`).
+    /// @notice Commit GRAI toward liquidation quorum. No prior `lock` required: locks any wallet
+    ///         shortfall first so `voted + graiAmount` ends ≤ locked `amount`.
     function vote(uint256 graiAmount) external;
 
     /// @notice Accrue residual dividends/rewards and return `graiAmount` from the active lock to the wallet.
@@ -289,7 +290,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         into the redeem basket. Unredeemed shares retain their book value.
     function liquidate() external;
 
-    /// @notice Close liquidation after `liquidationPeriod + redeemPeriod`: returns leftover balances
-    ///         to Grinders, unpauses assets, and resets `totalValue` to leftover basket NAV.
+    /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
+    ///         Grinders, unpause assets, reset `totalValue` to leftover NAV so the fund can restart.
     function resettle() external;
 }
