@@ -49,10 +49,9 @@ contract GRAI is
     /// @notice One open Dutch auction per sold asset (`remaining` = asset qty; payment = GRAI).
     mapping(address asset => DutchAuction) public auctions;
 
-    mapping(address custodian => mapping(address asset => uint256)) public yieldBy;
-
-    /// @notice Per-user lock + liquidation vote (GRAI held by this contract while locked).
-    mapping(address account => Escrow) public escrows;
+    /// @notice Cumulative yield dividend of `asset` per actively locked GRAI, scaled by 1e18.
+    /// @dev Buyback GRAI vote-reward index is `accDividendShare[address(this)]` (per voted share).
+    mapping(address asset => uint256) public accDividendShare;
 
     /// @notice Accounts with an open escrow; `escrows[account].accountId` is the index here.
     address[] public accounts;
@@ -60,17 +59,12 @@ contract GRAI is
     /// @notice Accounts with an open liquidation vote; `escrows[account].voterId` is the index here.
     address[] public voters;
 
-    /// @notice Cumulative yield dividend of `asset` per actively locked GRAI, scaled by 1e18.
-    /// @dev Buyback GRAI vote-reward index is `accDividendShare[address(this)]` (per voted share).
-    mapping(address asset => uint256) public accDividendShare;
+    /// @notice Per-account, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
+    /// @dev Vote rewards reuse `debt`/`claimable` with `asset = address(this)`.
+    mapping(address account => mapping(address asset => Position)) public positions;
 
-    /// @notice Yield / vote-reward index already accounted for an account.
-    /// @dev Buyback GRAI vote rewards use `asset = address(this)` and track against `voted`.
-    mapping(address account => mapping(address asset => uint256)) public dividendDebt;
-
-    /// @notice Yield dividends (or buyback GRAI) accrued but not yet claimed.
-    /// @dev Buyback GRAI vote rewards use `asset = address(this)`.
-    mapping(address account => mapping(address asset => uint256)) public claimableDividend;
+    /// @notice Per-user lock + liquidation vote (GRAI held by this contract while locked).
+    mapping(address account => Escrow) public escrows;
 
     /// @notice Buyback GRAI parked when `totalVoted == 0` or too small to move the index.
     /// @dev Tokens stay on this contract until a later distribution with active votes.
@@ -102,8 +96,8 @@ contract GRAI is
     /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
     ProtocolConfig public config;
 
-    /// @dev Storage gap for future upgrades.
-    uint256[21] private _gap;
+    /// @dev Storage gap for future upgrades (+2 slots reclaimed from merged position mappings).
+    uint256[23] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -171,6 +165,13 @@ contract GRAI is
         bribeAsset = bribeAsset_;
     }
 
+    /// @notice List an asset with its oracle feed and config.
+    /// @dev `cfg.asset` / `cfg.id` ignored. Delist with `setFeed(asset, FEED_NONE)`.
+    function set(address asset, Feed calldata feed, AssetConfig calldata cfg) external onlyOwner {
+        setFeed(asset, feed);
+        setAssetConfig(asset, cfg);
+    }
+
     /// @dev Setting a real feed (feedType != FEED_NONE) lists the asset; clearing it (FEED_NONE) delists it.
     ///      Delisting inherits the guards of asset removal (must be paused with zero balance).
     function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyOwner {
@@ -183,7 +184,7 @@ contract GRAI is
     }
 
     /// @dev `cfg.asset` and `cfg.id` are ignored: the `asset` param is authoritative and the `assetList` index is managed internally.
-    function setAssetConfig(address asset, AssetConfig calldata cfg) external onlyOwner {
+    function setAssetConfig(address asset, AssetConfig calldata cfg) public onlyOwner {
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         assets[asset].paused = cfg.paused;
         emit AssetConfigUpdate(asset, assets[asset]);
@@ -247,7 +248,7 @@ contract GRAI is
         if (yieldAmount == 0) revert AmountZero();
 
         uint256 received = _pay(msg.sender, address(this), asset, yieldAmount);
-        yieldBy[msg.sender][asset] += received;
+        positions[msg.sender][asset].yielded += received;
 
         uint256 treasuryCut = (received * config.treasuryCutBps) / BPS;
         uint256 dividendCut = (received * config.dividendCutBps) / BPS;
@@ -366,8 +367,8 @@ contract GRAI is
     //////////////////// UNLOCK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Accrues residual lock rewards/dividends, takes decaying unlock fee → vote rewards, clamps
-    ///      excess votes, and returns `graiAmount - fee` to wallet. `graiAmount == 0` is allowed for
+    /// @dev Accrues residual lock rewards/dividends, takes decaying unlock penalty → vote rewards, clamps
+    ///      excess votes, and returns `graiAmount - penalty` to wallet. `graiAmount == 0` is allowed for
     ///      claim-only (accrue + optional `claimAll_`, no unlock). Optional `claimAll_` pays all
     ///      listed-asset dividends to `msg.sender` after accrual.
     function unlock(uint256 graiAmount, bool claimAll_) public {
@@ -381,7 +382,7 @@ contract GRAI is
         _payVoteReward(account);
 
         if (graiAmount > 0) {
-            (uint256 net, uint256 fee) = previewUnlock(account, graiAmount, block.timestamp);
+            (uint256 unlockAmount, uint256 penalty) = previewUnlock(account, graiAmount, block.timestamp);
 
             totalLocked -= graiAmount;
             entry.amount -= graiAmount;
@@ -389,8 +390,8 @@ contract GRAI is
             _syncDividendDebts(account);
             _syncVoteRewardDebt(account);
 
-            if (fee > 0) _distributeVoteRewards(fee);
-            if (net > 0) _transfer(address(this), account, net);
+            if (penalty > 0) _distributeVoteRewards(penalty);
+            if (unlockAmount > 0) _transfer(address(this), account, unlockAmount);
             emit Unlock(account, graiAmount, totalLocked);
             if (entry.amount == 0) _removeAccount(account);
         }
@@ -400,11 +401,11 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Linear decay of `unlockFeeBps` → 0 over `unlockFeeDuration` since `lockedAt` at `timestamp`.
-    ///      Returns `net = graiAmount - fee` (GRAI returned to wallet) and `fee` (→ vote rewards).
+    ///      Returns `unlockAmount = graiAmount - penalty` (GRAI returned to wallet) and `penalty` (→ vote rewards).
     function previewUnlock(address account, uint256 graiAmount, uint256 timestamp)
         public
         view
-        returns (uint256 net, uint256 fee)
+        returns (uint256 unlockAmount, uint256 penalty)
     {
         if (config.unlockFeeBps == 0 || config.unlockFeeDuration == 0 || graiAmount == 0) {
             return (graiAmount, 0);
@@ -414,47 +415,50 @@ contract GRAI is
         if (elapsed >= config.unlockFeeDuration) {
             return (graiAmount, 0);
         }
-        uint256 feeBps = (uint256(config.unlockFeeBps) * (config.unlockFeeDuration - elapsed)) / config.unlockFeeDuration;
-        fee = (graiAmount * feeBps) / BPS;
-        net = graiAmount - fee;
+        uint256 penaltyBps = (uint256(config.unlockFeeBps) * (config.unlockFeeDuration - elapsed)) / config.unlockFeeDuration;
+        penalty = (graiAmount * penaltyBps) / BPS;
+        unlockAmount = graiAmount - penalty;
     }
 
     //////////////////// CLAIM ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Pending = stored `claimableDividend` plus unrealized accrual vs `accDividendShare`.
-    function previewClaim(address holder, address asset) public view returns (uint256 amount) {
+    /// @dev Pending = stored `claimable` plus unrealized accrual vs `accDividendShare`.
+    ///      `type(uint256).max` previews the full pending balance; otherwise `min(amount, pending)`.
+    function previewClaim(address holder, address asset, uint256 amount) public view returns (uint256) {
         if (asset == address(this)) revert AssetUnknown();
+        Position storage pos = positions[holder][asset];
         uint256 accumulated = (escrows[holder].amount * accDividendShare[asset]) / REWARD_PRECISION;
-        amount = claimableDividend[holder][asset] + accumulated - dividendDebt[holder][asset];
+        uint256 pending = pos.claimable + accumulated - pos.debt;
+        if (amount == type(uint256).max || amount >= pending) return pending;
+        return amount;
     }
 
     /// @inheritdoc IGRAI
-    function claim(address holder, address asset) public returns (uint256 amount) {
+    /// @dev `type(uint256).max` claims the full accrued balance; otherwise claims `min(amount, claimable)`.
+    function claim(address holder, address asset, uint256 amount) public returns (uint256 claimed) {
         _requireNotLiquidation();
         if (asset == address(this)) revert AssetUnknown();
         _accrueDividend(holder, asset);
-        amount = claimableDividend[holder][asset];
-        if (amount == 0) return 0;
-        claimableDividend[holder][asset] = 0;
-        _withdraw(holder, asset, amount);
-        emit Dividend(holder, asset, amount);
+        uint256 claimable = positions[holder][asset].claimable;
+        if (claimable == 0) return 0;
+        claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
+        if (claimed == 0) return 0;
+        positions[holder][asset].claimable = claimable - claimed;
+        _withdraw(holder, asset, claimed);
+        emit Claim(holder, asset, claimed);
     }
 
     /// @inheritdoc IGRAI
     /// @dev One entry per listed asset in `assetList` order (amount may be 0).
-    function previewClaimAll(address holder)
-        public
-        view
-        returns (address[] memory claimAssets, uint256[] memory amounts)
-    {
+    function previewClaimAll(address holder) public view returns (address[] memory claimAssets, uint256[] memory amounts) {
         uint256 len = assetList.length;
         claimAssets = new address[](len);
         amounts = new uint256[](len);
         for (uint256 i; i < len;) {
             address asset = assetList[i];
             claimAssets[i] = asset;
-            amounts[i] = previewClaim(holder, asset);
+            amounts[i] = previewClaim(holder, asset, type(uint256).max);
             unchecked { ++i; }
         }
     }
@@ -464,7 +468,7 @@ contract GRAI is
     function claimAll(address holder) public {
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
-            claim(holder, assetList[i]);
+            claim(holder, assetList[i], type(uint256).max);
             unchecked { ++i; }
         }
     }
@@ -800,9 +804,10 @@ contract GRAI is
 
     function _accrueDividend(address account, address asset) internal {
         Escrow storage entry = escrows[account];
+        Position storage pos = positions[account][asset];
         uint256 accumulated = (entry.amount * accDividendShare[asset]) / REWARD_PRECISION;
-        claimableDividend[account][asset] += accumulated - dividendDebt[account][asset];
-        dividendDebt[account][asset] = accumulated;
+        pos.claimable += accumulated - pos.debt;
+        pos.debt = accumulated;
     }
 
     function _syncDividendDebts(address account) internal {
@@ -810,7 +815,7 @@ contract GRAI is
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            dividendDebt[account][asset] = (entry.amount * accDividendShare[asset]) / REWARD_PRECISION;
+            positions[account][asset].debt = (entry.amount * accDividendShare[asset]) / REWARD_PRECISION;
             unchecked { ++i; }
         }
     }
@@ -819,21 +824,22 @@ contract GRAI is
 
     function _accrueVoteReward(address account) internal {
         Escrow storage entry = escrows[account];
+        Position storage pos = positions[account][address(this)];
         uint256 accumulated = (entry.voted * accDividendShare[address(this)]) / REWARD_PRECISION;
-        claimableDividend[account][address(this)] += accumulated - dividendDebt[account][address(this)];
-        dividendDebt[account][address(this)] = accumulated;
+        pos.claimable += accumulated - pos.debt;
+        pos.debt = accumulated;
     }
 
     function _syncVoteRewardDebt(address account) internal {
-        dividendDebt[account][address(this)] =
+        positions[account][address(this)].debt =
             (escrows[account].voted * accDividendShare[address(this)]) / REWARD_PRECISION;
     }
 
     function _payVoteReward(address account) internal returns (uint256 reward) {
-        reward = claimableDividend[account][address(this)];
+        reward = positions[account][address(this)].claimable;
         if (reward == 0) return 0;
 
-        claimableDividend[account][address(this)] = 0;
+        positions[account][address(this)].claimable = 0;
         _transfer(address(this), account, reward);
         emit VoteReward(account, reward);
     }
@@ -878,7 +884,7 @@ contract GRAI is
         _accrueVoteReward(account);
         _payVoteReward(account);
         _clampVote(account);
-        dividendDebt[account][address(this)] = 0;
+        positions[account][address(this)].debt = 0;
         uint256 index = escrows[account].accountId;
         uint256 lastIndex = accounts.length - 1;
         if (index != lastIndex) {
