@@ -12,7 +12,7 @@ import {IGrinders} from "./interfaces/IGrinders.sol";
 import {IERC1046} from "./interfaces/IERC1046.sol";
 import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 
-/// @title GRAI (implementation)
+/// @title GRinders Artificial Index (GRAI)
 /// @author Chikhladze Vakhtanh (GH: @Pozzitron1337)
 /// @notice Condition-redeemable fund-share ERC20. Roles:
 ///         holder → `lock` (dividends) and/or `vote` (quorum; auto-locks wallet shortfall) → voter;
@@ -120,12 +120,12 @@ contract GRAI is
             treasuryCutBps: 20_00, // 20%
             bribePremiumBps: 2_00, // 2%
             quorumBps: 66_67, // 66.67%
-            auctionFloorBps: 20_00, // 20% of mint ask (−80% max discount)
+            buybackFloorBps: 20_00, // 20% of mint ask (−80% max discount)
             unlockFeeBps: 10_00, // 10% at lock time
-            auctionDuration: uint32(365 days),
+            buybackPeriod: uint32(365 days),
             liquidationPeriod: uint32(24 hours),
             redeemPeriod: uint32(7 days),
-            unlockFeeDuration: uint32(24 hours)
+            unlockPenaltyPeriod: uint32(24 hours)
         });
     }
 
@@ -136,13 +136,13 @@ contract GRAI is
             || cfg.treasuryCutBps > BPS
             || cfg.bribePremiumBps > BPS
             || cfg.quorumBps > BPS
-            || cfg.auctionFloorBps > BPS
+            || cfg.buybackFloorBps > BPS
             || cfg.unlockFeeBps > BPS
         ) revert BpsTooHigh();
         if (uint256(cfg.auctionCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) {
             revert InvalidCuts();
         }
-        if (cfg.auctionDuration <= 7 days) revert AuctionDurationTooShort();
+        if (cfg.buybackPeriod <= 7 days) revert BuybackPeriodTooShort();
         config = cfg;
         emit ConfigUpdate(cfg);
     }
@@ -165,10 +165,11 @@ contract GRAI is
         bribeAsset = bribeAsset_;
     }
 
-    /// @notice List an asset with its oracle feed and config.
-    /// @dev `cfg.asset` / `cfg.id` ignored. Delist with `setFeed(asset, FEED_NONE)`.
+    /// @notice List or delist an asset: non-`FEED_NONE` lists (feed + config); `FEED_NONE` delists (`cfg` ignored).
+    /// @dev `cfg.asset` / `cfg.id` ignored on list. Delist still requires pause + zero balance via `_removeAsset`.
     function set(address asset, Feed calldata feed, AssetConfig calldata cfg) external onlyOwner {
         setFeed(asset, feed);
+        if (feed.feedType == FEED_NONE) return;
         setAssetConfig(asset, cfg);
     }
 
@@ -191,6 +192,8 @@ contract GRAI is
     }
 
     receive() external payable {}
+
+    //////////////////// GETTERS ////////////////////
 
     /// @inheritdoc IGRAI
     function getAssets() public view returns (address[] memory) {
@@ -292,11 +295,11 @@ contract GRAI is
         graiOut = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
     }
 
-    //////////////////// AUCTION BUY ////////////////////
+    //////////////////// BUYBACK ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; GRAI in funds voter rewards.
-    ///      `graiIn` can still floor to 0 on dust fills; full-lot ask decays to `auctionFloorBps` of mint,
+    ///      `graiIn` can still floor to 0 on dust fills; full-lot ask decays to `buybackFloorBps` of mint,
     ///      not to free clearance (unless floor is configured to 0).
     function buyback(address asset, uint256 amount) public {
         _requireNotLiquidation();
@@ -321,8 +324,8 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Dutch GRAI ask: `maxPayment` → `minPayment` over `entry.duration` (snapshotted from
-    ///      `config.auctionDuration` at `_place`), scaled by buy size. Caps to auction remaining.
+    /// @dev Dutch GRAI ask: `maxPayment` → `minPayment` over `entry.period` (snapshotted from
+    ///      `config.buybackPeriod` at `_place`), scaled by buy size. Caps to auction remaining.
     function previewBuyback(
         address asset,
         uint256 amount,
@@ -337,7 +340,7 @@ contract GRAI is
 
         amountOut = amount;
         uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
-        uint256 ask = _dutchAmount(entry.maxPayment, entry.minPayment, elapsed, entry.duration);
+        uint256 ask = _dutchAmount(entry.maxPayment, entry.minPayment, elapsed, entry.period);
         graiIn = entry.initial > 0 ? (ask * amountOut) / entry.initial : 0;
     }
 
@@ -382,7 +385,8 @@ contract GRAI is
         _payVoteReward(account);
 
         if (graiAmount > 0) {
-            (uint256 unlockAmount, uint256 penalty) = previewUnlock(account, graiAmount, block.timestamp);
+            (uint256 unlockAmount, uint256 penalty,,) =
+                previewUnlock(account, graiAmount, block.timestamp, false);
 
             totalLocked -= graiAmount;
             entry.amount -= graiAmount;
@@ -400,24 +404,39 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Linear decay of `unlockFeeBps` → 0 over `unlockFeeDuration` since `lockedAt` at `timestamp`.
+    /// @dev Linear decay of `unlockFeeBps` → 0 over `unlockPenaltyPeriod` since `lockedAt` at `timestamp`.
     ///      Returns `unlockAmount = graiAmount - penalty` (GRAI returned to wallet) and `penalty` (→ vote rewards).
-    function previewUnlock(address account, uint256 graiAmount, uint256 timestamp)
+    ///      When `claimAll_` is true, also returns `previewClaimAll(account)` dividend outs.
+    function previewUnlock(address account, uint256 graiAmount, uint256 timestamp, bool claimAll_)
         public
         view
-        returns (uint256 unlockAmount, uint256 penalty)
+        returns (
+            uint256 unlockAmount,
+            uint256 penalty,
+            address[] memory claimAssets,
+            uint256[] memory claimAmounts
+        )
     {
-        if (config.unlockFeeBps == 0 || config.unlockFeeDuration == 0 || graiAmount == 0) {
-            return (graiAmount, 0);
+        if (config.unlockFeeBps == 0 || config.unlockPenaltyPeriod == 0 || graiAmount == 0) {
+            unlockAmount = graiAmount;
+            penalty = 0;
+        } else {
+            uint256 lockedAt = escrows[account].lockedAt;
+            uint256 elapsed = timestamp > lockedAt ? timestamp - lockedAt : 0;
+            if (elapsed >= config.unlockPenaltyPeriod) {
+                unlockAmount = graiAmount;
+                penalty = 0;
+            } else {
+                uint256 penaltyBps =
+                    (uint256(config.unlockFeeBps) * (config.unlockPenaltyPeriod - elapsed)) / config.unlockPenaltyPeriod;
+                penalty = (graiAmount * penaltyBps) / BPS;
+                unlockAmount = graiAmount - penalty;
+            }
         }
-        uint256 lockedAt = escrows[account].lockedAt;
-        uint256 elapsed = timestamp > lockedAt ? timestamp - lockedAt : 0;
-        if (elapsed >= config.unlockFeeDuration) {
-            return (graiAmount, 0);
+
+        if (claimAll_) {
+            (claimAssets, claimAmounts) = previewClaimAll(account);
         }
-        uint256 penaltyBps = (uint256(config.unlockFeeBps) * (config.unlockFeeDuration - elapsed)) / config.unlockFeeDuration;
-        penalty = (graiAmount * penaltyBps) / BPS;
-        unlockAmount = graiAmount - penalty;
     }
 
     //////////////////// CLAIM ////////////////////
@@ -448,6 +467,8 @@ contract GRAI is
         _withdraw(holder, asset, claimed);
         emit Claim(holder, asset, claimed);
     }
+
+    //////////////////// CLAIM ALL ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev One entry per listed asset in `assetList` order (amount may be 0).
@@ -736,7 +757,7 @@ contract GRAI is
 
     /// @dev Merge `amount` into the asset auction and restart the Dutch clock. Payment is always the
     ///      current mint-price GRAI for the full lot (`previewDeposit`) — no average of a stale ask.
-    ///      Decays to `auctionFloorBps` of that mint ask over `auctionDuration`. Clock restart is
+    ///      Decays to `buybackFloorBps` of that mint ask over `buybackPeriod`. Clock restart is
     ///      intentional: each `_place` rebuilds `maxPayment` at the live mint ask.
     function _place(address asset, uint256 amount) internal {
         if (asset == address(this)) revert AssetUnknown();
@@ -751,9 +772,9 @@ contract GRAI is
         entry.remaining = remaining;
         entry.initial = remaining;
         entry.maxPayment = maxPayment;
-        entry.minPayment = (maxPayment * config.auctionFloorBps) / BPS;
+        entry.minPayment = (maxPayment * config.buybackFloorBps) / BPS;
         entry.startTime = block.timestamp;
-        entry.duration = config.auctionDuration;
+        entry.period = config.buybackPeriod;
         emit AuctionUpdate(asset, remaining, maxPayment, block.timestamp);
     }
 
