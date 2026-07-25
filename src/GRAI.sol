@@ -16,7 +16,8 @@ import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 /// @author Chikhladze Vakhtanh (GH: @Pozzitron1337)
 /// @notice Condition-redeemable fund-share ERC20. Roles:
 ///         holder → `lock` (dividends) and/or `vote` (quorum; auto-locks wallet shortfall) → voter;
-///         anyone may `bribe` to buy out a voter's vote. Yield splits per `config` cuts.
+///         `buyback` locks+votes payment GRAI on the buyer; anyone may `bribe` to buy out a vote.
+///         Yield splits per `config` cuts.
 /// @dev Interact only via the ERC1967Proxy. Admin authority is Ownable2Step `owner`.
 contract GRAI is
     IGRAI,
@@ -43,15 +44,15 @@ contract GRAI is
     /// @notice Listed assets eligible for deposit, yield distribution, and liquidation redemption.
     address[] public assetList;
 
-    /// @notice Per-asset listing config (`id` indexes `assetList`, `paused` gates user flows).
+    /// @notice Per-asset listing config (`id` indexes `assetList`; `paused` gates deposits only —
+    ///         not buyback, distribute, or claim).
     mapping(address asset => AssetConfig) public assets;
 
     /// @notice One open Dutch auction per sold asset (`remaining` = asset qty; payment = GRAI).
     mapping(address asset => DutchAuction) public auctions;
 
-    /// @notice Cumulative yield dividend of `asset` per actively locked GRAI, scaled by 1e18.
-    /// @dev Buyback GRAI vote-reward index is `accDividendShare[address(this)]` (per voted share).
-    mapping(address asset => uint256) public accDividendShare;
+    /// @notice Per-asset dividend index (`accShare`) and claim reserve (`totalClaimable`).
+    mapping(address asset => TotalPosition) public totalPositions;
 
     /// @notice Accounts with an open escrow; `escrows[account].accountId` is the index here.
     address[] public accounts;
@@ -60,15 +61,10 @@ contract GRAI is
     address[] public voters;
 
     /// @notice Per-account, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
-    /// @dev Vote rewards reuse `debt`/`claimable` with `asset = address(this)`.
     mapping(address account => mapping(address asset => Position)) public positions;
 
     /// @notice Per-user lock + liquidation vote (GRAI held by this contract while locked).
     mapping(address account => Escrow) public escrows;
-
-    /// @notice Buyback GRAI parked when `totalVoted == 0` or too small to move the index.
-    /// @dev Tokens stay on this contract until a later distribution with active votes.
-    uint256 public pendingVoteRewards;
 
     uint256 public totalLocked;
 
@@ -80,9 +76,8 @@ contract GRAI is
 
     /// @notice Asset used for bribe payments.
     /// @dev If zero address, asset is the native token (ETH); otherwise, it's an ERC20.
-    ///      SHOULD NOT (RFC 2119) be a fee-on-transfer or otherwise deflationary token:
-    ///      `bribe` prices from the nominal `_pay` amount, not the credited balance delta
-    ///      (unlike `deposit` / `distribute`).
+    ///      `bribe` sizes body/premium/cuts from the credited `_pay` delta (same as `deposit` /
+    ///      `distribute`), so fee-on-transfer tokens do not drain co-mingled GRAI inventory.
     address public bribeAsset;
 
     /// @notice True after `liquidate` opens until `resettle` closes it.
@@ -94,10 +89,10 @@ contract GRAI is
     /** SLOT end 20 + 1 + 6 */
 
     /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
-    ProtocolConfig public config;
+    Config public config;
 
-    /// @dev Storage gap for future upgrades (+2 slots reclaimed from merged position mappings).
-    uint256[23] private _gap;
+    /// @dev Storage gap for future upgrades (+3: merged positions / removed vote rewards / merged dividend fields).
+    uint256[24] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -114,24 +109,24 @@ contract GRAI is
         weth = IWETH(weth_);
         grinders = IGrinders(admin_);
         treasury = admin_;
-        config = ProtocolConfig({
-            auctionCutBps: 50_00, // 50%
-            dividendCutBps: 30_00, // 30%
-            treasuryCutBps: 20_00, // 20%
+        config = Config({
+            buybackCutBps: 33_33, // 33.33%
+            dividendCutBps: 33_34, // 33.34%
+            treasuryCutBps: 33_33, // 33.33%
             bribePremiumBps: 2_00, // 2%
-            quorumBps: 66_67, // 66.67%
+            quorumBps: 66_67, // 66.67% ~ 2/3
             buybackFloorBps: 20_00, // 20% of mint ask (−80% max discount)
             unlockFeeBps: 10_00, // 10% at lock time
+            unlockPenaltyPeriod: uint32(24 hours),
             buybackPeriod: uint32(365 days),
             liquidationPeriod: uint32(24 hours),
-            redeemPeriod: uint32(7 days),
-            unlockPenaltyPeriod: uint32(24 hours)
+            redeemPeriod: uint32(7 days)
         });
     }
 
-    function setProtocolConfig(ProtocolConfig calldata cfg) external onlyOwner {
+    function setConfig(Config calldata cfg) external onlyOwner {
         if (
-            cfg.auctionCutBps > BPS
+            cfg.buybackCutBps > BPS
             || cfg.dividendCutBps > BPS
             || cfg.treasuryCutBps > BPS
             || cfg.bribePremiumBps > BPS
@@ -139,7 +134,7 @@ contract GRAI is
             || cfg.buybackFloorBps > BPS
             || cfg.unlockFeeBps > BPS
         ) revert BpsTooHigh();
-        if (uint256(cfg.auctionCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) {
+        if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) {
             revert InvalidCuts();
         }
         if (cfg.buybackPeriod <= 7 days) revert BuybackPeriodTooShort();
@@ -250,18 +245,19 @@ contract GRAI is
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (yieldAmount == 0) revert AmountZero();
 
-        uint256 received = _pay(msg.sender, address(this), asset, yieldAmount);
+        (uint256 received, uint256 refund) = _pay(msg.sender, address(this), asset, yieldAmount, false);
         positions[msg.sender][asset].yielded += received;
 
         uint256 treasuryCut = (received * config.treasuryCutBps) / BPS;
         uint256 dividendCut = (received * config.dividendCutBps) / BPS;
-        uint256 auctionCut = received - treasuryCut - dividendCut;
+        uint256 buybackCut = received - treasuryCut - dividendCut;
 
+        if (dividendCut > 0) _distribute(asset, dividendCut);
+        if (buybackCut > 0) _place(asset, buybackCut);
         if (treasuryCut > 0) _withdraw(treasury, asset, treasuryCut);
-        if (dividendCut > 0) _distributeDividend(asset, dividendCut);
-        if (auctionCut > 0) _place(asset, auctionCut);
+        if (refund > 0) _sendEth(msg.sender, refund);
 
-        emit Distribute(msg.sender, asset, received, auctionCut, dividendCut, treasuryCut);
+        emit Distribute(msg.sender, asset, received, buybackCut, dividendCut, treasuryCut);
     }
 
     //////////////////// DEPOSIT ////////////////////
@@ -273,15 +269,14 @@ contract GRAI is
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (assets[asset].paused) revert Paused();
 
-        uint256 received = _pay(msg.sender, address(grinders), asset, amount);
-
+        (uint256 received, uint256 refund) = _pay(msg.sender, address(grinders), asset, amount, false);
         (value, graiOut) = previewDeposit(asset, received);
-        if (value == 0) revert AmountZero();
-        if (graiOut == 0) revert AmountZero();
+        if (value == 0 || graiOut == 0) revert AmountZero();
 
         totalValue += value;
         _mint(msg.sender, graiOut);
         if (lock_) lock(graiOut);
+        if (refund > 0) _sendEth(msg.sender, refund);
         emit Deposit(msg.sender, graiOut, asset, received, value);
     }
 
@@ -298,7 +293,8 @@ contract GRAI is
     //////////////////// BUYBACK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; GRAI in funds voter rewards.
+    /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; `graiIn` is escrowed and voted
+    ///      toward liquidation on the buyer (refund via `bribe` or `unlock` with unlock penalty).
     ///      `graiIn` can still floor to 0 on dust fills; full-lot ask decays to `buybackFloorBps` of mint,
     ///      not to free clearance (unless floor is configured to 0).
     function buyback(address asset, uint256 amount) public {
@@ -315,9 +311,10 @@ contract GRAI is
         }
 
         // graiIn may be 0 once the Dutch ask has decayed — still deliver amountOut.
+        // `lock` pulls GRAI from the buyer; `vote` commits it (unvoted share stays 0 → no dividends).
         if (graiIn > 0) {
-            _transfer(buyer, address(this), graiIn);
-            _distributeVoteRewards(graiIn);
+            lock(graiIn);
+            vote(graiIn);
         }
         _withdraw(buyer, asset, amountOut);
         emit Buyback(buyer, asset, graiIn, amountOut);
@@ -347,8 +344,8 @@ contract GRAI is
     //////////////////// LOCK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Escrows GRAI for dividend eligibility. Not required before `vote` — `vote` locks any
-    ///      shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
+    /// @dev Escrows GRAI for dividend eligibility on the unvoted portion (`amount - voted`).
+    ///      Not required before `vote` — `vote` locks any shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
     function lock(uint256 graiAmount) public {
         _requireNotLiquidation();
         if (graiAmount == 0) revert AmountZero();
@@ -370,10 +367,10 @@ contract GRAI is
     //////////////////// UNLOCK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Accrues residual lock rewards/dividends, takes decaying unlock penalty → vote rewards, clamps
-    ///      excess votes, and returns `graiAmount - penalty` to wallet. `graiAmount == 0` is allowed for
-    ///      claim-only (accrue + optional `claimAll_`, no unlock). Optional `claimAll_` pays all
-    ///      listed-asset dividends to `msg.sender` after accrual.
+    /// @dev Accrues lock dividends, takes decaying unlock penalty (→ `treasury`), clamps excess votes, and
+    ///      returns `graiAmount - penalty` to wallet. `graiAmount == 0` is allowed for claim-only
+    ///      (accrue + optional `claimAll_`, no unlock). Optional `claimAll_` pays all listed-asset
+    ///      dividends to `msg.sender` after accrual.
     function unlock(uint256 graiAmount, bool claimAll_) public {
         _requireNotLiquidation();
         address account = msg.sender;
@@ -381,8 +378,6 @@ contract GRAI is
         if (graiAmount > entry.amount) revert InvalidAmount();
 
         _accrueDividends(account);
-        _accrueVoteReward(account);
-        _payVoteReward(account);
 
         if (graiAmount > 0) {
             (uint256 unlockAmount, uint256 penalty,,) =
@@ -392,9 +387,8 @@ contract GRAI is
             entry.amount -= graiAmount;
             _clampVote(account);
             _syncDividendDebts(account);
-            _syncVoteRewardDebt(account);
 
-            if (penalty > 0) _distributeVoteRewards(penalty);
+            if (penalty > 0) _transfer(address(this), treasury, penalty);
             if (unlockAmount > 0) _transfer(address(this), account, unlockAmount);
             emit Unlock(account, graiAmount, totalLocked);
             if (entry.amount == 0) _removeAccount(account);
@@ -405,7 +399,7 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Linear decay of `unlockFeeBps` → 0 over `unlockPenaltyPeriod` since `lockedAt` at `timestamp`.
-    ///      Returns `unlockAmount = graiAmount - penalty` (GRAI returned to wallet) and `penalty` (→ vote rewards).
+    ///      Returns `unlockAmount = graiAmount - penalty` (GRAI returned to wallet) and `penalty` (→ `treasury`).
     ///      When `claimAll_` is true, also returns `previewClaimAll(account)` dividend outs.
     function previewUnlock(address account, uint256 graiAmount, uint256 timestamp, bool claimAll_)
         public
@@ -442,18 +436,6 @@ contract GRAI is
     //////////////////// CLAIM ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Pending = stored `claimable` plus unrealized accrual vs `accDividendShare`.
-    ///      `type(uint256).max` previews the full pending balance; otherwise `min(amount, pending)`.
-    function previewClaim(address holder, address asset, uint256 amount) public view returns (uint256) {
-        if (asset == address(this)) revert AssetUnknown();
-        Position storage pos = positions[holder][asset];
-        uint256 accumulated = (escrows[holder].amount * accDividendShare[asset]) / REWARD_PRECISION;
-        uint256 pending = pos.claimable + accumulated - pos.debt;
-        if (amount == type(uint256).max || amount >= pending) return pending;
-        return amount;
-    }
-
-    /// @inheritdoc IGRAI
     /// @dev `type(uint256).max` claims the full accrued balance; otherwise claims `min(amount, claimable)`.
     function claim(address holder, address asset, uint256 amount) public returns (uint256 claimed) {
         _requireNotLiquidation();
@@ -464,11 +446,34 @@ contract GRAI is
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
         if (claimed == 0) return 0;
         positions[holder][asset].claimable = claimable - claimed;
+        totalPositions[asset].totalClaimable -= claimed;
         _withdraw(holder, asset, claimed);
         emit Claim(holder, asset, claimed);
     }
 
+    /// @inheritdoc IGRAI
+    /// @dev Pending = stored `claimable` plus unrealized accrual vs `totalPositions[asset].accShare` on unvoted lock
+    ///      (`amount - voted`). `type(uint256).max` = full pending; otherwise `min(amount, pending)`.
+    function previewClaim(address holder, address asset, uint256 amount) public view returns (uint256) {
+        if (asset == address(this)) revert AssetUnknown();
+        Position storage pos = positions[holder][asset];
+        uint256 accumulated = (_unvoted(holder) * totalPositions[asset].accShare) / REWARD_PRECISION;
+        uint256 pending = pos.claimable + accumulated - pos.debt;
+        if (amount == type(uint256).max || amount >= pending) return pending;
+        return amount;
+    }
+
     //////////////////// CLAIM ALL ////////////////////
+
+    /// @inheritdoc IGRAI
+    /// @dev Pays every listed-asset dividend for `holder`.
+    function claimAll(address holder) public {
+        uint256 len = assetList.length;
+        for (uint256 i; i < len;) {
+            claim(holder, assetList[i], type(uint256).max);
+            unchecked { ++i; }
+        }
+    }
 
     /// @inheritdoc IGRAI
     /// @dev One entry per listed asset in `assetList` order (amount may be 0).
@@ -484,21 +489,12 @@ contract GRAI is
         }
     }
 
-    /// @inheritdoc IGRAI
-    /// @dev Pays every listed-asset dividend for `holder` (skips buyback GRAI vote-reward key).
-    function claimAll(address holder) public {
-        uint256 len = assetList.length;
-        for (uint256 i; i < len;) {
-            claim(holder, assetList[i], type(uint256).max);
-            unchecked { ++i; }
-        }
-    }
-
     //////////////////// VOTE ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev No prior `lock` needed: locks any shortfall from the wallet, then commits toward quorum.
-    ///      Voted GRAI earns buyback rewards and is buyable via `bribe`.
+    ///      Voted GRAI leaves the dividend base (`amount - voted`) and is buyable via `bribe`;
+    ///      exit also via `unlock` (clamps vote, unlock penalty).
     function vote(uint256 graiAmount) public {
         _requireNotLiquidation();
         if (graiAmount == 0) revert AmountZero();
@@ -508,18 +504,12 @@ contract GRAI is
         uint256 needLocked = entry.voted + graiAmount;
         if (entry.amount < needLocked) lock(needLocked - entry.amount);
 
-        _accrueVoteReward(voter);
+        _accrueDividends(voter);
         if (entry.voted == 0) _addVoter(voter);
         totalVoted += graiAmount;
         entry.voted += graiAmount;
         entry.votedAt = uint48(block.timestamp);
-        _syncVoteRewardDebt(voter);
-
-        // Rewards accrued while there were no voters go to the first active vote(s).
-        if (pendingVoteRewards > 0) {
-            _distributeVoteRewards(0);
-            _accrueVoteReward(voter);
-        }
+        _syncDividendDebts(voter);
 
         emit Vote(voter, graiAmount, totalVoted);
     }
@@ -528,43 +518,43 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Briber (anyone) buys out `voter`'s voted GRAI for `previewBribe` in `bribeAsset`.
-    ///      `bribeBody` goes to the voter; `bribePremium` splits like yield. Briber receives the escrowed GRAI
-    ///      (vote + lock reduced together). Self-bribe costs only the premium.
+    ///      Body/premium/cuts are split from the credited `_pay` amount (FoT-safe), not the nominal
+    ///      ask. `bribeBody` goes to the voter; `bribePremium` splits like yield. Briber receives the
+    ///      escrowed GRAI (vote + lock reduced together). Self-bribe costs only the premium.
     function bribe(address voter, uint256 graiAmount) public payable {
         _requireNotLiquidation();
         address briber = msg.sender;
-
         uint256 bribeAmount = previewBribe(voter, graiAmount);
-        uint256 bribeBody = (bribeAmount * BPS) / (BPS + config.bribePremiumBps);
-        uint256 bribePremium = bribeAmount - bribeBody;
-
-        uint256 treasuryCut = (bribePremium * config.treasuryCutBps) / BPS;
-        uint256 dividendCut = (bribePremium * config.dividendCutBps) / BPS;
-        uint256 auctionAmount = bribePremium - treasuryCut - dividendCut;
 
         Escrow storage entry = escrows[voter];
         _accrueDividends(voter);
-        _accrueVoteReward(voter);
-        _payVoteReward(voter);
 
         totalVoted -= graiAmount;
         totalLocked -= graiAmount;
         entry.voted -= graiAmount;
         entry.amount -= graiAmount;
         _syncDividendDebts(voter);
-        _syncVoteRewardDebt(voter);
         if (entry.voted == 0) _removeVoter(voter);
         if (entry.amount == 0) _removeAccount(voter);
 
-        _transfer(address(this), briber, graiAmount);
-        _pay(briber, address(this), bribeAsset, bribeAmount);
+        (uint256 received, uint256 refund) = _pay(briber, address(this), bribeAsset, bribeAmount, false);
+        if (received == 0) revert AmountZero();
 
-        if (auctionAmount > 0) _place(bribeAsset, auctionAmount);
-        if (dividendCut > 0) _distributeDividend(bribeAsset, dividendCut);
+        uint256 bribeBody = (received * BPS) / (BPS + config.bribePremiumBps);
+        uint256 bribePremium = received - bribeBody;
+        uint256 treasuryCut = (bribePremium * config.treasuryCutBps) / BPS;
+        uint256 dividendCut = (bribePremium * config.dividendCutBps) / BPS;
+        uint256 buybackCut = bribePremium - treasuryCut - dividendCut;
+
+        if (buybackCut > 0) _place(bribeAsset, buybackCut);
+        if (dividendCut > 0) _distribute(bribeAsset, dividendCut);
+        
         if (treasuryCut > 0) _withdraw(treasury, bribeAsset, treasuryCut);
         if (bribeBody > 0) _withdraw(voter, bribeAsset, bribeBody);
-
-        emit Bribe(briber, voter, bribeAsset, graiAmount, bribeAmount, totalVoted);
+        if (refund > 0) _sendEth(briber, refund);
+        
+        _transfer(address(this), briber, graiAmount);
+        emit Bribe(briber, voter, bribeAsset, graiAmount, received, totalVoted);
     }
 
     /// @inheritdoc IGRAI
@@ -609,18 +599,20 @@ contract GRAI is
     //////////////////// REDEEM ////////////////////
 
     /// @inheritdoc IGRAI
-    function redeem(uint256 graiAmount) external nonReentrant {
+    /// @dev Pays the frozen `previewRedeem` vector after burns/`totalValue` cut. `nonReentrant` is
+    ///      required: without it, an ETH/ERC777 callback mid-loop can nest `redeem` and skim later
+    ///      assets above that snapshot (and over-claim the callback asset itself).
+    function redeem(uint256 graiAmount) public nonReentrant {
         address holder = msg.sender;
         if (!liquidation) revert LiquidationClosed();
 
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
         uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (totalValue * graiAmount) / supply : 0;
+        if (value == 0) revert AmountZero();
 
         uint256 walletAmount = balanceOf(holder);
         _accrueDividends(holder);
-        _accrueVoteReward(holder);
-        _payVoteReward(holder);
         uint256 walletBurn = graiAmount < walletAmount ? graiAmount : walletAmount;
         if (walletBurn > 0) _burn(holder, walletBurn);
 
@@ -630,9 +622,8 @@ contract GRAI is
             if (escrowBurn > entry.amount) revert InvalidAmount();
             totalLocked -= escrowBurn;
             entry.amount -= escrowBurn;
-            _syncDividendDebts(holder);
             _clampVote(holder);
-            _syncVoteRewardDebt(holder);
+            _syncDividendDebts(holder);
             _burn(address(this), escrowBurn);
             if (entry.amount == 0) _removeAccount(holder);
         }
@@ -641,7 +632,9 @@ contract GRAI is
         uint256 len = assetOuts.length;
         for (uint256 i; i < len;) {
             _withdraw(holder, assetOuts[i], amounts[i]);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
         emit Redeem(holder, graiAmount, value);
     }
@@ -670,7 +663,7 @@ contract GRAI is
         uint256 count;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            uint256 assetBalance = _balance(asset);
+            uint256 assetBalance = _redeemableBalance(asset);
             if (assetBalance > 0) {
                 uint256 amount = (assetBalance * graiAmount) / supply;
                 if (amount > 0) {
@@ -696,7 +689,10 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Permissionless after `liquidationPeriod + redeemPeriod`: return unredeemed basket
     ///      balances to Grinders, unpause every listed asset, and clear the claim clock so the fund
-    ///      can accept deposits again. Sets `totalValue` to leftover basket NAV (up or down).
+    ///      can accept deposits again. With leftover shares, sets `totalValue = totalNAV` only when that
+    ///      strictly raises mint price (`totalNAV / supply > totalValue / supply`); otherwise reverts
+    ///      `InsolventResettle` (blocks dust-NAV dilution and undercollateralized cheap restart).
+    ///      Dividend inventory in `totalPositions[asset].totalClaimable` is left on GRAI for post-resettle `claim`.
     ///      If no shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
     function resettle() public {
         if (!liquidation || liquidationAt == 0) revert LiquidationClosed();
@@ -708,16 +704,22 @@ contract GRAI is
         for (uint256 i; i < len;) {
             address asset = assetList[i];
             assets[asset].paused = false;
-            uint256 remaining = _balance(asset);
-            if (remaining > 0) {
-                totalNAV += usdValue(asset, remaining);
-                _withdraw(address(grinders), asset, remaining);
+            uint256 sweepable = _redeemableBalance(asset);
+            if (sweepable > 0) {
+                totalNAV += usdValue(asset, sweepable);
+                _withdraw(address(grinders), asset, sweepable);
             }
             emit AssetConfigUpdate(asset, assets[asset]);
             unchecked { ++i; }
         }
-        // Avoid orphan book with zero supply (would break the next deposit: graiOut = 0).
-        totalValue = totalSupply() > 0 ? totalNAV : 0;
+        uint256 supply = totalSupply();
+        if (supply > 0) {
+            // mintPrice = totalValue / supply; require totalNAV / supply > totalValue / supply.
+            if (totalNAV <= totalValue) revert InsolventResettle();
+            totalValue = totalNAV;
+        } else {
+            totalValue = 0;
+        }
 
         liquidation = false;
         liquidationAt = 0;
@@ -734,6 +736,13 @@ contract GRAI is
     function _balance(address asset) internal view returns (uint256) {
         if (asset == address(0)) return address(this).balance;
         return IERC20(asset).balanceOf(address(this));
+    }
+
+    /// @notice Balance available to liquidation redeem / resettle (excludes dividend claim reserve).
+    function _redeemableBalance(address asset) internal view returns (uint256) {
+        uint256 bal = _balance(asset);
+        uint256 reserved = totalPositions[asset].totalClaimable;
+        return bal > reserved ? bal - reserved : 0;
     }
 
     /// @notice Linear Dutch amount: decays `maxAmount` → `minAmount` over `duration`; `elapsed` past
@@ -780,39 +789,23 @@ contract GRAI is
 
     //////////////////// DIVIDENTS ////////////////////
 
-    function _distributeVoteRewards(uint256 amount) internal {
-        uint256 rewards = pendingVoteRewards + amount;
-        if (rewards == 0) return;
-        if (totalVoted == 0) {
-            pendingVoteRewards = rewards;
-            return;
-        }
-
-        uint256 indexIncrease = (rewards * REWARD_PRECISION) / totalVoted;
-        if (indexIncrease == 0) {
-            pendingVoteRewards = rewards;
-            return;
-        }
-
-        uint256 distributed = (indexIncrease * totalVoted) / REWARD_PRECISION;
-        pendingVoteRewards = rewards - distributed;
-        accDividendShare[address(this)] += indexIncrease;
+    /// @dev Lock dividends accrue only on unvoted escrow: `amount - voted`. Fully voted locks earn none.
+    function _unvoted(address account) internal view returns (uint256) {
+        Escrow storage entry = escrows[account];
+        return entry.amount - entry.voted;
     }
 
-    function _distributeDividend(address asset, uint256 amount) internal {
+    function _distribute(address asset, uint256 amount) internal {
         if (amount == 0) return;
-        if (totalLocked == 0) {
-            _place(asset, amount);
-            return;
-        }
-
-        uint256 indexIncrease = (amount * REWARD_PRECISION) / totalLocked;
+        uint256 eligible = totalLocked - totalVoted;
+        uint256 indexIncrease = eligible > 0 ? (amount * REWARD_PRECISION) / eligible : 0;
         if (indexIncrease == 0) {
             _place(asset, amount);
-            return;
+        } else {
+            TotalPosition storage div = totalPositions[asset];
+            div.accShare += indexIncrease;
+            div.totalClaimable += amount;
         }
-
-        accDividendShare[asset] += indexIncrease;
     }
 
     function _accrueDividends(address account) internal {
@@ -824,45 +817,20 @@ contract GRAI is
     }
 
     function _accrueDividend(address account, address asset) internal {
-        Escrow storage entry = escrows[account];
         Position storage pos = positions[account][asset];
-        uint256 accumulated = (entry.amount * accDividendShare[asset]) / REWARD_PRECISION;
+        uint256 accumulated = (_unvoted(account) * totalPositions[asset].accShare) / REWARD_PRECISION;
         pos.claimable += accumulated - pos.debt;
         pos.debt = accumulated;
     }
 
     function _syncDividendDebts(address account) internal {
-        Escrow storage entry = escrows[account];
         uint256 len = assetList.length;
+        uint256 unvoted = _unvoted(account);
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            positions[account][asset].debt = (entry.amount * accDividendShare[asset]) / REWARD_PRECISION;
+            positions[account][asset].debt = (unvoted * totalPositions[asset].accShare) / REWARD_PRECISION;
             unchecked { ++i; }
         }
-    }
-
-    //////////////////// VOTE REWARDS ////////////////////
-
-    function _accrueVoteReward(address account) internal {
-        Escrow storage entry = escrows[account];
-        Position storage pos = positions[account][address(this)];
-        uint256 accumulated = (entry.voted * accDividendShare[address(this)]) / REWARD_PRECISION;
-        pos.claimable += accumulated - pos.debt;
-        pos.debt = accumulated;
-    }
-
-    function _syncVoteRewardDebt(address account) internal {
-        positions[account][address(this)].debt =
-            (escrows[account].voted * accDividendShare[address(this)]) / REWARD_PRECISION;
-    }
-
-    function _payVoteReward(address account) internal returns (uint256 reward) {
-        reward = positions[account][address(this)].claimable;
-        if (reward == 0) return 0;
-
-        positions[account][address(this)].claimable = 0;
-        _transfer(address(this), account, reward);
-        emit VoteReward(account, reward);
     }
 
     function _addAsset(address asset) internal {
@@ -902,10 +870,7 @@ contract GRAI is
     }
 
     function _removeAccount(address account) internal {
-        _accrueVoteReward(account);
-        _payVoteReward(account);
         _clampVote(account);
-        positions[account][address(this)].debt = 0;
         uint256 index = escrows[account].accountId;
         uint256 lastIndex = accounts.length - 1;
         if (index != lastIndex) {
@@ -950,17 +915,20 @@ contract GRAI is
         if (locked == 0) _removeVoter(account);
     }
 
-    /// @dev Pulls `amount` from `from` to `to` and returns tokens actually credited (FoT-safe for ERC20).
-    ///      ETH is funded by `msg.value`; any excess is refunded to `msg.sender`.
+    /// @dev Pulls `amount` from `from` to `to` and returns tokens actually credited (FoT-safe for ERC20)
+    ///      plus any ETH excess (`refund`). ETH is funded by `msg.value`; when `toRefund` is true the
+    ///      excess is sent to `msg.sender`, otherwise the caller must send `refund` later.
     ///      A rejected ETH payment or refund is redirected to `treasury`.
-    function _pay(address from, address to, address asset, uint256 amount) internal returns (uint256 paid) {
+    ///      Stray `msg.value` on an ERC20 path is forwarded to `treasury` (not parked on GRAI).
+    function _pay(address from, address to, address asset, uint256 amount, bool toRefund) internal returns (uint256 paid, uint256 refund) {
         if (asset == address(0)) {
             if (msg.value < amount) revert ValueMismatch();
-            uint256 refund = msg.value - amount;
+            refund = msg.value - amount;
             if (to != address(this)) _sendEth(to, amount);
-            if (refund > 0) _sendEth(msg.sender, refund);
+            if (toRefund && refund > 0) _sendEth(msg.sender, refund);
             paid = amount;
         } else {
+            if (msg.value > 0) _sendEth(treasury, msg.value);
             uint256 before = IERC20(asset).balanceOf(to);
             IERC20(asset).safeTransferFrom(from, to, amount);
             paid = IERC20(asset).balanceOf(to) - before;
