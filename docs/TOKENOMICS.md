@@ -32,7 +32,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty → **treasury**.
 2. `bribe` — buy out **voted** GRAI for `bribeAsset` at a dynamic ask vs half-quorum (premium / par / discount).
 3. **Secondary market** — sell free (unlocked) wallet GRAI OTC / CEX / DEX; protocol does not provide a live redeem.
-4. **Liquidation** — quorum → owner `liquidate` → holders `redeem` → anyone `resettle` (fund restarts).
+4. **Liquidation** — **2-of-2**: vote quorum **and** owner (DAO / multisig) `liquidate` → holders `redeem` → anyone `resettle` (fund restarts). Neither limb alone opens the cycle.
 
 **Yield (**`distribute`**) / bribe premium** splits per `Config` (initialize defaults **≈33.33% / 33.34% / 33.33%**):
 
@@ -64,12 +64,12 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 | **Grinders**           | NFT registry, reserve custody, allocation, liquidation sweeps                                         |
 | **Custodian**          | Per-NFT wallet; `distribute()` yield → GRAI                                                           |
 | **Treasury**           | Treasury cuts + unlock penalties                                                                      |
-| **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, `liquidate`, UUPS                                       |
+| **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; **`liquidate` only with quorum** (2-of-2)          |
 
 
 Native ETH = `address(0)`. WETH is the fallback when ETH pushes are rejected.
 
-`paused` on an asset gates `deposit` **only** (not buyback / distribute / claim). Listing `address(this)` as an asset is a no-op (escrowed GRAI must not enter the redeem basket).
+`paused` on an asset gates `deposit` **only** (not buyback / distribute / claim). Listing `address(this)` as an asset is a no-op (escrowed GRAI must not enter the redeem basket). Listed collateral is assumed **non-rebasing** (balance only changes via GRAI `_pay` / `_withdraw`); rebasing tokens are out of scope.
 
 ---
 
@@ -98,7 +98,7 @@ sequenceDiagram
 | ---- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
 | 1    | `deposit(asset, amount, lock)`  | Asset → Grinders; mint at book; optional escrow                                                |
 | 2    | Or later `lock(graiAmount)`     | Escrow wallet GRAI; dividend-eligible while unvoted; **resets** `lockedAt` on the whole escrow |
-| 3    | Accrue / `claim(holder, asset)` | Receive yield-asset dividends (blocked in liquidation)                                         |
+| 3    | Accrue / `claim(holder, asset)` | Receive yield-asset dividends (allowed in liquidation — reserve ≠ redeem basket)               |
 | 4    | `unlock(graiAmount, claimAll_)` | Accrue, penalty → treasury, clamp votes, return net; optional claim all                        |
 | 5    | Optional `vote`                 | See Voter — voted share stops earning dividends                                                |
 
@@ -144,7 +144,7 @@ She may later `claim` / `claimAll` yield assets accrued to that escrow.
 
 ### Claimer
 
-Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). Blocked while liquidation is open; reserved `totalClaimable` survives `resettle`.
+Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). **Allowed while liquidation is open**: `claim` pays only from the `totalClaimable` reserve, which `_redeemableBalance` excludes from redeem / `resettle` — the two pools do not mix. Unclaimed reserve also survives `resettle`. (`unlock(..., claimAll_=true)` is still blocked in liquidation because `unlock` itself is frozen.)
 
 ```mermaid
 sequenceDiagram
@@ -212,9 +212,10 @@ sequenceDiagram
 | Step | Action             | Effect                                                                 |
 | ---- | ------------------ | ---------------------------------------------------------------------- |
 | 1    | `vote(graiAmount)` | Auto-lock shortfall; `voted ≤ amount`; `totalVoted` ↑; dividend base ↓ |
-| 2    | Quorum             | `totalVoted / supply ≥ quorumBps` (default ~66.67%)                    |
+| 2    | Quorum             | `totalVoted / supply ≥ quorumBps` — **necessary but not sufficient**; owner/DAO must still `liquidate` (2-of-2) |
 | 3a   | `unlock`           | Excess votes clamped; net GRAI returned; penalty → treasury            |
 | 3b   | `bribe`            | Voted GRAI sold (scaled by credited pull); body in `bribeAsset`        |
+| 3c   | Owner `liquidate`  | Only when quorum holds; opens the cycle together with votes            |
 
 **Example** (Alice votes — escrow and dividend base):
 
@@ -261,7 +262,7 @@ sequenceDiagram
 | 2    | Receive asset      | Possible discount vs mint ask (floor at `BPS − bribePremiumBps`)                         |
 | 3    | Exit payment       | `bribe` (refund in `bribeAsset`) or `unlock` (penalty → treasury)                        |
 
-Buyback is **not** “asset + free GRAI rebate”. Bribe is an optional exit of the vote position, not an automatic bonus.
+Buyback payment is **not burned** — it is a lock+vote that the buyer may exit immediately. Same-tx self-`bribe` or `unlock` is fine: the economic cost of taking the lot is the unlock fee (→ treasury) or bribe cutPool (~½ premium / discount carve-out), not permanent loss of `graiIn`. Atomic exit via ETH/callback reentrancy is the same product path, not a separate bug.
 
 **Example 1** (Bob fills at mint ask — `t = 0`, default `bribePremiumBps = 2%`, period = 7d):
 
@@ -391,6 +392,7 @@ if (lock) lock(graiOut)
 
 - Assets go to **Grinders**.
 - Bootstrap mint when `totalValue == 0` (typically empty supply); yield on GRAI is excluded from the mint rate.
+  Cancelled Dutch inventory at `liquidate` enters the redeem basket by design (still excluding `totalClaimable`).
 - Reverts if unknown / paused / liquidation open / zero value or shares.
 - FoT-safe on ERC20 pulls (`_pay` credited delta).
 - `paused` blocks deposits only.
@@ -438,8 +440,8 @@ claimable   += (amount - voted) * accShare / 1e18 - debt
 - Fully voted escrow (`amount == voted`) earns **none** on new cuts.
 - New lockers sync debt to the **current** index → they do **not** receive past cuts.
 - `vote` accrues then shrinks the eligible base and resyncs debt.
-- Claim: `claim` / `claimAll` / previews — **blocked while liquidation is open**.
-- Reserved `totalClaimable` is excluded from redeem / resettle sweeps and remains claimable after restart.
+- Claim: `claim` / `claimAll` / previews — **allowed while liquidation is open** (pays only the reserved slice; does not touch the redeem basket).
+- Reserved `totalClaimable` is excluded from redeem / resettle sweeps (`_redeemableBalance = bal − totalClaimable`) and remains claimable during liquidation and after restart.
 
 Example: Alice locks 100, votes 40 → eligible 60. Bob locks 100 unvoted → eligible 100. Total eligible 160. A 30 USDC dividend cut pays Alice **11.25**, Bob **18.75**.
 
@@ -455,11 +457,11 @@ One open lot per sold asset. Ask is **GRAI** at mint price. GRAI itself cannot b
 remaining  += amount
 maxPayment = previewDeposit(asset, remaining).graiOut
 minPayment = maxPayment * (BPS - bribePremiumBps) / BPS  // default 98% (−2% max discount)
-startTime  = now                                  // intentional: each top-up restarts the clock
+startTime  = now                                  // every merge, including dust
 period     = config.buybackPeriod                 // snapshotted; default 7d
 ```
 
-Each `_place` restarts the clock at the live mint ask. Ask never decays below the floor (unless `bribePremiumBps = BPS`).
+**Business logic:** the protocol **wants frequent `_place`s**, including dust top-ups from small `distribute` / bribe cuts. Each merge **intentionally** restarts the Dutch clock at the live mint ask for the full remaining lot — there is no “preserve elapsed on dust” path. Buyers should treat a near-floor ask as unstable until they land the fill; sandwich / repeated dust resets are accepted auction dynamics, not a defect. Ask never decays below the floor (unless `bribePremiumBps = BPS`).
 
 ### 6.2 Pricing / fill
 
@@ -474,7 +476,7 @@ graiIn, amountOut = previewBuyback(asset, amount, timestamp)
 2. If `graiIn > 0`: `lock(graiIn)` then `vote(graiIn)` (payment from wallet, then vote).
 3. Withdraw `amountOut` asset to buyer.
 
-`graiIn` may be 0 on dust fills; full-lot ask floors at `(BPS − bribePremiumBps)` of mint (default 98%).
+`graiIn` may be 0 on dust fills — **intentional**: floor division can yield a free `amountOut` when `ask * amountOut < initial` (or `minPayment` truncates to 0 on tiny `maxPayment`). Protocol accepts dust clearance for zero GRAI; material lots still pay. Full-lot ask floors at `(BPS − bribePremiumBps)` of mint (default 98%).
 
 Liquidation deletes open auctions into the redeem basket.
 
@@ -624,15 +626,20 @@ Leftover `(graiAmount − graiOut)` restored as locked+voted on voter. Briber re
 
 ## 9. Liquidation cycle
 
-### 9.1 Open (`liquidate`, owner + quorum)
+### 9.1 Open (`liquidate`, **2-of-2**: quorum **and** owner / DAO)
 
-Pause **every** listed asset; cancel auctions into basket; `liquidationAt = now`.
+Opening liquidation needs **both** confirmations:
+
+1. **Quorum** — `hasQuorum()`: `totalVoted * BPS >= totalSupply * quorumBps` (default ~66.67%). Voters alone cannot open the cycle.
+2. **Owner (DAO / multisig)** — `onlyOwner` calls `liquidate()`. Owner alone cannot open without quorum (`LiquidationQuorumNotMet`).
+
+Then: cancel auctions into basket; `liquidationAt = now`. Deposits (and other live paths) are blocked by the liquidation flag — per-asset `paused` is **not** rewritten.
 
 While liquidation is open, `setConfig` **is fully blocked** (`LiquidationOpen`) so live `liquidationPeriod` / `redeemPeriod` clocks cannot be rewritten mid-cycle. Zero windows are rejected even when closed (`PeriodZero`).
 
 ### 9.2 Consolidation (`liquidationPeriod`, default 24h)
 
-`redeem` blocked (`LiquidationDelay`). Keepers run `Grinders.liquidate` sweeps → balances on GRAI. `claim` / deposit / buyback / bribe / lock / vote blocked while liquidation is open.
+`redeem` blocked (`LiquidationDelay`). Keepers run `Grinders.liquidate` sweeps → balances on GRAI. Deposit / buyback / bribe / lock / unlock / vote blocked while liquidation is open. **`claim` / `claimAll` stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
 
 ### 9.3 Redeem
 
@@ -656,15 +663,15 @@ State when `redeem` opens (`liquidationPeriod` elapsed):
    - Pays her the frozen vector: wallet **+800 USDC**, **+0.1 WETH**.
 3. Remaining holders still share the leftover basket **7,200 USDC** + **0.9 WETH** against **900 GRAI** until they redeem or `resettle`.
 
-Dividend `totalClaimable` is **not** in this vector — Alice would have needed to `claim` before liquidation opened (claims are blocked while open).
+Dividend `totalClaimable` is **not** in this vector — Alice (or anyone) may still `claim` that reserve during liquidation; it never enters the redeem pro-rata.
 
 ### 9.4 Close (`resettle`)
 
 Permissionless after `liquidationPeriod + redeemPeriod`:
 
 1. Sweep `_redeemableBalance` → Grinders (dividend `totalClaimable` stays on GRAI).
-2. **Force-unpause every listed asset** — intentional restart business logic; pre-liquidation owner pauses are **not** restored (owner may re-pause after).
-3. If `supply > 0`: require `totalNAV > totalValue` (strict mint-price increase), then `totalValue = totalNAV`; else `InsolventResettle`.
+2. Per-asset `paused` flags are left as the owner set them (liquidation itself never toggled them).
+3. If `supply > 0`: require `totalNAV >= totalValue`, then `totalValue = totalNAV`; else `InsolventResettle`.
 4. If `supply == 0`: `totalValue = 0` even if dust was swept.
 5. Clear `liquidation` / `liquidationAt`.
 
@@ -711,7 +718,7 @@ Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is o
 
 | Role                     | GRAI                                                                                                                        |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/bribeAsset, feeds, `set` / `setFeed` / `setAssetConfig`, `liquidate` |
+| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/bribeAsset, feeds, `set` / `setFeed` / `setAssetConfig`; `liquidate` **only with quorum** (2-of-2 with voters / DAO) |
 
 
 Grinders: `Ownable` for custodians / allocation / upgrades.
@@ -742,11 +749,12 @@ Grinders: `Ownable` for custodians / allocation / upgrades.
 4. **No unvoted locks → dividend cut auctions** — same for bribe premium dividend cut.
 5. `buyback` **pays GRAI** → `lock` + `vote` on buyer (not a voter GRAI reward pool).
 6. **Quorum uses live supply** — deposits dilute progress until re-votes.
-7. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
-8. **Bribe / claim / mint paths blocked in liquidation** (as coded).
-9. **FoT** — deposit/distribute/bribe size economics from credited `_pay`; bribe also scales GRAI out.
-10. `resettle` requires strict mint-price raise when shares remain; force-unpause is intentional; deposit bootstrap when `totalValue == 0`.
-11. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
+7. **Liquidation is 2-of-2** — `hasQuorum()` **and** owner (DAO) `liquidate`; either limb alone is insufficient.
+8. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
+9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; **`claim` / `claimAll` allowed** — dividend reserve and redeemable basket are separate (`_redeemableBalance`).
+10. **FoT** — deposit/distribute/bribe size economics from credited `_pay`; bribe also scales GRAI out.
+11. `resettle` requires `totalNAV >= totalValue` when shares remain; deposit bootstrap when `totalValue == 0`.
+12. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
 
 ---
 
@@ -761,11 +769,11 @@ Grinders: `Ownable` for custodians / allocation / upgrades.
 | `lock` / `unlock` / `vote` | Anyone              | Blocked                                      |
 | `distribute`               | Anyone (custodians) | Blocked                                      |
 | `buyback`                  | Anyone              | Blocked                                      |
-| `claim` / `claimAll`       | Anyone              | Blocked                                      |
+| `claim` / `claimAll`       | Anyone              | Allowed (claims ≠ redeem basket)            |
 | `bribe`                    | Anyone              | Blocked                                      |
 | `redeem`                   | Holder              | Only when open (after delay); `nonReentrant` |
-| `liquidate`                | Owner               | Opens cycle                                  |
-| `resettle`                 | Anyone              | Closes cycle; force-unpause; fund restarts   |
+| `liquidate`                | Owner (DAO)         | Opens cycle **only if** `hasQuorum()` (2-of-2) |
+| `resettle`                 | Anyone              | Closes cycle; fund restarts                  |
 | `setConfig`                | Owner               | Blocked while open                           |
 
 
