@@ -299,8 +299,11 @@ contract GRAI is
     ///      toward liquidation on the buyer (refund via `bribe` or `unlock` with unlock penalty).
     ///      `graiIn` can still floor to 0 on dust fills; full-lot ask decays to
     ///      `(BPS - bribePremiumBps)` of mint, not to free clearance (unless premium is `BPS`).
+    ///      Also attributes any dead GRAI on this contract (`balanceOf(this) - totalLocked`) to
+    ///      `treasury` as locked+voted (see `_arise`).
     function buyback(address asset, uint256 amount) public {
         _requireNotLiquidation();
+        _arise();
         address buyer = msg.sender;
 
         (uint256 graiIn, uint256 amountOut) = previewBuyback(asset, amount, block.timestamp);
@@ -318,7 +321,7 @@ contract GRAI is
             lock(graiIn);
             vote(graiIn);
         }
-        _withdraw(buyer, asset, amountOut);
+        if (amountOut > 0) _withdraw(buyer, asset, amountOut);
         emit Buyback(buyer, asset, graiIn, amountOut);
     }
 
@@ -619,8 +622,9 @@ contract GRAI is
     //////////////////// LIQUIDATE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Opens liquidation after vote quorum: cancel open yield auctions into the redeem basket,
-    ///      pause every listed asset, and start the claim clock at `liquidationAt`.
+    /// @dev Opens liquidation after vote quorum: cancel open yield auctions into the redeem basket
+    ///      and start the claim clock at `liquidationAt`. Deposits are blocked by `_requireNotLiquidation`
+    ///      (per-asset `paused` is unchanged).
     function liquidate() public onlyOwner {
         _requireNotLiquidation();
         if (!hasQuorum()) revert LiquidationQuorumNotMet();
@@ -632,8 +636,6 @@ contract GRAI is
                 delete auctions[asset];
                 emit AuctionUpdate(asset, 0, 0, 0);
             }
-            assets[asset].paused = true;
-            emit AssetConfigUpdate(asset, assets[asset]);
             unchecked { ++i; }
         }
         liquidation = true;
@@ -731,15 +733,12 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Permissionless after `liquidationPeriod + redeemPeriod`: return unredeemed basket
-    ///      balances to Grinders and clear the claim clock so the fund can accept deposits again.
-    ///      Business logic: every listed asset is force-unpaused (`paused = false`). Pre-liquidation
-    ///      owner pauses are intentionally not restored — restart is a clean deposit gate; the owner
-    ///      may re-pause after `resettle` if needed. With leftover shares, sets `totalValue = totalNAV`
-    ///      only when that strictly raises mint price (`totalNAV / supply > totalValue / supply`);
-    ///      otherwise reverts `InsolventResettle` (blocks dust-NAV dilution and undercollateralized
-    ///      cheap restart). Dividend inventory in `totalPositions[asset].totalClaimable` is left on
-    ///      GRAI for post-resettle `claim`. If no shares remain, book is cleared to zero even if dust
-    ///      NAV is swept to Grinders.
+    ///      balances to Grinders and clear the claim clock so the fund can accept deposits again
+    ///      (`_requireNotLiquidation` lifts). Per-asset `paused` flags are left as the owner set them.
+    ///      With leftover shares, sets `totalValue = totalNAV` when `totalNAV >= totalValue`
+    ///      (mint price does not fall); otherwise reverts `InsolventResettle`. Dividend inventory in
+    ///      `totalPositions[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
+    ///      shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
     function resettle() public {
         if (!liquidation || liquidationAt == 0) revert LiquidationClosed();
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
@@ -749,8 +748,6 @@ contract GRAI is
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            // Business logic: clean restart — do not restore pre-liquidation pauses.
-            assets[asset].paused = false;
             uint256 sweepable = _redeemableBalance(asset);
             if (sweepable > 0) {
                 totalNAV += usdValue(asset, sweepable);
@@ -761,8 +758,8 @@ contract GRAI is
         }
         uint256 supply = totalSupply();
         if (supply > 0) {
-            // mintPrice = totalValue / supply; require totalNAV / supply > totalValue / supply.
-            if (totalNAV <= totalValue) revert InsolventResettle();
+            // mintPrice = totalValue / supply; require totalNAV / supply >= totalValue / supply.
+            if (totalNAV < totalValue) revert InsolventResettle();
             totalValue = totalNAV;
         } else {
             totalValue = 0;
@@ -817,10 +814,39 @@ contract GRAI is
         return (usdAmount * (10 ** adec) * (10 ** pdec)) / (price * (10 ** USD_DECIMALS));
     }
 
+    /// @dev GRAI transferred directly to this contract (not via `lock`) sits in
+    ///      `balanceOf(this) - totalLocked`. Attribute that dead balance to `treasury` as locked and
+    ///      fully voted: counts toward quorum, earn no dividends, exit via treasury `unlock` / `bribe`.
+    ///      No ERC20 move — tokens are already here. Called from `buyback`.
+    function _arise() internal {
+        uint256 bal = balanceOf(address(this));
+        if (bal <= totalLocked) return;
+        uint256 dead = bal - totalLocked;
+
+        address account = treasury;
+        Escrow storage entry = escrows[account];
+
+        _accrueDividends(account);
+        if (entry.amount == 0) _addAccount(account);
+        totalLocked += dead;
+        entry.amount += dead;
+        entry.lockedAt = uint48(block.timestamp);
+
+        if (entry.voted == 0) _addVoter(account);
+        totalVoted += dead;
+        entry.voted += dead;
+        entry.votedAt = uint48(block.timestamp);
+        _syncDividendDebts(account);
+
+        emit Locked(account, dead, totalLocked);
+        emit Vote(account, dead, totalVoted);
+    }
+
     /// @dev Merge `amount` into the asset auction and restart the Dutch clock. Payment is always the
     ///      current mint-price GRAI for the full lot (`previewDeposit`) — no average of a stale ask.
-    ///      Decays to `(BPS - bribePremiumBps)` of that mint ask over `buybackPeriod`. Clock restart is
-    ///      intentional: each `_place` rebuilds `maxPayment` at the live mint ask.
+    ///      Decays to `(BPS - bribePremiumBps)` of that mint ask over `buybackPeriod`. Clock restart on
+    ///      every merge (including dust) is intentional: the protocol prefers frequent re-lists at the
+    ///      live mint ask over preserving Dutch elapsed across top-ups.
     function _place(address asset, uint256 amount) internal {
         if (asset == address(this)) revert AssetUnknown();
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
