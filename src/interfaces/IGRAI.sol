@@ -103,15 +103,17 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 dividendCutBps;
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
-        /// @notice Settlement premium for a lock buyout, in bps of book value.
+        /// @notice Max |ask adjustment| for dynamic bribes, in bps of book value.
+        /// @dev Ask scales linearly with vote-share vs half-quorum: full premium at 0 votes, par at
+        ///      half quorum, full theoretical discount at/above quorum. Premium splits half the
+        ///      premium to cuts; discount applies half the gap to the ask and carves the other half
+        ///      to cuts; par pays the full ask to the voter.
         uint16 bribePremiumBps;
         uint16 quorumBps;
-        /// @notice Dutch floor as a fraction of `maxPayment` (`minPayment = max * buybackFloorBps / BPS`).
-        /// @dev Default 2000 (20%) ⇒ ask decays at most −80% from mint, never free.
-        uint16 buybackFloorBps;
         /// @notice Max unlock fee in bps of unlocked GRAI at `lockedAt` (linearly decays to 0).
         uint16 unlockFeeBps;
         /// @notice Buyback Dutch duration from `maxPayment` to `minPayment`.
+        /// @dev `minPayment = maxPayment * (BPS - bribePremiumBps) / BPS` (max discount = premium).
         uint32 buybackPeriod;
         /// @notice Delay after liquidation opens before `redeem` (claim) is allowed.
         /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
@@ -161,7 +163,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 treasuryCutBps,
             uint16 bribePremiumBps,
             uint16 quorumBps,
-            uint16 buybackFloorBps,
             uint16 unlockFeeBps,
             uint32 buybackPeriod,
             uint32 liquidationPeriod,
@@ -327,12 +328,19 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Claim yield dividends for every listed asset accrued to `holder`'s lock; paid to `holder`.
     function claimAll(address holder) external;
 
-    /// @notice Preview the `bribeAsset` payment to buy out a voter's voted GRAI.
-    function previewBribe(address voter, uint256 graiAmount) external view returns (uint256 bribeAmount);
+    /// @notice Preview bribe ask in `bribeAsset`: `bribeAmount`, plus absolute `premium` or `discount`
+    ///         vs book (one is always 0). `premium > 0` ⇒ scarce votes (favor voting); `discount > 0`
+    ///         ⇒ excess votes (favor bribing). Discount is half the full book−ask gap; ask = book − discount.
+    function previewBribe(address voter, uint256 graiAmount)
+        external
+        view
+        returns (uint256 bribeAmount, uint256 premium, uint256 discount);
 
-    /// @notice Anyone may buy out `voter`'s vote for `previewBribe`: book to voter, premium to
-    ///         treasury/dividends/auction (sized from the credited `_pay` pull); briber receives the
-    ///         escrowed GRAI.
+    /// @notice Anyone may buy out `voter`'s vote for `previewBribe`. Ask is book scaled by a dynamic
+    ///         adj vs half-quorum (premium / par / discount). Premium: voter gets book + half the
+    ///         premium, rest → cuts. Discount: ask is book − half gap; the other half → cuts.
+    ///         Par: voter gets the full credited pull. Briber receives `graiAmount * received / bribeAmount`
+    ///         escrowed GRAI (remainder stays with voter).
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Open liquidation (requires quorum): pauses all assets and cancels open yield auctions
@@ -340,6 +348,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
-    ///         Grinders, unpause assets, reset `totalValue` to leftover NAV so the fund can restart.
+    ///         Grinders; force-unpause all listed assets (intentional restart business logic — does
+    ///         not restore pre-liquidation pauses); reset `totalValue` to leftover NAV so the fund
+    ///         can restart.
     function resettle() external;
 }
