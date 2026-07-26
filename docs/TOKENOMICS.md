@@ -237,20 +237,19 @@ Supply = **1,000 GRAI**. Alice already has **100 GRAI** locked unvoted (`amount 
 
 ---
 
-### Buyback buyer
+### Buybacker
 
 ```mermaid
 sequenceDiagram
-    participant B as Buyer
+    participant B as Buybacker
     participant G as GRAI
 
     B->>G: buyback(asset, amount)
     G->>G: Dutch graiIn / amountOut
+    G->>G: require graiIn > 0 and amountOut > 0
+    G->>G: lock(graiIn); vote(graiIn)
     G->>B: amountOut (asset)
-    opt graiIn > 0
-        G->>G: lock(graiIn); vote(graiIn)
-        Note over B,G: Payment escrowed + voted on buyer (no dividends on that GRAI)
-    end
+    Note over B,G: Payment escrowed + voted on buybacker (no dividends on that GRAI)
 ```
 
 
@@ -472,11 +471,12 @@ graiIn, amountOut = previewBuyback(asset, amount, timestamp)
 
 `buyback(asset, amount)`:
 
-1. Update lot remaining / delete if filled.
-2. If `graiIn > 0`: `lock(graiIn)` then `vote(graiIn)` (payment from wallet, then vote).
-3. Withdraw `amountOut` asset to buyer.
+1. Preview Dutch `graiIn` / `amountOut`; **revert `AmountZero` unless both `> 0`** (no free / zero fills — prevents chunked floor-drain of a lot for Σ `graiIn = 0`).
+2. Reduce auction `remaining` (or delete lot).
+3. `lock(graiIn)` then `vote(graiIn)` (payment from wallet, then vote).
+4. Withdraw `amountOut` asset to buyer.
 
-`graiIn` may be 0 on dust fills — **intentional**: floor division can yield a free `amountOut` when `ask * amountOut < initial` (or `minPayment` truncates to 0 on tiny `maxPayment`). Protocol accepts dust clearance for zero GRAI; material lots still pay. Full-lot ask floors at `(BPS − bribePremiumBps)` of mint (default 98%).
+Dust tails where `ask * amountOut < initial` (floor → `graiIn = 0`) stay in the auction until a large enough fill, a later `_place` merge, or liquidation redeem. Full-lot ask floors at `(BPS − bribePremiumBps)` of mint (default 98%).
 
 Liquidation deletes open auctions into the redeem basket.
 
@@ -501,6 +501,7 @@ Switching requires a feed; open votes/auctions do not block. Setting `bribeAsset
 - `lock` — escrow GRAI; dividend eligibility on the unvoted portion; `lockedAt = now` **on every top-up** (including buyback / vote shortfall), re-arming the unlock fee on the whole escrow.
 - `unlock(graiAmount, claimAll_)` — accrue dividends, decaying unlock fee → **treasury**, clamp `voted ≤ amount`, return net GRAI; optional `claimAll_`.
 - Unlock fee: `unlockFeeBps` (default **10%**) at `lockedAt`, linearly → **0** over `unlockPenaltyPeriod` (default **24h**).
+- While live `penaltyBps > 0`, **partial** unlocks must be ≥ `ceil(BPS / penaltyBps)` (e.g. 10 GRAI wei at 10% fee) so chunked dust cannot floor the fee to 0; **full-escrow** unlock is always allowed.
 - Unlock reduces lock first; vote is clamped only if `voted > amount` afterward.
 
 ### 8.2 Vote
