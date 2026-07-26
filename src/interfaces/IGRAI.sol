@@ -269,6 +269,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         returns (uint256 graiOut, uint256 depositValue);
 
     /// @notice Fill a Dutch lot: pay GRAI ask, receive `asset`; `graiIn` is locked+voted on the buyer.
+    ///         Reverts if `graiIn == 0` or `amountOut == 0` (no free / zero fills).
     function buyback(address asset, uint256 amount) external;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
@@ -294,11 +295,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         `graiAmount == 0` accrues (and optionally claims) without unlocking.
     ///         Early unlock may take a decaying penalty (`unlockFeeBps` → 0 over `unlockPenaltyPeriod` from `lockedAt`);
     ///         the penalty GRAI is sent to `treasury`.
+    ///         While live fee > 0, partial unlocks below `ceil(BPS / penaltyBps)` revert (blocks fee-floor dust chunks);
+    ///         unlocking the full remaining escrow is always allowed.
     ///         When `claimAll_` is true, also claims all listed-asset yield dividends for the caller.
     function unlock(uint256 graiAmount, bool claimAll_) external;
 
     /// @notice Preview unlock of `graiAmount` at `timestamp`: `unlockAmount` GRAI returned to wallet and `penalty` to treasury
     ///         (`penalty` is 0 after `unlockPenaltyPeriod` from `lockedAt`; `unlockAmount = graiAmount - penalty`).
+    ///         While live fee > 0, reverts on partial unlocks below `ceil(BPS / penaltyBps)` (same rule as `unlock`).
     ///         When `claimAll_` is true, also returns `previewClaimAll` dividend outs for `account`.
     function previewUnlock(address account, uint256 graiAmount, uint256 timestamp, bool claimAll_)
         external

@@ -128,7 +128,7 @@ contract GRAI is
             cfg.buybackCutBps > BPS
             || cfg.dividendCutBps > BPS
             || cfg.treasuryCutBps > BPS
-            || cfg.bribePremiumBps > BPS
+            || 2 * cfg.bribePremiumBps > BPS
             || cfg.quorumBps > BPS
             || cfg.unlockFeeBps > BPS
         ) revert BpsTooHigh();
@@ -297,16 +297,17 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; `graiIn` is escrowed and voted
     ///      toward liquidation on the buyer (refund via `bribe` or `unlock` with unlock penalty).
-    ///      `graiIn` can still floor to 0 on dust fills; full-lot ask decays to
-    ///      `(BPS - bribePremiumBps)` of mint, not to free clearance (unless premium is `BPS`).
-    ///      Also attributes any dead GRAI on this contract (`balanceOf(this) - totalLocked`) to
-    ///      `treasury` as locked+voted (see `_arise`).
+    ///      Requires `graiIn > 0` and `amountOut > 0` (no free / zero fills — blocks chunked floor-drain).
+    ///      Full-lot ask decays to `(BPS - bribePremiumBps)` of mint (not free clearance unless
+    ///      premium is `BPS`). Also attributes any dead GRAI on this contract
+    ///      (`balanceOf(this) - totalLocked`) to `treasury` as locked+voted (see `_arise`).
     function buyback(address asset, uint256 amount) public {
         _requireNotLiquidation();
         _arise();
         address buyer = msg.sender;
 
         (uint256 graiIn, uint256 amountOut) = previewBuyback(asset, amount, block.timestamp);
+        if (graiIn == 0 || amountOut == 0) revert AmountZero();
 
         DutchAuction storage entry = auctions[asset];
         if (entry.remaining > amountOut) {
@@ -315,13 +316,10 @@ contract GRAI is
             delete auctions[asset];
         }
 
-        // graiIn may be 0 once the Dutch ask has decayed — still deliver amountOut.
         // `lock` pulls GRAI from the buyer; `vote` commits it (unvoted share stays 0 → no dividends).
-        if (graiIn > 0) {
-            lock(graiIn);
-            vote(graiIn);
-        }
-        if (amountOut > 0) _withdraw(buyer, asset, amountOut);
+        lock(graiIn);
+        vote(graiIn);
+        _withdraw(buyer, asset, amountOut);
         emit Buyback(buyer, asset, graiIn, amountOut);
     }
 
@@ -375,7 +373,7 @@ contract GRAI is
     /// @dev Accrues lock dividends, takes decaying unlock penalty (→ `treasury`), clamps excess votes, and
     ///      returns `graiAmount - penalty` to wallet. `graiAmount == 0` is allowed for claim-only
     ///      (accrue + optional `claimAll_`, no unlock). Optional `claimAll_` pays all listed-asset
-    ///      dividends to `msg.sender` after accrual.
+    ///      dividends to `msg.sender` after accrual. Dust partial / fee floor rules live in `previewUnlock`.
     function unlock(uint256 graiAmount, bool claimAll_) public {
         _requireNotLiquidation();
         address account = msg.sender;
@@ -405,7 +403,8 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Linear decay of `unlockFeeBps` → 0 over `unlockPenaltyPeriod` since `lockedAt` at `timestamp`.
     ///      Returns `unlockAmount = graiAmount - penalty` (GRAI returned to wallet) and `penalty` (→ `treasury`).
-    ///      When `claimAll_` is true, also returns `previewClaimAll(account)` dividend outs.
+    ///      While live `penaltyBps > 0`, partial unlocks below `ceil(BPS / penaltyBps)` revert (`InvalidAmount`);
+    ///      full-escrow exit is always allowed. When `claimAll_` is true, also returns `previewClaimAll` outs.
     function previewUnlock(address account, uint256 graiAmount, uint256 timestamp, bool claimAll_)
         public
         view
@@ -428,6 +427,11 @@ contract GRAI is
             } else {
                 uint256 penaltyBps =
                     (uint256(config.unlockFeeBps) * (config.unlockPenaltyPeriod - elapsed)) / config.unlockPenaltyPeriod;
+                if (penaltyBps > 0) {
+                    uint256 minUnlock = (uint256(BPS) + penaltyBps - 1) / penaltyBps;
+                    // Partial dust unlocks floor fee to 0; full exit of a sub-min bag is allowed.
+                    if (graiAmount < minUnlock && graiAmount < escrows[account].amount) revert InvalidAmount();
+                }
                 penalty = (graiAmount * penaltyBps) / BPS;
                 unlockAmount = graiAmount - penalty;
             }
@@ -535,10 +539,9 @@ contract GRAI is
         Escrow storage entry = escrows[voter];
         _accrueDividends(voter);
 
-        // Reserve the full ask before `_pay` so a reentrant bribe cannot double-spend the same escrow.
-        // FoT may credit less than `bribeAmount`; leftover is restored after `received` is known.
-        totalVoted -= graiAmount;
-        totalLocked -= graiAmount;
+        // Reserve escrow before `_pay` so a reentrant bribe cannot double-spend the same voter.
+        // Keep `totalLocked`/`totalVoted` unchanged until `graiOut` leaves: otherwise mid-`_pay` /
+        // payout hooks can `buyback` → `_arise` and book in-flight GRAI to treasury as "dead".
         entry.voted -= graiAmount;
         entry.amount -= graiAmount;
         _syncDividendDebts(voter);
@@ -550,12 +553,10 @@ contract GRAI is
         if (graiOut == 0) revert AmountZero();
         if (graiOut > graiAmount) graiOut = graiAmount;
 
-        uint256 leftover = graiAmount - graiOut;
-        if (leftover > 0) {
-            entry.voted += leftover;
-            entry.amount += leftover;
-            totalVoted += leftover;
-            totalLocked += leftover;
+        uint256 gap = graiAmount - graiOut;
+        if (gap > 0) {
+            entry.voted += gap;
+            entry.amount += gap;
             _syncDividendDebts(voter);
         }
         if (entry.voted == 0) _removeVoter(voter);
@@ -580,7 +581,10 @@ contract GRAI is
         if (voterCut > 0) _withdraw(voter, bribeAsset, voterCut);
         if (refund > 0) _sendEth(briber, refund);
 
+        // Tokens leave and book drops together — safe vs reentrant `_arise`.
         _transfer(address(this), briber, graiOut);
+        totalVoted -= graiOut;
+        totalLocked -= graiOut;
         emit Bribe(briber, voter, bribeAsset, graiOut, received, totalVoted);
     }
 
@@ -854,7 +858,7 @@ contract GRAI is
         DutchAuction storage entry = auctions[asset];
         uint256 remaining = entry.remaining + amount;
         (, uint256 maxPayment) = previewDeposit(asset, remaining);
-        if (maxPayment == 0) revert AmountZero();
+        if (maxPayment == 0) return; // dust: don't list, don't revert distribute
 
         entry.asset = asset;
         entry.remaining = remaining;
