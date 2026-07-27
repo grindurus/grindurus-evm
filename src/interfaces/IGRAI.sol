@@ -103,11 +103,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 dividendCutBps;
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
-        /// @notice Max |ask adjustment| for dynamic bribes, in bps of book value.
-        /// @dev Ask scales linearly with vote-share vs half-quorum: full premium at 0 votes, par at
-        ///      half quorum, full theoretical discount at/above quorum. Premium splits half the
-        ///      premium to cuts; discount applies half the gap to the ask and carves the other half
-        ///      to cuts; par pays the full ask to the voter.
+        /// @notice Slope scale for dynamic bribe ask adj, in bps of book value per half-quorum of
+        ///         vote-share (also Dutch buyback max discount).
+        /// @dev Ask scales linearly with vote-share vs half-quorum: `|adj| = bribePremiumBps` at 0
+        ///      votes and at quorum; par at half quorum; above quorum discount `adj` may exceed
+        ///      `bribePremiumBps` (uncapped until `adj ≥ BPS`). Premium splits half the premium to
+        ///      cuts; discount applies half the gap to the ask and carves the other half to cuts;
+        ///      par pays the full ask to the voter.
         uint16 bribePremiumBps;
         uint16 quorumBps;
         /// @notice Max unlock fee in bps of unlocked GRAI at `lockedAt` (linearly decays to 0).
@@ -245,6 +247,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Canonical WETH for ETH→WETH fallback when a native push is rejected.
     function weth() external view returns (IWETH);
 
+    /// @notice Set bribe settlement asset (listed feed). Must not be fee-on-transfer.
     function setBribeAsset(address bribeAsset_) external;
 
     /// @notice List (`feedType != 0`) or delist (`feedType == 0`, `cfg` ignored) an asset.
@@ -292,27 +295,20 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function vote(uint256 graiAmount) external;
 
     /// @notice Accrue residual dividends and return `graiAmount` from the active lock to the wallet.
-    ///         `graiAmount == 0` accrues (and optionally claims) without unlocking.
     ///         Early unlock may take a decaying penalty (`unlockFeeBps` → 0 over `unlockPenaltyPeriod` from `lockedAt`);
     ///         the penalty GRAI is sent to `treasury`.
     ///         While live fee > 0, partial unlocks below `ceil(BPS / penaltyBps)` revert (blocks fee-floor dust chunks);
     ///         unlocking the full remaining escrow is always allowed.
-    ///         When `claimAll_` is true, also claims all listed-asset yield dividends for the caller.
-    function unlock(uint256 graiAmount, bool claimAll_) external;
+    ///         Yield dividends are claimed separately via `claim` / `claimAll`.
+    function unlock(uint256 graiAmount) external;
 
     /// @notice Preview unlock of `graiAmount` at `timestamp`: `unlockAmount` GRAI returned to wallet and `penalty` to treasury
     ///         (`penalty` is 0 after `unlockPenaltyPeriod` from `lockedAt`; `unlockAmount = graiAmount - penalty`).
     ///         While live fee > 0, reverts on partial unlocks below `ceil(BPS / penaltyBps)` (same rule as `unlock`).
-    ///         When `claimAll_` is true, also returns `previewClaimAll` dividend outs for `account`.
-    function previewUnlock(address account, uint256 graiAmount, uint256 timestamp, bool claimAll_)
+    function previewUnlock(address account, uint256 graiAmount, uint256 timestamp)
         external
         view
-        returns (
-            uint256 unlockAmount,
-            uint256 penalty,
-            address[] memory claimAssets,
-            uint256[] memory claimAmounts
-        );
+        returns (uint256 unlockAmount, uint256 penalty);
 
     /// @notice Preview yield dividends claimable for `asset`: `type(uint256).max` = full pending,
     ///         otherwise `min(amount, pending)` (including unrealized index accrual).
@@ -341,10 +337,11 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         returns (uint256 bribeAmount, uint256 premium, uint256 discount);
 
     /// @notice Anyone may buy out `voter`'s vote for `previewBribe`. Ask is book scaled by a dynamic
-    ///         adj vs half-quorum (premium / par / discount). Premium: voter gets book + half the
-    ///         premium, rest → cuts. Discount: ask is book − half gap; the other half → cuts.
-    ///         Par: voter gets the full credited pull. Briber receives `graiAmount * received / bribeAmount`
-    ///         escrowed GRAI (remainder stays with voter).
+    ///         adj vs half-quorum (premium / par / discount; slope `bribePremiumBps`, uncapped above
+    ///         quorum on the discount leg). `bribeAsset` must not be fee-on-transfer: payment must
+    ///         credit exactly `bribeAmount`; briber receives the full escrowed `graiAmount`.
+    ///         Premium: voter gets book + half the premium, rest → cuts. Discount: ask is book −
+    ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Open liquidation (requires quorum): pauses all assets and cancels open yield auctions
