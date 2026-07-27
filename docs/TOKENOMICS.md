@@ -85,7 +85,7 @@ sequenceDiagram
 
     D->>G: deposit[asset, amount, lock?]
     G->>R: asset principal
-    G->>G: totalValue up; mint GRAI
+    G->>G: totalValue up then mint GRAI
     opt lock is true
         G->>G: lock[graiOut] - unvoted escrow earns dividends
     end
@@ -154,11 +154,11 @@ sequenceDiagram
     participant C as Claimer
 
     Y->>G: distribute[asset, amount]
-    G->>G: split cuts; dividendCut to accShare if eligible
+    G->>G: split cuts - dividendCut to accShare if eligible
     Note over G,L: claimable grows with amount-voted share of delta
 
     C->>G: claim[holder, asset, amount] or claimAll[holder]
-    G->>G: accrue; pull from totalClaimable
+    G->>G: accrue then pull from totalClaimable
     G->>L: asset to holder
 ```
 
@@ -198,7 +198,7 @@ sequenceDiagram
     Note over V,G: amount - voted leaves dividend base
 
     alt Exit via unlock
-        V->>G: unlock[graiAmount] clamps voted; penalty to treasury
+        V->>G: unlock[graiAmount] clamps voted - penalty to treasury
     else Exit via bribe
         B->>G: bribe[voter, amount]
         G->>V: bribeBody in bribeAsset
@@ -316,10 +316,10 @@ sequenceDiagram
     participant V as Voter
 
     B->>G: bribe[voter, graiAmount]
-    G->>G: reserve full ask; pay; size graiOut from credited amount
+    G->>G: reserve full ask then pay then size graiOut from credited amount
     G->>B: transfer graiOut GRAI to wallet
     G->>V: voterShare in bribeAsset
-    Note over G: premium half to cuts; discount half gap to cuts; par no cuts
+    Note over G: premium half to cuts - discount half gap to cuts - par no cuts
     Note over V,G: leftover ask stays locked and voted on voter
 ```
 
