@@ -83,11 +83,11 @@ sequenceDiagram
     participant G as GRAI
     participant R as Grinders
 
-    D->>G: deposit(asset, amount, lock?)
-    G->>R: asset (principal)
-    G->>G: totalValue += usdValue; mint GRAI
-    opt lock == true
-        G->>G: lock(graiOut) — unvoted escrow earns dividends
+    D->>G: deposit[asset, amount, lock?]
+    G->>R: asset principal
+    G->>G: totalValue up; mint GRAI
+    opt lock is true
+        G->>G: lock[graiOut] - unvoted escrow earns dividends
     end
 ```
 
@@ -148,18 +148,18 @@ Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on *
 
 ```mermaid
 sequenceDiagram
-    participant Y as Yielder / custodian
+    participant Y as Yielder
     participant G as GRAI
-    participant L as Locker (unvoted)
+    participant L as Locker unvoted
     participant C as Claimer
 
-    Y->>G: distribute(asset, amount)
-    G->>G: split cuts; dividendCut → accShare (if eligible > 0)
-    Note over G,L: claimable += (amount − voted) × ΔaccShare
+    Y->>G: distribute[asset, amount]
+    G->>G: split cuts; dividendCut to accShare if eligible
+    Note over G,L: claimable grows with amount-voted share of delta
 
-    C->>G: claim(holder, asset, amount) or claimAll(holder)
+    C->>G: claim[holder, asset, amount] or claimAll[holder]
     G->>G: accrue; pull from totalClaimable
-    G->>L: asset (to holder)
+    G->>L: asset to holder
 ```
 
 | Step | Action | Effect |
@@ -193,16 +193,16 @@ sequenceDiagram
     participant G as GRAI
     participant B as Briber
 
-    V->>G: vote(graiAmount)
+    V->>G: vote[graiAmount]
     Note over V,G: Auto-locks wallet shortfall if needed
-    Note over V,G: amount − voted leaves dividend base
+    Note over V,G: amount - voted leaves dividend base
 
     alt Exit via unlock
-        V->>G: unlock (clamps voted ≤ amount; penalty → treasury)
+        V->>G: unlock[graiAmount] clamps voted; penalty to treasury
     else Exit via bribe
-        B->>G: bribe(voter, amount)
-        G->>V: bribeBody (bribeAsset)
-        G->>B: graiOut escrowed GRAI (wallet)
+        B->>G: bribe[voter, amount]
+        G->>V: bribeBody in bribeAsset
+        G->>B: graiOut escrowed GRAI to wallet
     end
 ```
 
@@ -244,12 +244,12 @@ sequenceDiagram
     participant B as Buybacker
     participant G as GRAI
 
-    B->>G: buyback(asset, amount)
-    G->>G: Dutch graiIn / amountOut
-    G->>G: require graiIn > 0 and amountOut > 0
-    G->>G: lock(graiIn); vote(graiIn)
-    G->>B: amountOut (asset)
-    Note over B,G: Payment escrowed + voted on buybacker (no dividends on that GRAI)
+    B->>G: buyback[asset, amount]
+    G->>G: Dutch graiIn and amountOut
+    G->>G: require graiIn and amountOut both positive
+    G->>G: lock[graiIn] then vote[graiIn]
+    G->>B: amountOut asset
+    Note over B,G: Payment escrowed and voted on buybacker - no dividends on that GRAI
 ```
 
 
@@ -314,14 +314,13 @@ sequenceDiagram
     participant B as Briber
     participant G as GRAI
     participant V as Voter
-    participant T as Treasury
 
-    B->>G: bribe(voter, graiAmount)
-    G->>G: reserve full ask; _pay; graiOut = ask × received / bribeAmount
-    G->>B: transfer graiOut GRAI (wallet)
-    G->>V: voterShare (bribeAsset; book+½premium or full ask)
-    Note over G: premium → half premium to cuts; discount → half gap to cuts; par → no cuts
-    Note over V,G: leftover ask stays locked+voted on voter
+    B->>G: bribe[voter, graiAmount]
+    G->>G: reserve full ask; pay; size graiOut from credited amount
+    G->>B: transfer graiOut GRAI to wallet
+    G->>V: voterShare in bribeAsset
+    Note over G: premium half to cuts; discount half gap to cuts; par no cuts
+    Note over V,G: leftover ask stays locked and voted on voter
 ```
 
 
