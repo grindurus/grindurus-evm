@@ -15,10 +15,10 @@ import {IPyth, PythStructs} from "./interfaces/IPyth.sol";
 contract PriceOracleRouter is IPriceOracleRouter {
     uint8 public constant USD_DECIMALS = 6;
 
-    uint8 internal constant FEED_NONE = 0;
-    uint8 internal constant FEED_CUSTOM = 1;
-    uint8 internal constant FEED_CHAINLINK = 2;
-    uint8 internal constant FEED_PYTH = 3;
+    uint8 public constant FEED_NONE = 0;
+    uint8 public constant FEED_CUSTOM = 1;
+    uint8 public constant FEED_CHAINLINK = 2;
+    uint8 public constant FEED_PYTH = 3;
 
     mapping(address asset => Feed) public feeds;
 

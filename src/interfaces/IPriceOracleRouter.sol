@@ -31,6 +31,14 @@ interface IPriceOracleRouter {
 
     event FeedAdd(address indexed asset, uint8 feedType);
 
+    function FEED_NONE() external view returns (uint8);
+
+    function FEED_CUSTOM() external view returns (uint8);
+
+    function FEED_CHAINLINK() external view returns (uint8);
+
+    function FEED_PYTH() external view returns (uint8);
+
     function setFeed(address asset, Feed calldata feed) external;
 
     function getPrice(address asset) external view returns (uint256 price, uint8 priceDecimals);
