@@ -55,8 +55,8 @@ contract GRAI is
     /// @notice Per-asset dividend index (`accShare`) and claim reserve (`totalClaimable`).
     mapping(address asset => TotalPosition) public totalPositions;
 
-    /// @notice Accounts with an open escrow; `escrows[account].accountId` is the index here.
-    address[] public accounts;
+    /// @notice Accounts with an open escrow; `escrows[account].lockerId` is the index here.
+    address[] public lockers;
 
     /// @notice Accounts with an open liquidation vote; `escrows[account].voterId` is the index here.
     address[] public voters;
@@ -197,34 +197,49 @@ contract GRAI is
     //////////////////// GETTERS ////////////////////
 
     /// @inheritdoc IGRAI
-    function getAssets() public view returns (address[] memory) {
-        return assetList;
-    }
-
-    /// @inheritdoc IGRAI
-    function getAuctions() public view returns (address[] memory list) {
+    function getAssets()
+        public
+        view
+        returns (DutchAuction[] memory list)
+    {
         uint256 len = assetList.length;
-        list = new address[](len);
-        uint256 count;
+        list = new DutchAuction[](len);
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            if (auctions[asset].startTime != 0) {
-                list[count] = asset;
-                unchecked { ++count; }
+            DutchAuction storage entry = auctions[asset];
+            if (entry.startTime != 0) {
+                list[i] = entry;
+            } else {
+                list[i].asset = asset;
             }
             unchecked { ++i; }
         }
-        assembly ("memory-safe") {
-            mstore(list, count)
+    }
+
+    /// @inheritdoc IGRAI
+    function getLockers(uint256 fromId, uint256 toId) public view returns (Escrow[] memory escrowList) {
+        if (fromId >= toId) revert InvalidLockerRange(fromId, toId);
+        uint256 n = lockers.length;
+        if (toId > n) toId = n;
+        uint256 len = toId - fromId;
+        escrowList = new Escrow[](len);
+        for (uint256 i; i < len;) {
+            escrowList[i] = escrows[lockers[fromId + i]];
+            unchecked { ++i; }
         }
     }
 
-    function getAccounts() public view returns (address[] memory) {
-        return accounts;
-    }
-
-    function getVoters() external view returns (address[] memory) {
-        return voters;
+    /// @inheritdoc IGRAI
+    function getVoters(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList) {
+        if (fromId >= toId) revert InvalidVoterRange(fromId, toId);
+        uint256 n = voters.length;
+        if (toId > n) toId = n;
+        uint256 len = toId - fromId;
+        escrowList = new Escrow[](len);
+        for (uint256 i; i < len;) {
+            escrowList[i] = escrows[voters[fromId + i]];
+            unchecked { ++i; }
+        }
     }
 
     /// @inheritdoc IERC1046
@@ -298,65 +313,6 @@ contract GRAI is
         graiOut = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
     }
 
-    //////////////////// BUYBACK ////////////////////
-
-    /// @inheritdoc IGRAI
-    /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; `graiIn` is escrowed and voted
-    ///      toward liquidation on the buyer (refund via `bribe` or `unlock` with unlock penalty).
-    ///      Requires `graiIn > 0` and `amountOut > 0` (no free / zero fills — blocks chunked floor-drain).
-    ///      Full-lot ask decays to `(BPS - bribePremiumBps)` of mint (not free clearance unless
-    ///      premium is `BPS`). Orphan GRAI (`balanceOf(this) - totalLocked`) is credited to the buyer
-    ///      then `lock`+`vote`d with the Dutch payment.
-    function buyback(address asset, uint256 amount) public {
-        _requireNotLiquidation();
-        address buyer = msg.sender;
-
-        // Dead GRAI (direct transfers, not via `lock`) → buyer wallet, then lock+vote with graiIn.
-        uint256 dead = 0;
-        uint256 bal = balanceOf(address(this));
-        if (bal > totalLocked) {
-            dead = bal - totalLocked;
-            _transfer(address(this), buyer, dead);
-        }
-
-        (uint256 graiIn, uint256 amountOut) = previewBuyback(asset, amount, block.timestamp);
-        if (graiIn == 0 || amountOut == 0) revert AmountZero();
-
-        DutchAuction storage entry = auctions[asset];
-        if (entry.remaining > amountOut) {
-            entry.remaining -= amountOut;
-        } else {
-            delete auctions[asset];
-        }
-
-        // `lock` pulls GRAI from the buyer; `vote` commits it (unvoted share stays 0 → no dividends).
-        lock(graiIn + dead);
-        vote(graiIn + dead);
-        _withdraw(buyer, asset, amountOut);
-        emit Buyback(buyer, asset, graiIn, amountOut);
-    }
-
-    /// @inheritdoc IGRAI
-    /// @dev Dutch GRAI ask: `maxPayment` → `minPayment` over `entry.period` (snapshotted from
-    ///      `config.buybackPeriod` at `_place`), scaled by buy size. Caps to auction remaining.
-    function previewBuyback(
-        address asset,
-        uint256 amount,
-        uint256 timestamp
-    ) public view returns (uint256 graiIn, uint256 amountOut) {
-        DutchAuction storage entry = auctions[asset];
-        if (entry.startTime == 0) revert AuctionNotFound();
-
-        if (amount == type(uint256).max) amount = entry.remaining;
-        if (amount > entry.remaining) amount = entry.remaining;
-        if (amount == 0) return (0, 0);
-
-        amountOut = amount;
-        uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
-        uint256 ask = _dutchAmount(entry.maxPayment, entry.minPayment, elapsed, entry.period);
-        graiIn = entry.initial > 0 ? (ask * amountOut) / entry.initial : 0;
-    }
-
     //////////////////// LOCK ////////////////////
 
     /// @inheritdoc IGRAI
@@ -371,7 +327,7 @@ contract GRAI is
         if (graiAmount > balanceOf(account)) revert InvalidAmount();
         _accrueDividends(account);
         totalLocked += graiAmount;
-        if (entry.amount == 0) _addAccount(account);
+        if (entry.amount == 0) _addLocker(account);
         entry.amount += graiAmount;
         entry.lockedAt = uint48(block.timestamp);
         _syncDividendDebts(account);
@@ -405,7 +361,7 @@ contract GRAI is
         if (penalty > 0) _transfer(address(this), treasury, penalty);
         if (unlockAmount > 0) _transfer(address(this), account, unlockAmount);
         emit Unlock(account, graiAmount, totalLocked);
-        if (entry.amount == 0) _removeAccount(account);
+        if (entry.amount == 0) _removeLocker(account);
     }
 
     /// @inheritdoc IGRAI
@@ -495,6 +451,65 @@ contract GRAI is
         }
     }
 
+    //////////////////// BUYBACK ////////////////////
+
+    /// @inheritdoc IGRAI
+    /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; `graiIn` is escrowed and voted
+    ///      toward liquidation on the buyer (refund via `bribe` or `unlock` with unlock penalty).
+    ///      Requires `graiIn > 0` and `amountOut > 0` (no free / zero fills — blocks chunked floor-drain).
+    ///      Full-lot ask decays to `(BPS - bribePremiumBps)` of mint (not free clearance unless
+    ///      premium is `BPS`). Orphan GRAI (`balanceOf(this) - totalLocked`) is credited to the buyer
+    ///      then `lock`+`vote`d with the Dutch payment.
+    function buyback(address asset, uint256 amount) public {
+        _requireNotLiquidation();
+        address buyer = msg.sender;
+
+        // Dead GRAI (direct transfers, not via `lock`) → buyer wallet, then lock+vote with graiIn.
+        uint256 dead = 0;
+        uint256 bal = balanceOf(address(this));
+        if (bal > totalLocked) {
+            dead = bal - totalLocked;
+            _transfer(address(this), buyer, dead);
+        }
+
+        (uint256 graiIn, uint256 amountOut) = previewBuyback(asset, amount, block.timestamp);
+        if (graiIn == 0 || amountOut == 0) revert AmountZero();
+
+        DutchAuction storage entry = auctions[asset];
+        if (entry.remaining > amountOut) {
+            entry.remaining -= amountOut;
+        } else {
+            delete auctions[asset];
+        }
+
+        // `lock` pulls GRAI from the buyer; `vote` commits it (unvoted share stays 0 → no dividends).
+        lock(graiIn + dead);
+        vote(graiIn + dead);
+        _withdraw(buyer, asset, amountOut);
+        emit Buyback(buyer, asset, graiIn, amountOut);
+    }
+
+    /// @inheritdoc IGRAI
+    /// @dev Dutch GRAI ask: `maxPayment` → `minPayment` over `entry.period` (snapshotted from
+    ///      `config.buybackPeriod` at `_place`), scaled by buy size. Caps to auction remaining.
+    function previewBuyback(
+        address asset,
+        uint256 amount,
+        uint256 timestamp
+    ) public view returns (uint256 graiIn, uint256 amountOut) {
+        DutchAuction storage entry = auctions[asset];
+        if (entry.startTime == 0) revert AuctionNotFound();
+
+        if (amount == type(uint256).max) amount = entry.remaining;
+        if (amount > entry.remaining) amount = entry.remaining;
+        if (amount == 0) return (0, 0);
+
+        amountOut = amount;
+        uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
+        uint256 ask = _dutchAmount(entry.maxPayment, entry.minPayment, elapsed, entry.period);
+        graiIn = entry.initial > 0 ? (ask * amountOut) / entry.initial : 0;
+    }
+
     //////////////////// VOTE ////////////////////
 
     /// @inheritdoc IGRAI
@@ -554,7 +569,7 @@ contract GRAI is
         
         if (received != bribeAmount) revert AmountZero();
         if (entry.voted == 0) _removeVoter(voter);
-        if (entry.amount == 0) _removeAccount(voter);
+        if (entry.amount == 0) _removeLocker(voter);
 
         uint256 cutPool;
         if (premium > 0) {
@@ -666,7 +681,7 @@ contract GRAI is
             _clampVote(holder);
             _syncDividendDebts(holder);
             _burn(address(this), escrowBurn);
-            if (entry.amount == 0) _removeAccount(holder);
+            if (entry.amount == 0) _removeLocker(holder);
         }
         totalValue -= value;
 
@@ -830,8 +845,10 @@ contract GRAI is
         entry.initial = remaining;
         entry.maxPayment = graiAmount;
         entry.minPayment = (graiAmount * (BPS - config.bribePremiumBps)) / BPS;
-        entry.startTime = block.timestamp;
+        entry.startTime = uint48(block.timestamp);
         entry.period = config.buybackPeriod;
+        entry.listingPrice = (value * (10 ** USD_DECIMALS)) / remaining;
+        entry.listingPriceDecimals = USD_DECIMALS;
         emit AuctionUpdate(asset, remaining, graiAmount, block.timestamp);
     }
 
@@ -906,25 +923,25 @@ contract GRAI is
         emit AssetUpdate(asset, false);
     }
 
-    function _addAccount(address account) internal {
+    function _addLocker(address account) internal {
         escrows[account].account = account;
-        escrows[account].accountId = uint32(accounts.length);
-        accounts.push(account);
+        escrows[account].lockerId = uint32(lockers.length);
+        lockers.push(account);
     }
 
-    function _removeAccount(address account) internal {
+    function _removeLocker(address account) internal {
         _clampVote(account);
-        uint256 index = escrows[account].accountId;
-        if (index >= accounts.length || accounts[index] != account) return;
-        uint256 lastIndex = accounts.length - 1;
+        uint256 index = escrows[account].lockerId;
+        if (index >= lockers.length || lockers[index] != account) return;
+        uint256 lastIndex = lockers.length - 1;
         if (index != lastIndex) {
-            address moved = accounts[lastIndex];
-            accounts[index] = moved;
-            // accounts length / index always fit uint32 in practice
+            address moved = lockers[lastIndex];
+            lockers[index] = moved;
+            // lockers length / index always fit uint32 in practice
             // forge-lint: disable-next-line(unsafe-typecast)
-            escrows[moved].accountId = uint32(index);
+            escrows[moved].lockerId = uint32(index);
         }
-        accounts.pop();
+        lockers.pop();
         delete escrows[account];
     }
 

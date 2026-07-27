@@ -36,6 +36,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InsolventResettle();
     /// @notice Deposit book is zero while shares remain (bootstrap mint would tax new capital).
     error InsolventBook();
+    error InvalidVoterRange(uint256 fromId, uint256 toId);
+    error InvalidLockerRange(uint256 fromId, uint256 toId);
 
     struct AssetConfig {
         /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
@@ -51,15 +53,19 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///      (mint-price max → usually 0 over `period`).
     struct DutchAuction {
         address asset;
+        uint48 startTime;
+        /// @notice Snapshot of `config.buybackPeriod` at last `_place`.
+        uint32 period;
+        /// @notice Decimals for `listingPrice`.
+        uint8 listingPriceDecimals;
+        /// @notice Listing-time unit price used when auction was (re)listed.
+        uint256 listingPrice;
         uint256 remaining;
         uint256 initial;
         /// @notice Full-lot Dutch start: GRAI ask at listing (mint price).
         uint256 maxPayment;
         /// @notice Full-lot Dutch end: GRAI ask after `period` (usually 0).
         uint256 minPayment;
-        uint256 startTime;
-        /// @notice Snapshot of `config.buybackPeriod` at last `_place`.
-        uint32 period;
     }
 
     /// @notice Per-account, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
@@ -81,8 +87,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     struct Escrow {
         /// @notice The account this escrow belongs to (mirrors the `escrows` mapping key).
         address account;
-        /// @notice Index of this account in `accounts` while `amount` is non-zero.
-        uint32 accountId;
+        /// @notice Index of this account in `lockers` while `amount` is non-zero.
+        uint32 lockerId;
         /// @notice Actively locked GRAI (dividend share; max voting capacity).
         uint256 amount;
         /// @notice GRAI counted toward liquidation quorum (≤ `amount`).
@@ -186,23 +192,26 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (
             address asset_,
+            uint48 startTime,
+            uint32 period,
+            uint8 listingPriceDecimals,
+            uint256 listingPrice,
             uint256 remaining,
             uint256 initial,
             uint256 maxPayment,
-            uint256 minPayment,
-            uint256 startTime,
-            uint32 period
+            uint256 minPayment
         );
 
-    /// @notice Listed assets that currently have an open yield auction.
-    function getAuctions() external view returns (address[] memory);
+    /// @notice Listed assets in `assetList` order.
+    /// @dev One `DutchAuction` per listed asset; `startTime == 0` means no open auction (`asset` is still set).
+    function getAssets() external view returns (DutchAuction[] memory list);
 
     function escrows(address account)
         external
         view
         returns (
             address account_,
-            uint32 accountId,
+            uint32 lockerId,
             uint256 amount,
             uint256 voted,
             uint48 lockedAt,
@@ -210,14 +219,17 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint32 voterId
         );
 
-    function accounts(uint256 index) external view returns (address);
+    function lockers(uint256 index) external view returns (address);
+
+    /// @notice Accounts with a non-zero lock escrow in `[fromId, toId)`.
+    function getLockers(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList);
 
     function totalLocked() external view returns (uint256);
 
     function voters(uint256 index) external view returns (address);
 
-    /// @notice Accounts with an open liquidation vote (`voted > 0`).
-    function getVoters() external view returns (address[] memory);
+    /// @notice Accounts with an open liquidation vote (`voted > 0`) in `[fromId, toId)`.
+    function getVoters(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList);
 
     function totalVoted() external view returns (uint256);
 
@@ -235,8 +247,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function assets(address asset) external view returns (address asset_, uint32 id, bool paused);
 
     function assetList(uint256 index) external view returns (address);
-
-    function getAssets() external view returns (address[] memory);
 
     function setGrinders(address grinders_) external;
 

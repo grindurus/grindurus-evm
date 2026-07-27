@@ -680,13 +680,15 @@ Permissionless after `liquidationPeriod + redeemPeriod`:
 
 ## 10. Grinders layer
 
+Full write-up: [`GRINDERS.md`](GRINDERS.md).
+
 
 | Topic              | Behavior                                                |
 | ------------------ | ------------------------------------------------------- |
 | Reserve            | Deposits land on Grinders                               |
 | `allocate`         | Owner moves capital to custodian NFT wallets            |
 | Custodian NFT      | `mint(kind, base, quote, owner)`; owner controls wallet |
-| `distribute`       | Custodian → `GRAI.distribute`                           |
+| Yield              | Custodian trades → `distribute` → `GRAI.distribute`     |
 | `deallocate`       | Custodian → Grinders reserve                            |
 | Liquidation sweeps | Permissionless while GRAI liquidation open              |
 

@@ -106,10 +106,10 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     function liquidate() external {
         _requireLiquidation();
 
-        address[] memory assets = grai.getAssets();
+        IGRAI.DutchAuction[] memory assets = grai.getAssets();
         uint256 len = assets.length;
         for (uint256 i; i < len; ++i) {
-            address asset = assets[i];
+            address asset = assets[i].asset;
             _liquidate(asset, balance(asset));
         }
 
@@ -128,7 +128,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
         uint256 n = totalSupply();
         if (toId > n) toId = n;
 
-        address[] memory assets = grai.getAssets();
+        IGRAI.DutchAuction[] memory assets = grai.getAssets();
         uint256 assetsLen = assets.length;
         for (uint256 i = fromId; i < toId; ++i) {
             address c = custodians[i];
@@ -136,7 +136,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
 
             (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = Custodian(payable(c)).liquidate();
             for (uint256 j; j < assetsLen; ++j) {
-                address asset = assets[j];
+                address asset = assets[j].asset;
                 delete allocated[c][asset];
                 delete totalAllocated[asset];
             }
