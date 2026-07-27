@@ -744,8 +744,9 @@ contract GRAI is
     /// @dev Permissionless after `liquidationPeriod + redeemPeriod`: return unredeemed basket
     ///      balances to Grinders and clear the claim clock so the fund can accept deposits again
     ///      (`_requireNotLiquidation` lifts). Per-asset `paused` flags are left as the owner set them.
-    ///      With leftover shares, sets `totalValue = totalNAV` when `totalNAV >= totalValue`
-    ///      (mint price does not fall); otherwise reverts `InsolventResettle`. Dividend inventory in
+    ///      With leftover shares, marks `totalValue = totalNAV` only when that raises mint price
+    ///      (`totalNAV >= totalValue`); otherwise keeps book `totalValue` and still clears
+    ///      liquidation (underwater reopen is allowed). Dividend inventory in
     ///      `totalPositions[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
     ///      shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
     function resettle() public {
@@ -767,7 +768,7 @@ contract GRAI is
         }
         uint256 supply = totalSupply();
         if (supply > 0) {
-            // mintPrice = totalValue / supply; require totalNAV / supply >= totalValue / supply.
+            // Raise mint price only; underwater reopen keeps book totalValue.
             if (totalNAV >= totalValue) totalValue = totalNAV;
         } else {
             totalValue = 0;

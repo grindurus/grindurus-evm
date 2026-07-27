@@ -31,9 +31,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error PeriodZero();
     error BribeAssetUnset();
     error InvalidCuts();
-    /// @notice `resettle` with leftover shares when leftover NAV would not raise mint price
-    ///         (`totalNAV <= totalValue`), including empty/dust basket dilution.
-    error InsolventResettle();
     /// @notice Deposit book is zero while shares remain (bootstrap mint would tax new capital).
     error InsolventBook();
     error InvalidVoterRange(uint256 fromId, uint256 toId);
