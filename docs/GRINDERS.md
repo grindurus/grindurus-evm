@@ -103,16 +103,16 @@ sequenceDiagram
     participant C as Custodian proxy
     participant N as NFT owner
 
-    O->>G: set(kind, implementation)
-    O->>G: mint(kind, base, quote, owner)
-    G->>C: deploy ERC1967Proxy + initialize
+    O->>G: set[kind, implementation]
+    O->>G: mint[kind, base, quote, owner]
+    G->>C: deploy ERC1967Proxy plus initialize
     G->>G: mint NFT to owner
-    O->>G: allocate(custodian, asset, amount)
+    O->>G: allocate[custodian, asset, amount]
     G->>C: transfer asset
-    N->>C: trade (swap / CoW / LiFi …)
-    N->>C: distribute(asset, yield)
-    C->>G: (via GRAI.distribute)
-    N->>C: deallocate(asset, amount)
+    N->>C: trade swap or CoW or LiFi
+    N->>C: distribute[asset, yield]
+    C->>G: via GRAI.distribute
+    N->>C: deallocate[asset, amount]
     C->>G: deallocate pull to reserve
 ```
 
