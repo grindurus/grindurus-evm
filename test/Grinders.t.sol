@@ -28,10 +28,11 @@ contract GrindersTest is GRAIFixture {
     function _registerTestCustodian() internal override {}
 
     function test_DistributePaysProtocolProfitToOwner() public {
-        _setSettlementAsset(address(usdc)); // yieldShare of USDC accrues on GRAI (no auction)
-
-        vm.prank(admin);
+        _setBribeAsset(address(usdc));
+        vm.startPrank(admin);
+        _setYieldSplitFiftyThirtyTwenty();
         address custodyWallet = grinders.mint(cowKind, address(usdc), address(weth), grinder);
+        vm.stopPrank();
 
         _deposit(alice, usdc, 100e6);
         _fundGrinders(usdc, 50e6);
@@ -39,11 +40,14 @@ contract GrindersTest is GRAIFixture {
         grinders.allocate(custodyWallet, address(usdc), 50e6);
 
         uint256 graiUsdcBefore = usdc.balanceOf(address(grai));
+        uint256 treasuryBefore = usdc.balanceOf(admin);
         vm.prank(grinder);
         CoWCustodian(payable(custodyWallet)).distribute(address(usdc), 20e6);
 
-        assertEq(usdc.balanceOf(admin), 4e6); // 20% treasury
-        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 80% settlement
+        assertEq(usdc.balanceOf(admin) - treasuryBefore, 4e6); // 20% treasury
+        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 50% auction + 30% dividends → auction
+        (,,,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
+        assertEq(auctionRemaining, 16e6);
         assertEq(grinders.balance(address(usdc)), 0);
     }
 
@@ -54,9 +58,11 @@ contract GrindersTest is GRAIFixture {
         _fundGrinders(weth, 2e18);
 
         vm.prank(alice);
+        grai.lock(100e6);
+        vm.prank(alice);
         grai.vote(100e6);
         vm.prank(admin);
-        grai.resolve();
+        grai.liquidate();
 
         assertEq(usdc.balanceOf(address(grinders)), 100e6);
         assertEq(weth.balanceOf(address(grinders)), 2e18);

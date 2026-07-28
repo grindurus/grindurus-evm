@@ -16,19 +16,19 @@ contract MathPrecisionProbe is GRAIFixture {
     /// Auction payment scales linearly with fill size at t=0.
     function test_AuctionPaymentProRataAtStart() public {
         vm.startPrank(admin);
-        grai.setSettlementAsset(address(usdc));
+        grai.setBribeAsset(address(usdc));
         _setAssetConfig(address(weth), false);
-        _setTreasuryShare(0);
         vm.stopPrank();
 
-        deal(address(weth), alice, 1e18);
+        // 2 WETH → 50% auction = 1 WETH @ mint-price 2000 GRAI.
+        deal(address(weth), alice, 2e18);
         vm.startPrank(alice);
-        weth.approve(address(grai), 1e18);
-        grai.distribute(address(weth), 1e18);
+        weth.approve(address(grai), 2e18);
+        grai.distribute(address(weth), 2e18);
         vm.stopPrank();
 
-        (uint256 out1, uint256 pay1) = grai.previewFill(address(weth), 0.25e18, block.timestamp);
-        (uint256 out2, uint256 pay2) = grai.previewFill(address(weth), 0.75e18, block.timestamp);
+        (uint256 pay1, uint256 out1) = grai.previewBuyback(address(weth), 0.25e18, block.timestamp);
+        (uint256 pay2, uint256 out2) = grai.previewBuyback(address(weth), 0.75e18, block.timestamp);
         assertEq(out1, 0.25e18);
         assertEq(out2, 0.75e18);
         assertEq(pay1, 500e6);
