@@ -1,6 +1,6 @@
 # GRAI Tokenomics — Protocol Overview
 
-Report derived from on-chain logic in `[GRAI.sol](../src/GRAI.sol)` and `[Grinders.sol](../src/Grinders.sol)` (EVM implementation, July 2026).
+Report derived from on-chain logic in `[GRAI.sol](../src/GRAI.sol)` and `[Grinders.sol](../src/Grinders.sol)` (EVM implementation, July 2026). Integration happy path: `[test/GRAILifecycle.t.sol](../test/GRAILifecycle.t.sol)`.
 
 ---
 
@@ -17,7 +17,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
               │     (escrow.amount − voted)  quorum / bribe market
               │
          buyback() also lock()+vote() on the buyer
-         (Dutch payment GRAI → liquidation vote, not a free refill)
+         (Dutch payment GRAI + scavenged dead → liquidation vote, not a free refill)
 ```
 
 - **Dividends** accrue only on **unvoted** locked GRAI: `escrow.amount − escrow.voted` (index over `totalLocked − totalVoted`).
@@ -29,10 +29,10 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 
 **Exit paths (no open-market redeem while live)**
 
-1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty → **treasury**.
+1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty stays on GRAI as orphan/dead inventory (next `buyback` scavenges it via `balanceOf(this) − totalLocked`).
 2. `bribe` — buy out **voted** GRAI for `bribeAsset` at a dynamic ask vs half-quorum (premium / par / discount).
 3. **Secondary market** — sell free (unlocked) wallet GRAI OTC / CEX / DEX; protocol does not provide a live redeem.
-4. **Liquidation** — **2-of-2**: vote quorum **and** owner (DAO / multisig) `liquidate` → holders `redeem` → anyone `resettle` (fund restarts). Neither limb alone opens the cycle.
+4. **Liquidation** — **2-of-2**: vote quorum **and** owner confirmation (`confirmed` / owner `liquidate` with quorum) → holders `redeem` → anyone `resettle` (fund restarts). Voters alone cannot open; non-owner open needs prior `confirmed`.
 
 **Yield (**`distribute`**) / bribe premium** splits per `Config` (initialize defaults **≈33.33% / 33.34% / 33.33%**):
 
@@ -46,9 +46,11 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 
 If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is too small to move the index, the dividend cut is **merged into the auction** instead.
 
-`buyback`**:** buyer pays **GRAI** (`graiIn`), receives the listed asset; then `lock(graiIn)` + `vote(graiIn)` so the payment is escrowed and voted on the buyer (exit via `bribe` or `unlock` + timelock penalty).
+**`buyback`:** buyer pays **GRAI** (`graiIn`), receives the listed asset; any orphan/dead GRAI on the contract (`balanceOf(this) − totalLocked`) is credited to the buyer first, then `lock(graiIn + dead)` + `vote(graiIn + dead)` so the payment (and scavenged dead) is escrowed and voted on the buyer (exit via `bribe` or `unlock` + timelock penalty).
 
 ---
+
+
 
 ## 2. Actors and contracts
 
@@ -59,12 +61,12 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 | **Locker (unvoted)**   | Escrows GRAI; earns **asset dividends** on `amount − voted`                                           |
 | **Voter**              | `vote()` (auto-locks shortfall); quorum; **no** asset dividends on voted share; buyable via `bribe()` |
 | **Buyback buyer**      | Pays GRAI Dutch ask; receives asset; payment auto lock+vote on buyer                                  |
-| **Briber**             | Pays `bribeAsset` to buy out voted GRAI (receives proportional GRAI to wallet)                        |
+| **Briber**             | Pays `bribeAsset` to buy out voted GRAI (receives full `graiAmount` to wallet)                        |
 | **GRAI**               | Share token, oracles, auctions, lock/vote/bribe/liquidation, dividends                                |
 | **Grinders**           | NFT registry, reserve custody, allocation, liquidation sweeps                                         |
 | **Custodian**          | Per-NFT wallet; `distribute()` yield → GRAI                                                           |
-| **Treasury**           | Treasury cuts + unlock penalties                                                                      |
-| **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; **`liquidate` only with quorum** (2-of-2)          |
+| **Treasury**           | Treasury cuts from yield / bribe carve-outs                                                           |
+| **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; liquidation consent via `confirmed` / `liquidate` |
 
 
 Native ETH = `address(0)`. WETH is the fallback when ETH pushes are rejected.
@@ -73,7 +75,11 @@ Native ETH = `address(0)`. WETH is the fallback when ETH pushes are rejected.
 
 ---
 
+
+
 ## Actor playbooks
+
+
 
 ### Depositor / locker
 
@@ -99,7 +105,7 @@ sequenceDiagram
 | 1    | `deposit(asset, amount, lock)`  | Asset → Grinders; mint at book; optional escrow                                                |
 | 2    | Or later `lock(graiAmount)`     | Escrow wallet GRAI; dividend-eligible while unvoted; **resets** `lockedAt` on the whole escrow |
 | 3    | Accrue / `claim(holder, asset)` | Receive yield-asset dividends (allowed in liquidation — reserve ≠ redeem basket)               |
-| 4    | `unlock(graiAmount, claimAll_)` | Accrue, penalty → treasury, clamp votes, return net; optional claim all                        |
+| 4    | `unlock(graiAmount)` | Accrue, decaying unlock fee stays on GRAI (dead), clamp votes, return net |
 | 5    | Optional `vote`                 | See Voter — voted share stops earning dividends                                                |
 
 
@@ -132,19 +138,23 @@ She receives **≈81 GRAI** (not 100) because each share already marks above $1.
 
 Alice calls `deposit(USDC, 100e6, lock=true)` on an empty vault (mint as in Example 1: `graiOut = value` → **100 GRAI**):
 
-| Where | Amount | Notes |
-| ----- | -----: | ----- |
-| Alice wallet (`balanceOf`) | **0 GRAI** | With `lock=true`, minted shares do not stay liquid |
-| Alice escrow (`amount`) | **100 GRAI** | Minted via `graiOut = value` (bootstrap); `voted = 0` |
-| Dividend eligibility | **100** | `amount − voted` — unvoted lock earns asset yield from `distribute` |
+
+| Where                      | Amount       | Notes                                                               |
+| -------------------------- | ------------ | ------------------------------------------------------------------- |
+| Alice wallet (`balanceOf`) | **0 GRAI**   | With `lock=true`, minted shares do not stay liquid                  |
+| Alice escrow (`amount`)    | **100 GRAI** | Minted via `graiOut = value` (bootstrap); `voted = 0`               |
+| Dividend eligibility       | **100**      | `amount − voted` — unvoted lock earns asset yield from `distribute` |
+
 
 She may later `claim` / `claimAll` yield assets accrued to that escrow.
 
 ---
 
+
+
 ### Claimer
 
-Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). **Allowed while liquidation is open**: `claim` pays only from the `totalClaimable` reserve, which `_redeemableBalance` excludes from redeem / `resettle` — the two pools do not mix. Unclaimed reserve also survives `resettle`. (`unlock(..., claimAll_=true)` is still blocked in liquidation because `unlock` itself is frozen.)
+Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). **Allowed while liquidation is open**: `claim` pays only from the `totalClaimable` reserve, which `_redeemable` excludes from redeem / `resettle` — the two pools do not mix. Unclaimed reserve also survives `resettle`. (`unlock` itself is still blocked in liquidation.)
 
 ```mermaid
 sequenceDiagram
@@ -162,14 +172,18 @@ sequenceDiagram
     G->>L: asset to holder
 ```
 
-| Step | Action | Effect |
-| ---- | ------ | ------ |
-| 1 | Eligible lock | Unvoted escrow earns; liquid wallet GRAI and voted share earn **nothing** |
-| 2 | `distribute` | `dividendCut` raises `accShare` (or merges into auction if no eligible locks / dust) |
-| 3 | Accrue | Holder debt sync; `previewClaim` / `previewClaimAll` for UI |
-| 4 | `claim(holder, asset, amount)` | Pays up to accrued for one asset; anyone can call for `holder` |
-| 5 | `claimAll(holder)` | Same for every listed asset with a balance |
-| 6 | Via `unlock(..., claimAll_=true)` | Accrue + optional pull of all dividends in the same tx |
+
+
+
+| Step | Action                            | Effect                                                                               |
+| ---- | --------------------------------- | ------------------------------------------------------------------------------------ |
+| 1    | Eligible lock                     | Unvoted escrow earns; liquid wallet GRAI and voted share earn **nothing**            |
+| 2    | `distribute`                      | `dividendCut` raises `accShare` (or merges into auction if no eligible locks / dust) |
+| 3    | Accrue                            | Holder debt sync; `previewClaim` / `previewClaimAll` for UI                          |
+| 4    | `claim(holder, asset, amount)`    | Pays up to accrued for one asset; anyone can call for `holder`                       |
+| 5    | `claimAll(holder)`                | Same for every listed asset with a balance                                           |
+| 6    | Separate `claim` / `claimAll`     | Dividends are **not** pulled inside `unlock`                                         |
+
 
 **Example** (happy path — Alice 100 locked unvoted, Bob 100 locked unvoted; `dividendCut` = 30 USDC):
 
@@ -177,11 +191,13 @@ sequenceDiagram
 2. Alice (or a keeper) calls `claim(alice, USDC, type(uint256).max)` → Alice receives **15 USDC**; her claimable for USDC → 0. Bob still has **15 USDC** unclaimed.
 3. Alice `vote`s 40 of 100 → only **60** of hers stays in the index; Bob still **100**. Eligible base = **160**.
 4. Second `distribute` with another **30 USDC** dividend cut:
-   - Alice: 60/160 × 30 = **11.25 USDC** accrued
-   - Bob: 100/160 × 30 = **18.75 USDC** accrued (on top of his leftover 15 → **33.75** claimable if he never claimed)
+  - Alice: 60/160 × 30 = **11.25 USDC** accrued
+  - Bob: 100/160 × 30 = **18.75 USDC** accrued (on top of his leftover 15 → **33.75** claimable if he never claimed)
 5. `claim(alice, …)` → Alice gets **11.25 USDC**. `claim(bob, …)` → Bob gets **15 + 18.75 = 33.75 USDC**
 
 ---
+
+
 
 ### Voter
 
@@ -198,24 +214,25 @@ sequenceDiagram
     Note over V,G: amount - voted leaves dividend base
 
     alt Exit via unlock
-        V->>G: unlock[graiAmount] clamps voted - penalty to treasury
+        V->>G: unlock[graiAmount] clamps voted - penalty stays on GRAI as dead
     else Exit via bribe
         B->>G: bribe[voter, amount]
-        G->>V: bribeBody in bribeAsset
-        G->>B: graiOut escrowed GRAI to wallet
+        G->>V: voterShare in bribeAsset
+        G->>B: full graiAmount GRAI to wallet
     end
 ```
 
 
 
 
-| Step | Action             | Effect                                                                 |
-| ---- | ------------------ | ---------------------------------------------------------------------- |
-| 1    | `vote(graiAmount)` | Auto-lock shortfall; `voted ≤ amount`; `totalVoted` ↑; dividend base ↓ |
-| 2    | Quorum             | `totalVoted / supply ≥ quorumBps` — **necessary but not sufficient**; owner/DAO must still `liquidate` (2-of-2) |
-| 3a   | `unlock`           | Excess votes clamped; net GRAI returned; penalty → treasury            |
-| 3b   | `bribe`            | Voted GRAI sold (scaled by credited pull); body in `bribeAsset`        |
-| 3c   | Owner `liquidate`  | Only when quorum holds; opens the cycle together with votes            |
+| Step | Action             | Effect                                                                                                          |
+| ---- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 1    | `vote(graiAmount)` | Auto-lock shortfall; `voted ≤ amount`; `totalVoted` ↑; dividend base ↓                                          |
+| 2    | Quorum             | `totalVoted / supply ≥ quorumBps` — necessary but not sufficient for open (needs owner limb)                    |
+| 3a   | `unlock`           | Excess votes clamped; net GRAI returned; unlock fee stays on GRAI as dead                                       |
+| 3b   | `bribe`            | Full `graiAmount` sold for exact `bribeAmount` in `bribeAsset` (non-FoT)                                        |
+| 3c   | `liquidate`        | Owner: toggle `confirmed` if no quorum, else open; non-owner: open iff `confirmed && hasQuorum()`               |
+
 
 **Example** (Alice votes — escrow and dividend base):
 
@@ -225,17 +242,21 @@ Supply = **1,000 GRAI**. Alice already has **100 GRAI** locked unvoted (`amount 
 2. No wallet shortfall (`voted + 40 ≤ amount`) → no extra `lock`.
 3. After the call:
 
-| Field | Before | After |
-| ----- | -----: | ----: |
-| `escrow.amount` | 100 | 100 |
-| `escrow.voted` | 0 | **40** |
-| Dividend eligibility (`amount − voted`) | 100 | **60** |
-| `totalVoted` | 0 | **40** |
-| `totalVoted / supply` | 0% | **4%** |
 
-4. Her **40** voted GRAI no longer earn asset dividends and can be bought out via `bribe`. The remaining **60** stay in the dividend index. Quorum (~66.67%) is not met yet.
+| Field                                   | Before | After  |
+| --------------------------------------- | ------ | ------ |
+| `escrow.amount`                         | 100    | 100    |
+| `escrow.voted`                          | 0      | **40** |
+| Dividend eligibility (`amount − voted`) | 100    | **60** |
+| `totalVoted`                            | 0      | **40** |
+| `totalVoted / supply`                   | 0%     | **4%** |
+
+
+1. Her **40** voted GRAI no longer earn asset dividends and can be bought out via `bribe`. The remaining **60** stay in the dividend index. Quorum (~66.67%) is not met yet.
 
 ---
+
+
 
 ### Buybacker
 
@@ -245,69 +266,76 @@ sequenceDiagram
     participant G as GRAI
 
     B->>G: buyback[asset, amount]
+    G->>G: scavenge dead GRAI to buyer if any
     G->>G: Dutch graiIn and amountOut
     G->>G: require graiIn and amountOut both positive
-    G->>G: lock[graiIn] then vote[graiIn]
+    G->>G: lock[graiIn + dead] then vote[graiIn + dead]
     G->>B: amountOut asset
-    Note over B,G: Payment escrowed and voted on buybacker - no dividends on that GRAI
+    Note over B,G: Payment and scavenged dead escrowed and voted - no dividends on that GRAI
 ```
 
 
 
 
-| Step | Action             | Effect                                                                                   |
-| ---- | ------------------ | ---------------------------------------------------------------------------------------- |
-| 1    | Pay Dutch `graiIn` | Must `lock(graiIn)` then `vote(graiIn)` so payment is not reused from prior unvoted lock |
-| 2    | Receive asset      | Possible discount vs mint ask (floor at `BPS − bribePremiumBps`)                         |
-| 3    | Exit payment       | `bribe` (refund in `bribeAsset`) or `unlock` (penalty → treasury)                        |
+| Step | Action             | Effect                                                                                              |
+| ---- | ------------------ | --------------------------------------------------------------------------------------------------- |
+| 0    | Scavenge dead      | `balanceOf(this) − totalLocked` → buyer wallet (unlock fees, stray transfers)                       |
+| 1    | Pay Dutch `graiIn` | `lock(graiIn + dead)` then `vote(graiIn + dead)` — payment not reused from prior unvoted lock       |
+| 2    | Receive asset      | Possible discount vs mint ask (floor at `BPS − bribePremiumBps`)                                    |
+| 3    | Exit payment       | `bribe` (refund in `bribeAsset`) or `unlock` (fee stays on GRAI as dead)                            |
 
-Buyback payment is **not burned** — it is a lock+vote that the buyer may exit immediately. Same-tx self-`bribe` or `unlock` is fine: the economic cost of taking the lot is the unlock fee (→ treasury) or bribe cutPool (~½ premium / discount carve-out), not permanent loss of `graiIn`. Atomic exit via ETH/callback reentrancy is the same product path, not a separate bug.
+
+Buyback payment is **not burned** — it is a lock+vote that the buyer may exit immediately. Same-tx self-`bribe` or `unlock` is fine: the economic cost of taking the lot is the unlock fee (stays on GRAI as dead → next scavenger) or bribe cutPool (~½ premium / discount carve-out), not permanent loss of `graiIn`. Atomic exit via ETH/callback reentrancy is the same product path, not a separate bug.
 
 **Example 1** (Bob fills at mint ask — `t = 0`, default `bribePremiumBps = 2%`, period = 7d):
 
 Open auction after yield: **2,000 USDC** remaining, mint ask `maxPayment = 2,000 GRAI`, floor `minPayment = 1,960 GRAI` (98% of maxPayment).
 
 1. Bob calls `buyback(USDC, type(uint256).max)`:
-   - Pays **`graiIn = 2,000 GRAI`**, receives **2,000 USDC**.
-   - Protocol `lock(2000)` + `vote(2000)` on Bob.
+  - Pays `graiIn = 2,000 GRAI`, receives **2,000 USDC**.
+  - Protocol `lock(2000)` + `vote(2000)` on Bob.
 2. Balances after fill:
 
-| Where | Amount | Notes |
-| ----- | -----: | ----- |
-| Bob wallet USDC | **+2,000** | Asset from the lot |
-| Bob wallet GRAI | **−2,000** | Spent on the ask |
-| Bob escrow `amount` / `voted` | **2,000 / 2,000** | Payment locked **and** voted — no dividends on it |
-| Auction | closed | `remaining = 0` |
 
-3. Exit that payment later via `bribe` (refund in `bribeAsset`) or `unlock` (unlock fee → treasury while the penalty window is live).
+| Where                         | Amount            | Notes                                             |
+| ----------------------------- | ----------------- | ------------------------------------------------- |
+| Bob wallet USDC               | **+2,000**        | Asset from the lot                                |
+| Bob wallet GRAI               | **−2,000**        | Spent on the ask                                  |
+| Bob escrow `amount` / `voted` | **2,000 / 2,000** | Payment locked **and** voted — no dividends on it |
+| Auction                       | closed            | `remaining = 0`                                   |
+
+
+1. Exit that payment later via `bribe` (refund in `bribeAsset`) or `unlock` (unlock fee stays on GRAI as dead while the penalty window is live).
 
 **Example 2** (Bob fills at Dutch discount — after `buybackPeriod`):
 
 Same lot: **2,000 USDC**, `maxPayment = 2,000`, `minPayment = 1,960`. Clock has fully decayed.
 
 1. Bob calls `buyback(USDC, type(uint256).max)`:
-   - Pays **`graiIn = 1,960 GRAI`** (floor = 98% of mint), receives **2,000 USDC**.
-   - Effective price ≈ **$0.98** of book per USDC taken; **40 GRAI** saved vs Example 1.
-   - Still `lock(1960)` + `vote(1960)` on Bob.
+  - Pays `graiIn = 1,960 GRAI` (floor = 98% of mint), receives **2,000 USDC**.
+  - Effective price ≈ **$0.98** of book per USDC taken; **40 GRAI** saved vs Example 1.
+  - Still `lock(1960)` + `vote(1960)` on Bob.
 2. Escrow after fill: `amount = voted = 1,960` — same shape as Example 1, smaller vote weight.
 
 **Example 3** (secondary market GRAI → auction fill → vote / bribe surface):
 
 1. Bob buys **2,000 GRAI** on a secondary market (CEX / DEX / OTC) for cash — protocol is not involved; GRAI lands in his **wallet**.
 2. He sees the same USDC Dutch lot at `t = 0` (`maxPayment = 2,000`) and calls `buyback(USDC, max)`.
-3. Wallet **−2,000 GRAI**, wallet **+2,000 USDC**; escrow opens **`amount = voted = 2,000`**.
+3. Wallet **−2,000 GRAI**, wallet **+2,000 USDC**; escrow opens `amount = voted = 2,000`.
 4. That escrow is a **vote position** toward liquidation quorum (`totalVoted` ↑ by 2,000) and pays **no** asset dividends on those 2,000.
 5. Exit options for the vote:
-   - someone `bribe`s Bob’s voted GRAI for `bribeAsset` at the dynamic ask; or
-   - Bob `unlock`s (penalty → treasury while the unlock fee window is live).
+  - someone `bribe`s Bob’s voted GRAI for `bribeAsset` at the dynamic ask; or
+  - Bob `unlock`s (fee stays on GRAI as dead while the unlock fee window is live).
 
 Net: secondary GRAI was the ticket into the auction; the fill automatically created a bribeable vote, not free liquid GRAI.
 
 ---
 
+
+
 ### Briber
 
-Buys **voted** GRAI only (`graiAmount ≤ voted`).
+Buys **voted** GRAI only (`graiAmount ≤ voted`). `bribeAsset` must **not** be fee-on-transfer: `_pay` must credit exactly `bribeAmount`, and the briber receives the **full** escrowed `graiAmount`.
 
 ```mermaid
 sequenceDiagram
@@ -316,11 +344,10 @@ sequenceDiagram
     participant V as Voter
 
     B->>G: bribe[voter, graiAmount]
-    G->>G: reserve full ask then pay then size graiOut from credited amount
-    G->>B: transfer graiOut GRAI to wallet
+    G->>G: reserve escrow then transfer full graiAmount to briber
+    G->>G: require exact bribeAmount credit non-FoT
     G->>V: voterShare in bribeAsset
     Note over G: premium half to cuts - discount half gap to cuts - par no cuts
-    Note over V,G: leftover ask stays locked and voted on voter
 ```
 
 
@@ -329,25 +356,29 @@ sequenceDiagram
 | Step | Action         | Effect                                                                                      |
 | ---- | -------------- | ------------------------------------------------------------------------------------------- |
 | 1    | `previewBribe` | Book × (1 + dynamic adj); discount ask uses half gap                                        |
-| 2    | `bribe`        | Sized from **credited** `_pay` (FoT-safe)                                                   |
-| 3    | GRAI out       | `graiOut = graiAmount * received / bribeAmount` (capped at ask); remainder stays with voter |
+| 2    | `bribe`        | Escrow reserved; full `graiAmount` → briber wallet; exact `_pay` required (`AmountZero` else) |
+| 3    | GRAI out       | Always the requested `graiAmount` (no FoT pro-rata / no leftover on voter)                  |
 | 4    | Split          | Premium: ½ premium → cuts; discount: other ½ gap → cuts; par: all to voter                  |
 | —    | Self-bribe     | Net cost ≈ half premium when scarce; under discount briber saves ½ gap, cuts take ½         |
 
 
 To earn dividends after a bribe, the briber must `lock` the received GRAI (and leave it unvoted).
 
-**Examples** (Brian bribes **Violett**’s **100 voted GRAI**; default config; `book = 100` bribeAsset; no FoT so `received = bribeAmount`; `graiOut = 100` to Brian’s wallet):
+**Examples** (Brian bribes **Violett**’s **100 voted GRAI**; default config; `book = 100` bribeAsset; exact pay; Brian gets **100 GRAI**):
 
 Setup: Violett locked and `vote`d **100 GRAI** (wallet = 0, escrow `amount = voted = 100`). She forgoes dividends on that share and waits for a briber. Brian buys her vote out.
 
-| `totalVoted/supply` | Regime   | Brian pays | Violett (voter) receives | Cuts  | Brian gets |
-| ------------------: | -------- | ---------: | -----------------------: | ----: | ---------- |
-|                 15% | premium  |     101.09 |                    100.55 |  0.54 | 100 GRAI   |
-|                 60% | discount |      99.20 |                     98.40 |  0.80 | 100 GRAI   |
-|                100% | discount |      98.00 |                     96.00 |  2.00 | 100 GRAI   |
+
+| `totalVoted/supply` | Regime   | Brian pays | Violett (voter) receives | Cuts | Brian gets |
+| ------------------- | -------- | ---------- | ------------------------ | ---- | ---------- |
+| 15%                 | premium  | 101.09     | 100.55                   | 0.54 | 100 GRAI   |
+| 60%                 | discount | 99.20      | 98.40                    | 0.80 | 100 GRAI   |
+| 100%                | discount | 98.00      | 96.00                    | 2.00 | 100 GRAI   |
+
 
 ---
+
+
 
 ## 3. Value flows (high level)
 
@@ -376,7 +407,11 @@ Setup: Violett locked and `vote`d **100 GRAI** (wallet = 0, escrow `amount = vot
 
 ---
 
+
+
 ## 4. GRAI share mechanics
+
+
 
 ### 4.1 Deposit
 
@@ -390,19 +425,23 @@ if (lock) lock(graiOut)
 
 - Assets go to **Grinders**.
 - Bootstrap mint when `totalValue == 0` (typically empty supply); yield on GRAI is excluded from the mint rate.
-  Cancelled Dutch inventory at `liquidate` enters the redeem basket by design (still excluding `totalClaimable`).
+Cancelled Dutch inventory at `liquidate` enters the redeem basket by design (still excluding `totalClaimable`).
 - Reverts if unknown / paused / liquidation open / zero value or shares.
 - FoT-safe on ERC20 pulls (`_pay` credited delta).
 - `paused` blocks deposits only.
 
+
+
 ### 4.2 Book vs market
 
 - **Book** = `totalValue / totalSupply`.
-- **Liquidation basket** = pro-rata of `_redeemableBalance` on GRAI after sweeps (excludes `totalClaimable`).
+- **Liquidation basket** = pro-rata of `_redeemable` on GRAI after sweeps (excludes `totalClaimable`).
 - New deposits dilute quorum until voters re-commit.
-- After `resettle`, `totalValue` marks to leftover basket NAV only when that **strictly raises** mint price (`totalNAV > totalValue`); otherwise `InsolventResettle`.
+- After `resettle`, `totalValue` marks to leftover basket NAV only when that raises mint price (`totalNAV >= totalValue`); otherwise book `totalValue` is kept and liquidation still clears (underwater reopen allowed).
 
 ---
+
+
 
 ## 5. Yield: `distribute` → auction / dividend / treasury
 
@@ -439,13 +478,17 @@ claimable   += (amount - voted) * accShare / 1e18 - debt
 - New lockers sync debt to the **current** index → they do **not** receive past cuts.
 - `vote` accrues then shrinks the eligible base and resyncs debt.
 - Claim: `claim` / `claimAll` / previews — **allowed while liquidation is open** (pays only the reserved slice; does not touch the redeem basket).
-- Reserved `totalClaimable` is excluded from redeem / resettle sweeps (`_redeemableBalance = bal − totalClaimable`) and remains claimable during liquidation and after restart.
+- Reserved `totalClaimable` is excluded from redeem / resettle sweeps (`_redeemable = bal − totalClaimable`) and remains claimable during liquidation and after restart.
 
 Example: Alice locks 100, votes 40 → eligible 60. Bob locks 100 unvoted → eligible 100. Total eligible 160. A 30 USDC dividend cut pays Alice **11.25**, Bob **18.75**.
 
 ---
 
+
+
 ## 6. Dutch auctions
+
+
 
 ### 6.1 Lots (`_place`)
 
@@ -457,9 +500,10 @@ maxPayment = previewDeposit(asset, remaining).graiOut
 minPayment = maxPayment * (BPS - bribePremiumBps) / BPS  // default 98% (−2% max discount)
 startTime  = now                                  // every merge, including dust
 period     = config.buybackPeriod                 // snapshotted; default 7d
+listingPrice = value * 1e6 / remaining            // USD unit price snapshot (analytics)
 ```
 
-**Business logic:** the protocol **wants frequent `_place`s**, including dust top-ups from small `distribute` / bribe cuts. Each merge **intentionally** restarts the Dutch clock at the live mint ask for the full remaining lot — there is no “preserve elapsed on dust” path. Buyers should treat a near-floor ask as unstable until they land the fill; sandwich / repeated dust resets are accepted auction dynamics, not a defect. Ask never decays below the floor (unless `bribePremiumBps = BPS`).
+**Business logic:** the protocol **wants frequent** `_place`**s**, including dust top-ups from small `distribute` / bribe cuts. Each merge **intentionally** restarts the Dutch clock at the live mint ask for the full remaining lot — there is no “preserve elapsed on dust” path. Buyers should treat a near-floor ask as unstable until they land the fill; sandwich / repeated dust resets are accepted auction dynamics, not a defect. Ask never decays below the floor (unless `bribePremiumBps = BPS`).
 
 ### 6.2 Pricing / fill
 
@@ -470,10 +514,11 @@ graiIn, amountOut = previewBuyback(asset, amount, timestamp)
 
 `buyback(asset, amount)`:
 
-1. Preview Dutch `graiIn` / `amountOut`; **revert `AmountZero` unless both `> 0`** (no free / zero fills — prevents chunked floor-drain of a lot for Σ `graiIn = 0`).
-2. Reduce auction `remaining` (or delete lot).
-3. `lock(graiIn)` then `vote(graiIn)` (payment from wallet, then vote).
-4. Withdraw `amountOut` asset to buyer.
+1. Scavenge orphan/dead GRAI on the contract (`balanceOf(this) − totalLocked`, e.g. unlock fees) → buyer wallet, then included in the following `lock`+`vote`.
+2. Preview Dutch `graiIn` / `amountOut`; **revert** `AmountZero` **unless both** `> 0` (no free / zero fills — prevents chunked floor-drain of a lot for Σ `graiIn = 0`).
+3. Reduce auction `remaining` (or delete lot).
+4. `lock(graiIn + dead)` then `vote(graiIn + dead)`.
+5. Withdraw `amountOut` asset to buyer.
 
 Dust tails where `ask * amountOut < initial` (floor → `graiIn = 0`) stay in the auction until a large enough fill, a later `_place` merge, or liquidation redeem. Full-lot ask floors at `(BPS − bribePremiumBps)` of mint (default 98%).
 
@@ -481,68 +526,77 @@ Liquidation deletes open auctions into the redeem basket.
 
 ---
 
+
+
 ## 7. Settlement asset (`bribeAsset`)
 
 Used for bribe settlement (dynamic ask). May be listed via `_place` when premium-regime cuts apply.
 
 **Not** payment for yield `buyback` (buyers pay GRAI).
 
-`bribe` sizes outflows from the **credited** `_pay` amount (FoT-safe, same pattern as deposit/distribute) and scales **GRAI released** the same way.
+`bribeAsset` must **not** be fee-on-transfer: `bribe` requires exact `_pay` credit (`received == bribeAmount`) and releases the **full** escrowed `graiAmount`. Deposit / `distribute` remain FoT-safe via credited `_pay` deltas.
 
 Switching requires a feed; open votes/auctions do not block. Setting `bribeAsset = address(this)` is a no-op.
 
 ---
 
+
+
 ## 8. Lock, vote, bribe
+
+
 
 ### 8.1 Lock / unlock
 
 - `lock` — escrow GRAI; dividend eligibility on the unvoted portion; `lockedAt = now` **on every top-up** (including buyback / vote shortfall), re-arming the unlock fee on the whole escrow.
-- `unlock(graiAmount, claimAll_)` — accrue dividends, decaying unlock fee → **treasury**, clamp `voted ≤ amount`, return net GRAI; optional `claimAll_`.
+- `unlock(graiAmount)` — accrue dividends, decaying unlock fee stays on GRAI as orphan/dead (`balanceOf(this) − totalLocked` for the next `buyback`), clamp `voted ≤ amount`, return net GRAI. Yield claims are separate (`claim` / `claimAll`).
 - Unlock fee: `unlockFeeBps` (default **10%**) at `lockedAt`, linearly → **0** over `unlockPenaltyPeriod` (default **24h**).
 - While live `penaltyBps > 0`, **partial** unlocks must be ≥ `ceil(BPS / penaltyBps)` (e.g. 10 GRAI wei at 10% fee) so chunked dust cannot floor the fee to 0; **full-escrow** unlock is always allowed.
 - Unlock reduces lock first; vote is clamped only if `voted > amount` afterward.
 
+
+
 ### 8.2 Vote
 
-- Call `vote` from wallet — no prior `lock` required (shortfall auto-locked; account enters `accounts` via `lock`).
+- Call `vote` from wallet — no prior `lock` required (shortfall auto-locked; account enters `lockers` via `lock`, `voters` when `voted` becomes non-zero).
 - Ends with `voted ≤ amount`; increases `totalVoted`; shrinks dividend eligibility.
 - Quorum: `totalVoted * BPS >= supply * quorumBps` (live supply by design).
+
+
 
 ### 8.3 Bribe
 
 Blocked while liquidation is open.
 
-Ask tracks **vote share vs half-quorum** (`halfBps = quorumBps / 2`) continuously. `bribePremiumBps` is the max `|adj|`:
+Ask tracks **vote share vs half-quorum** (`halfBps = quorumBps / 2`) continuously. `bribePremiumBps` is the slope scale (`|adj| = bribePremiumBps` at 0 votes and at quorum):
 
 ```
 voteBps = totalVoted * BPS / supply
-span    = halfBps
+span    = halfBps                                   // floors to 1 if half is 0
 
 adjBps  = 0                                              if voteBps == halfBps
         = +bribePremiumBps * (halfBps - voteBps) / span  if voteBps < halfBps
         = −bribePremiumBps * (voteBps - halfBps) / span  if voteBps > halfBps
-        // no clamp: past quorum |adj| can exceed bribePremiumBps
+        // no clamp: past quorum |adj| can exceed bribePremiumBps (may hit BPS → fullAsk = 0)
 
 book         = bribeAssetAmount(graiAmount * totalValue / supply)
-fullAsk      = book * (BPS + adjBps) / BPS               // theoretical ask from adj
+fullAsk      = book * (BPS + adjBps) / BPS               // premium leg
+           // or adj >= BPS ? 0 : book * (BPS - |adj|) / BPS   // discount leg
 premium      = adjBps > 0 ? fullAsk - book : 0           // scarce votes → favor voting
 fullDiscount = adjBps < 0 ? book - fullAsk : 0           // excess votes → full gap vs book
 discount     = fullDiscount / 2                          // half gap carved to cuts in bribe()
 bribeAmount  = adjBps >= 0 ? fullAsk : book - discount   // discount regime: only half off ask
-received     = _pay(...)                                 // credited
-graiOut      = graiAmount * received / bribeAmount       // ≤ graiAmount
+received     = _pay(...)                                 // must equal bribeAmount (non-FoT)
+// full graiAmount transferred to briber; no proportional leftover on voter
 ```
 
 `previewBribe` returns `(bribeAmount, premium, discount)` for UI signals.
 
-**Chart** — ask vs `totalVoted/supply` (default `quorumBps=6667`, `bribePremiumBps=200`, fixed `book=100`). Interactive: Cursor canvas `bribe-amount-vs-voted`.
+**Chart** — ask vs `totalVoted/supply` (default `quorumBps=6667`, `bribePremiumBps=200`, fixed `book=100`).
 
-![bribeAmount vs totalVoted/supply](./bribe-amount-vs-voted.png)
+![bribeAmount vs totalVoted/supply](./bribe-amount-vs-voted.svg)
 
 Half-quorum is `quorumBps/2 = 3333` bps (~33.33%): **32%** still a tiny premium (`100.07`), **34%** starts discount (`99.98`). Red band = premium (half → cuts); green band = discount (ask uses `fullGap/2`, other half → cuts). Discount slope is half the premium slope.
-
-
 
 **Table** (+2% `totalVoted/supply`, Solidity integer path, `book=100`):
 
@@ -608,7 +662,7 @@ Split of `received`:
 - **Discount (**`discount > 0`**):** ask is book − ½ full gap; the other half (`discount`) → cuts; voter keeps the rest.
 - **Par:** voter gets **all** `received` (no cuts).
 
-**Examples** (default config, fixed `book = 100` bribeAsset, no FoT so `received = bribeAmount`):
+**Examples** (default config, fixed `book = 100` bribeAsset, exact pay):
 
 
 | `totalVoted/supply` | Regime   | Briber pays | Voter receives | Cuts |
@@ -620,18 +674,30 @@ Split of `received`:
 - **15%:** `adj = 109` → ask = book × 1.0109. Half of the 1.09 premium → cuts (`⌊1.09/2⌋ = 0.54`); voter keeps book + other half (`100.55`).
 - **60%:** `adj = 160` → full gap 1.60; ask uses half (`99.20`). The other half (`0.80`) → cuts; voter keeps `98.40`.
 
-Leftover `(graiAmount − graiOut)` restored as locked+voted on voter. Briber receives `graiOut` GRAI to **wallet**.
+Briber receives the full requested `graiAmount` GRAI to **wallet**. Voter escrow for that amount is fully closed (no leftover locked+voted remainder).
 
 ---
 
+
+
 ## 9. Liquidation cycle
 
-### 9.1 Open (`liquidate`, **2-of-2**: quorum **and** owner / DAO)
 
-Opening liquidation needs **both** confirmations:
 
-1. **Quorum** — `hasQuorum()`: `totalVoted * BPS >= totalSupply * quorumBps` (default ~66.67%). Voters alone cannot open the cycle.
-2. **Owner (DAO / multisig)** — `onlyOwner` calls `liquidate()`. Owner alone cannot open without quorum (`LiquidationQuorumNotMet`).
+### 9.1 Open (`liquidate`, **2-of-2**: quorum **and** owner confirmation)
+
+Opening liquidation needs **both** limbs:
+
+1. **Quorum** — `hasQuorum()`: `totalVoted * BPS >= totalSupply * quorumBps` (default ~66.67%). Voters alone cannot open.
+2. **Owner confirmation** — `confirmed` (and/or an owner `liquidate` call while quorum holds).
+
+Same entrypoint `liquidate()` for everyone:
+
+| Caller | Behavior |
+| ------ | -------- |
+| **Owner**, no quorum | Toggle `confirmed` (arm / disarm for a later non-owner open). Does **not** open. |
+| **Owner**, quorum met | This call **is** consent → open immediately (`confirmed` not required). |
+| **Non-owner** | Open only if `confirmed && hasQuorum()`; else `LiquidationNotConfirmed` / `LiquidationQuorumNotMet`. |
 
 Then: cancel auctions into basket; `liquidationAt = now`. Deposits (and other live paths) are blocked by the liquidation flag — per-asset `paused` is **not** rewritten.
 
@@ -639,7 +705,7 @@ While liquidation is open, `setConfig` **is fully blocked** (`LiquidationOpen`) 
 
 ### 9.2 Consolidation (`liquidationPeriod`, default 24h)
 
-`redeem` blocked (`LiquidationDelay`). Keepers run `Grinders.liquidate` sweeps → balances on GRAI. Deposit / buyback / bribe / lock / unlock / vote blocked while liquidation is open. **`claim` / `claimAll` stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
+`redeem` blocked (`LiquidationDelay`). Keepers run `Grinders.liquidate` sweeps → balances on GRAI. Deposit / buyback / bribe / lock / unlock / vote blocked while liquidation is open. `claim` **/** `claimAll` **stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
 
 ### 9.3 Redeem
 
@@ -649,18 +715,20 @@ After delay: snapshot `previewRedeem` (frozen vector); burn wallet then escrow; 
 
 State when `redeem` opens (`liquidationPeriod` elapsed):
 
-| Item | Amount |
-| ---- | -----: |
-| `totalSupply` | **1,000 GRAI** |
-| `totalValue` (book) | **$1,000** |
-| Alice wallet | **100 GRAI** (10% of supply); escrow = 0 |
-| Redeem basket on GRAI (after sweeps, excl. `totalClaimable`) | **8,000 USDC** + **1 WETH** |
+
+| Item                                                         | Amount                                   |
+| ------------------------------------------------------------ | ---------------------------------------- |
+| `totalSupply`                                                | **1,000 GRAI**                           |
+| `totalValue` (book)                                          | **$1,000**                               |
+| Alice wallet                                                 | **100 GRAI** (10% of supply); escrow = 0 |
+| Redeem basket on GRAI (after sweeps, excl. `totalClaimable`) | **8,000 USDC** + **1 WETH**              |
+
 
 1. Alice calls `previewRedeem(100)` → vector is **10%** of each redeemable asset: **800 USDC** + **0.1 WETH**.
 2. She calls `redeem(100)`:
-   - Burns **100 GRAI** from wallet (`supply` → 900).
-   - Book burn: `totalValue -= 100` → **$900** (pro-rata of book, independent of basket marks).
-   - Pays her the frozen vector: wallet **+800 USDC**, **+0.1 WETH**.
+  - Burns **100 GRAI** from wallet (`supply` → 900).
+  - Book burn: `totalValue -= 100` → **$900** (pro-rata of book, independent of basket marks).
+  - Pays her the frozen vector: wallet **+800 USDC**, **+0.1 WETH**.
 3. Remaining holders still share the leftover basket **7,200 USDC** + **0.9 WETH** against **900 GRAI** until they redeem or `resettle`.
 
 Dividend `totalClaimable` is **not** in this vector — Alice (or anyone) may still `claim` that reserve during liquidation; it never enters the redeem pro-rata.
@@ -669,17 +737,19 @@ Dividend `totalClaimable` is **not** in this vector — Alice (or anyone) may st
 
 Permissionless after `liquidationPeriod + redeemPeriod`:
 
-1. Sweep `_redeemableBalance` → Grinders (dividend `totalClaimable` stays on GRAI).
+1. Sweep `_redeemable` → Grinders (dividend `totalClaimable` stays on GRAI).
 2. Per-asset `paused` flags are left as the owner set them (liquidation itself never toggled them).
-3. If `supply > 0`: require `totalNAV >= totalValue`, then `totalValue = totalNAV`; else `InsolventResettle`.
+3. If `supply > 0`: if `totalNAV >= totalValue` then `totalValue = totalNAV`; else keep book `totalValue` (no revert — underwater reopen allowed).
 4. If `supply == 0`: `totalValue = 0` even if dust was swept.
 5. Clear `liquidation` / `liquidationAt`.
 
 ---
 
+
+
 ## 10. Grinders layer
 
-Full write-up: [`GRINDERS.md`](GRINDERS.md).
+Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
 
 | Topic              | Behavior                                                |
@@ -694,38 +764,44 @@ Full write-up: [`GRINDERS.md`](GRINDERS.md).
 
 ---
 
+
+
 ## 11. Protocol configuration (defaults)
 
 
-| Parameter             | Default         | Meaning                                         |
-| --------------------- | --------------- | ----------------------------------------------- |
-| `buybackCutBps`       | 33_33 (~33.33%) | Yield / bribe premium → Dutch lot               |
-| `dividendCutBps`      | 33_34 (~33.34%) | → unvoted-locker dividends (or auction if none) |
-| `treasuryCutBps`      | 33_33 (~33.33%) | → treasury                                      |
-| `bribePremiumBps`     | 2_00 (2%)       | Max bribe `                                     |
-| `quorumBps`           | 66_67 (66.67%)  | Voted / supply to open liquidation              |
-| `unlockFeeBps`        | 10_00 (10%)     | Unlock fee at `lockedAt` (→ treasury)           |
-| `buybackPeriod`       | 7 days          | Dutch GRAI ask → floor (`>= 7 days`)            |
-| `liquidationPeriod`   | 24 hours        | Delay before `redeem` (must be `> 0`)           |
-| `redeemPeriod`        | 7 days          | Window before `resettle` (must be `> 0`)        |
-| `unlockPenaltyPeriod` | 24 hours        | Unlock fee decay to 0                           |
+| Parameter             | Default         | Meaning                                                              |
+| --------------------- | --------------- | -------------------------------------------------------------------- |
+| `buybackCutBps`       | 33_33 (~33.33%) | Yield / bribe premium → Dutch lot                                    |
+| `dividendCutBps`      | 33_34 (~33.34%) | → unvoted-locker dividends (or auction if none)                      |
+| `treasuryCutBps`      | 33_33 (~33.33%) | → treasury                                                           |
+| `bribePremiumBps`     | 2_00 (2%)       | Bribe ask slope / Dutch buyback max discount                         |
+| `quorumBps`           | 66_67 (66.67%)  | Voted / supply to open liquidation                                   |
+| `unlockFeeBps`        | 10_00 (10%)     | Unlock fee at `lockedAt` (stays on GRAI as dead)                     |
+| `unlockPenaltyPeriod` | 24 hours        | Linear decay of unlock fee to 0                                      |
+| `buybackPeriod`       | 7 days          | Dutch GRAI ask → floor (`>= 7 days`)                                 |
+| `liquidationPeriod`   | 24 hours        | Delay before `redeem` (must be `> 0`)                                |
+| `redeemPeriod`        | 7 days          | Window before `resettle` (must be `> 0`)                             |
 
 
 Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is open**.
 
 ---
 
+
+
 ## 12. Access control
 
 
-| Role                     | GRAI                                                                                                                        |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/bribeAsset, feeds, `set` / `setFeed` / `setAssetConfig`; `liquidate` **only with quorum** (2-of-2 with voters / DAO) |
+| Role                     | GRAI                                                                                                                                                                        |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/bribeAsset, feeds, `set` / `setFeed` / `setAssetConfig`; liquidation 2-of-2 via `confirmed` / `liquidate` |
 
 
 Grinders: `Ownable` for custodians / allocation / upgrades.
 
 ---
+
+
 
 ## 13. Economic incentives
 
@@ -734,14 +810,16 @@ Grinders: `Ownable` for custodians / allocation / upgrades.
 | ------------------------- | ---------------------------------------------------------------------------------- |
 | **Depositor**             | Book-priced GRAI                                                                   |
 | **Unvoted locker**        | Asset dividends from yield / bribe premium                                         |
-| **Voter**                 | Path to force liquidation; forgoes dividends on voted GRAI; exit via bribe/unlock  |
-| **Buyback buyer**         | Assets at Dutch discount; payment locked+voted (exit via bribe/unlock)             |
-| **Briber**                | Acquire voted GRAI (pro-rata to credited pull); ask/premium dynamic vs half-quorum |
+| **Voter**                 | Path toward liquidation quorum; forgoes dividends on voted GRAI; exit via bribe/unlock |
+| **Buyback buyer**         | Assets at Dutch discount; payment locked+voted; may scavenge unlock-fee dead GRAI  |
+| **Briber**                | Acquire full voted GRAI for exact ask; ask/premium dynamic vs half-quorum          |
 | **Grinders / custodians** | Trade allocated capital; `distribute` to protocol                                  |
-| **Treasury**              | Yield/bribe premium cut + unlock penalties                                         |
+| **Treasury**              | Yield / bribe-premium cut only (unlock fees stay on GRAI as dead)                  |
 
 
 ---
+
+
 
 ## 14. Key invariants
 
@@ -749,34 +827,42 @@ Grinders: `Ownable` for custodians / allocation / upgrades.
 2. **Dividends = unvoted lock** — index uses `totalLocked − totalVoted`; account base is `amount − voted`.
 3. **Past dividends are not diluted** — new locks sync debt to the live index.
 4. **No unvoted locks → dividend cut auctions** — same for bribe premium dividend cut.
-5. `buyback` **pays GRAI** → `lock` + `vote` on buyer (not a voter GRAI reward pool).
+5. `buyback` **pays GRAI** → scavenges dead if any → `lock` + `vote` on buyer (not a voter GRAI reward pool).
 6. **Quorum uses live supply** — deposits dilute progress until re-votes.
-7. **Liquidation is 2-of-2** — `hasQuorum()` **and** owner (DAO) `liquidate`; either limb alone is insufficient.
+7. **Liquidation is 2-of-2** — `hasQuorum()` **and** owner confirmation (`confirmed`, or owner `liquidate` while quorum holds).
 8. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
-9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; **`claim` / `claimAll` allowed** — dividend reserve and redeemable basket are separate (`_redeemableBalance`).
-10. **FoT** — deposit/distribute/bribe size economics from credited `_pay`; bribe also scales GRAI out.
-11. `resettle` requires `totalNAV >= totalValue` when shares remain; deposit bootstrap when `totalValue == 0`.
+9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; `claim` **/** `claimAll` **allowed** — dividend reserve and redeemable basket are separate (`_redeemable`).
+10. **FoT** — deposit/`distribute` size economics from credited `_pay`; `bribeAsset` is **non-FoT** (exact credit required; full `graiAmount` out).
+11. `resettle` marks `totalValue = totalNAV` only when that raises mint price; otherwise keeps book TV (underwater reopen allowed). Deposit bootstrap when `totalValue == 0`.
 12. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
+13. **Unlock fee → dead GRAI** — penalty is not sent to treasury; next `buyback` may scavenge `balanceOf(this) − totalLocked` (locked+voted with the Dutch payment).
+14. `buyback` **scavenges dead** before fill — orphan GRAI on the contract is credited to the buyer then lock+voted with `graiIn`.
 
 ---
 
+
+
 ## 15. Instruction reference
+
+
 
 ### GRAI
 
 
-| Function                   | Caller              | Liquidation open?                            |
-| -------------------------- | ------------------- | -------------------------------------------- |
-| `deposit(..., lock)`       | Anyone              | Blocked                                      |
-| `lock` / `unlock` / `vote` | Anyone              | Blocked                                      |
-| `distribute`               | Anyone (custodians) | Blocked                                      |
-| `buyback`                  | Anyone              | Blocked                                      |
-| `claim` / `claimAll`       | Anyone              | Allowed (claims ≠ redeem basket)            |
-| `bribe`                    | Anyone              | Blocked                                      |
-| `redeem`                   | Holder              | Only when open (after delay); `nonReentrant` |
-| `liquidate`                | Owner (DAO)         | Opens cycle **only if** `hasQuorum()` (2-of-2) |
-| `resettle`                 | Anyone              | Closes cycle; fund restarts                  |
-| `setConfig`                | Owner               | Blocked while open                           |
+| Function                   | Caller                    | Liquidation open?                              |
+| -------------------------- | ------------------------- | ---------------------------------------------- |
+| `deposit(..., lock)`       | Anyone                    | Blocked                                        |
+| `lock` / `unlock` / `vote` | Anyone                    | Blocked                                        |
+| `distribute`               | Anyone (custodians)       | Blocked                                        |
+| `buyback`                  | Anyone                    | Blocked                                        |
+| `claim` / `claimAll`       | Anyone                    | Allowed (claims ≠ redeem basket)               |
+| `bribe`                    | Anyone                    | Blocked                                        |
+| `redeem`                   | Holder                    | Only when open (after delay); `nonReentrant`   |
+| `liquidate`                | Owner / anyone            | 2-of-2: owner toggles `confirmed` or opens with quorum; non-owner opens iff `confirmed && hasQuorum()` |
+| `resettle`                 | Anyone                    | Closes cycle; fund restarts                    |
+| `setConfig`                | Owner                     | Blocked while open                             |
+
+
 
 
 ### Grinders
