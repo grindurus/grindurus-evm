@@ -13,6 +13,9 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",
 ]
+# Broken relative imports in archived v1 sources — keep out of compile set.
+# Legacy GRAI suite (settlementAsset/fill API) lives under test/archive.
+skip = ["src/archive/**", "test/archive/**"]
 
 # RPC endpoints for fork tests. Override the public defaults by exporting
 [rpc_endpoints]

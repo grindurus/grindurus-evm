@@ -2,7 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
-import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -19,15 +19,19 @@ import {IGRAI} from "./interfaces/IGRAI.sol";
 /// @title Grinders (implementation)
 /// @notice Protocol registry: custodian NFTs and junior capital from GRAI.
 /// @dev Do not call this contract directly. Use the ERC1967Proxy address only.
-contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable, UUPSUpgradeable {
+contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
+    /// @notice Linked GRAI core contract for liquidation-state checks and asset routing.
     IGRAI public grai;
 
+    /// @notice Registered custodian implementations by custody kind hash.
     mapping(bytes32 custodianKind => address) public custodianImplementations;
 
+    /// @notice Custodian proxy address by NFT id (sparse-safe; removed slots may be zero).
     mapping(uint256 custodianId => address) public custodians;
 
+    /// @notice Reverse index: registered custodian address => NFT id.
     mapping(address custodian => uint256) public custodianIds;
 
     /// @notice Issuance ledger: how much of `asset` was sent to `custodian` via `allocate`.
@@ -36,6 +40,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     ///      On deallocate the ledger is floored toward zero for that asset only; it must not gate the pull.
     mapping(address custodian => mapping(address asset => uint256)) public allocated;
 
+    /// @notice Aggregate issuance ledger per asset across all custodians.
+    /// @dev Accounting-only mirror of `allocated`; not used as a balance oracle or transfer cap.
     mapping(address asset => uint256) public totalAllocated;
 
     /// @dev Storage gap for future upgrades (includes slots formerly used by local liquidation state).
@@ -46,15 +52,15 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
         _disableInitializers();
     }
 
-    function initialize(address owner_, address grai_) external initializer {
+    function initialize(address owner_, address grai_) public initializer {
         if (owner_ == address(0)) revert ZeroAddress();
         if (grai_ == address(0)) revert GraiTokenZero();
         __ERC721_init("Grinders Custodians", "GRINDERS");
         __ERC721Enumerable_init();
         __Ownable_init(owner_);
+        __Ownable2Step_init();
         __UUPSUpgradeable_init();
         grai = IGRAI(grai_);
-        emit GraiTokenUpdate(grai_);
     }
 
     receive() external payable {}
@@ -80,7 +86,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     /// @notice Pull `amount` of `asset` from a custodian back to this contract.
     /// @dev Amount is not capped by `allocated`: after swaps the returned token/size need not match
     ///      what was allocated. Ledger is best-effort decreased (floored at 0) for accounting only.
-    function deallocate(address asset, uint256 amount) external payable {
+    function deallocate(address asset, uint256 amount) public payable {
         address custodian = msg.sender;
         _requireCustodian(custodian);
         if (amount == 0) revert AmountZero();
@@ -103,7 +109,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     }
 
     /// @inheritdoc IGrinders
-    function liquidate() external {
+    function liquidate() public {
         _requireLiquidation();
 
         IGRAI.DutchAuction[] memory assets = grai.getAssets();
@@ -121,7 +127,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     ///      pulls eth/base/quote into this contract, then forwards those amounts to GRAI as idle
     ///      liquidation inventory for `liquidate`. Return amounts are trusted: only registered
     ///      custodian wallets are iterated, under the Grinders NFT custody model.
-    function liquidate(uint256 fromId, uint256 toId) external {
+    function liquidate(uint256 fromId, uint256 toId) public {
         _requireLiquidation();
         if (fromId >= toId) revert InvalidLiquidationRange(fromId, toId);
 
@@ -170,11 +176,12 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     }
 
     /// @notice Deploy a custodian proxy, mint its Grinder NFT, and register it with `owner_`.
-    function mint(bytes32 custodianKind, address baseAsset_, address quoteAsset_, address owner_)
-        public
-        onlyOwner
-        returns (address custodian)
-    {
+    function mint(
+        bytes32 custodianKind,
+        address baseAsset_,
+        address quoteAsset_,
+        address owner_
+    ) public onlyOwner returns (address custodian) {
         if (owner_ == address(0)) revert OwnerZero();
 
         address impl = custodianImplementations[custodianKind];
@@ -196,7 +203,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, OwnableUpgradeable,
     }
 
     /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
-    function register(address custodian, address owner_) external onlyOwner {
+    function register(address custodian, address owner_) public onlyOwner {
         if (custodian == address(0)) revert CustodianZero();
         if (owner_ == address(0)) revert OwnerZero();
         if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);

@@ -81,13 +81,17 @@ contract GRAI is
     ///      escrowed GRAI. Owner must only set a non-FoT listed feed asset via `setBribeAsset`.
     address public bribeAsset;
 
-    /// @notice True after `liquidate` opens until `resettle` closes it.
+    /// @notice Owner confirmation for non-owner open (2-of-2). Owner toggles via `liquidate` when no quorum;
+    ///         cleared on open. Owner with quorum opens without needing this flag.
+    bool public confirmed;
+
+    /// @notice True after liquidation opens until `resettle` closes it.
     bool public liquidation;
 
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
     uint48 public liquidationAt;
 
-    /** SLOT end 20 + 1 + 6 */
+    /** SLOT end 20 + 1 + 1 + 6 */
 
     /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
     Config public config;
@@ -333,7 +337,7 @@ contract GRAI is
         _syncDividendDebts(account);
 
         _transfer(account, address(this), graiAmount);
-        emit Locked(account, graiAmount, totalLocked);
+        emit Lock(account, graiAmount, totalLocked);
     }
 
     //////////////////// UNLOCK ////////////////////
@@ -351,17 +355,16 @@ contract GRAI is
 
         _accrueDividends(account);
 
-        (uint256 unlockAmount, uint256 penalty) = previewUnlock(account, graiAmount, block.timestamp);
+        (uint256 unlockAmount, ) = previewUnlock(account, graiAmount, block.timestamp);
 
         totalLocked -= graiAmount;
         entry.amount -= graiAmount;
         _clampVote(account);
         _syncDividendDebts(account);
 
-        if (penalty > 0) _transfer(address(this), treasury, penalty);
         if (unlockAmount > 0) _transfer(address(this), account, unlockAmount);
-        emit Unlock(account, graiAmount, totalLocked);
         if (entry.amount == 0) _removeLocker(account);
+        emit Unlock(account, graiAmount, totalLocked);
     }
 
     /// @inheritdoc IGRAI
@@ -631,13 +634,20 @@ contract GRAI is
     //////////////////// LIQUIDATE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Opens liquidation after vote quorum: cancel open yield auctions into the redeem basket
-    ///      and start the claim clock at `liquidationAt`. Deposits are blocked by `_requireNotLiquidation`
-    ///      (per-asset `paused` is unchanged).
-    function liquidate() public onlyOwner {
+    /// @dev 2-of-2 with vote quorum. Owner: toggle `confirmed` when no quorum; with
+    ///      quorum, this call is consent and opens. Non-owner: open when `confirmed &&
+    ///      hasQuorum()`, else revert.
+    function liquidate() public {
         _requireNotLiquidation();
-        if (!hasQuorum()) revert LiquidationQuorumNotMet();
-
+        if (msg.sender == owner()) {
+            if (!hasQuorum()) {
+                confirmed = !confirmed;
+                return;
+            }
+        } else {
+            if (!confirmed) revert LiquidationNotConfirmed();
+            if (!hasQuorum()) revert LiquidationQuorumNotMet();
+        }
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
@@ -717,7 +727,7 @@ contract GRAI is
         uint256 count;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            uint256 assetBalance = _redeemableBalance(asset);
+            uint256 assetBalance = _redeemable(asset);
             if (assetBalance > 0) {
                 uint256 amount = (assetBalance * graiAmount) / supply;
                 if (amount > 0) {
@@ -754,14 +764,14 @@ contract GRAI is
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
             revert RedeemPeriodActive();
         }
-        uint256 totalNAV = 0;
+        uint256 nav = 0;
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            uint256 sweepable = _redeemableBalance(asset);
-            if (sweepable > 0) {
-                totalNAV += usdValue(asset, sweepable);
-                _withdraw(address(grinders), asset, sweepable);
+            uint256 redeemable = _redeemable(asset);
+            if (redeemable > 0) {
+                nav += usdValue(asset, redeemable);
+                _withdraw(address(grinders), asset, redeemable);
             }
             emit AssetConfigUpdate(asset, assets[asset]);
             unchecked { ++i; }
@@ -769,13 +779,13 @@ contract GRAI is
         uint256 supply = totalSupply();
         if (supply > 0) {
             // Raise mint price only; underwater reopen keeps book totalValue.
-            if (totalNAV >= totalValue) totalValue = totalNAV;
+            if (nav >= totalValue) totalValue = nav;
         } else {
             totalValue = 0;
         }
-
         liquidation = false;
         liquidationAt = 0;
+        confirmed = false;
         emit Liquidate(liquidation);
     }
 
@@ -802,7 +812,7 @@ contract GRAI is
     }
 
     /// @notice Balance available to liquidation redeem / resettle (excludes dividend claim reserve).
-    function _redeemableBalance(address asset) internal view returns (uint256) {
+    function _redeemable(address asset) internal view returns (uint256) {
         uint256 bal = _balance(asset);
         uint256 reserved = totalPositions[asset].totalClaimable;
         return bal > reserved ? bal - reserved : 0;

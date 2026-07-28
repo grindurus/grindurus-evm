@@ -23,6 +23,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error ValueMismatch();
     error UnexpectedValue();
     error LiquidationQuorumNotMet();
+    error LiquidationNotConfirmed();
     error LiquidationOpen();
     error LiquidationClosed();
     error LiquidationDelay();
@@ -144,7 +145,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
     event Buyback(address indexed buyer, address indexed asset, uint256 graiIn, uint256 amountOut);
     event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
-    event Locked(address indexed account, uint256 amount, uint256 totalLocked);
+    event Lock(address indexed account, uint256 amount, uint256 totalLocked);
     event Unlock(address indexed account, uint256 amount, uint256 totalLocked);
     event Vote(address indexed account, uint256 amount, uint256 totalVoted);
     event Claim(address indexed account, address indexed asset, uint256 amount);
@@ -234,6 +235,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice True when voted GRAI is at least `config.quorumBps` of `totalSupply`.
     function hasQuorum() external view returns (bool);
+
+    /// @notice Owner confirmation for non-owner liquidation open. Owner toggles via `liquidate` when no quorum; cleared on open.
+    function confirmed() external view returns (bool);
 
     /// @notice True after `liquidate` opens until `resettle` closes it.
     function liquidation() external view returns (bool);
@@ -351,8 +355,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
     function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice Open liquidation (requires quorum): pauses all assets and cancels open yield auctions
-    ///         into the redeem basket. Unredeemed shares retain their book value.
+    /// @notice Liquidation 2-of-2: owner toggles `confirmed` if no quorum, else opens;
+    ///         anyone else opens when `confirmed && hasQuorum()`, otherwise reverts.
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
