@@ -25,7 +25,8 @@ library GrinderArt {
     bytes private constant HORN =
         hex"f5e6c8ffd700e8dcc8c0c0c8ffb6c1b87333fff8ffff2a4ad4af37e6c35cff8c42a8e6cff0e68ce0b0ff98d8c8ffe4c4";
 
-    function tokenJson(uint256 tokenId, address custodian, bytes32 kind) public view returns (string memory) {
+    /// @dev Inlined into `Grinders` (internal library — no separate deploy / link).
+    function tokenJson(uint256 tokenId, address custodian, bytes32 kind) internal view returns (string memory) {
         uint256 s = uint256(keccak256(abi.encodePacked("grindurus.grinder", block.chainid, tokenId, kind)));
         return string.concat(
             '{"name":"Grindurus Custodian #',
