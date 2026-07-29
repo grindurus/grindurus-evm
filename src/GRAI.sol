@@ -67,10 +67,14 @@ contract GRAI is
     /// @notice Per-user lock + liquidation vote (GRAI held by this contract while locked).
     mapping(address account => Escrow) public escrows;
 
+    /// @notice Sum of GRAI escrowed in all active locks (`escrows[account].amount`).
     uint256 public totalLocked;
 
+    /// @notice Sum of GRAI committed toward liquidation quorum (`escrows[account].voted`; ≤ `totalLocked`).
     uint256 public totalVoted;
 
+    /// @notice Book NAV in `USD_DECIMALS` (6); mint rate = `value * totalSupply / totalValue`. Moves on
+    ///         `deposit`, redeem burn, and `resettle`; excludes yield inventory on this contract.
     uint256 public totalValue;
 
     /** SLOT BEGIN */
