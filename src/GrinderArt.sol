@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.30;
 
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
