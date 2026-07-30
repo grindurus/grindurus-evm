@@ -231,6 +231,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Redeem / resettle basket in `assetList` order: every listed asset and its
     ///         `_redeemable` balance (contract balance minus `totalClaimable`; may be 0).
+    ///         Reverts with `LiquidationClosed` when liquidation is not open.
     function getRedeemables() external view returns (address[] memory assetOuts, uint256[] memory amounts);
 
     function totalVoted() external view returns (uint256);

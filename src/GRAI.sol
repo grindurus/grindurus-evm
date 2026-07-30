@@ -252,12 +252,12 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Full basket snapshot in `assetList` order (includes zero balances). Excludes dividend
-    ///      `totalClaimable` from each amount. Available anytime.
+    ///      `totalClaimable` from each amount. Only while liquidation is open.
     function getRedeemables() public view returns (address[] memory assetOuts, uint256[] memory amounts) {
-        uint256 len = assetList.length;
-        assetOuts = new address[](len);
-        amounts = new uint256[](len);
-        for (uint256 i; i < len;) {
+        _requireLiquidation();
+        assetOuts = new address[](assetList.length);
+        amounts = new uint256[](assetList.length);
+        for (uint256 i; i < assetList.length;) {
             address asset = assetList[i];
             assetOuts[i] = asset;
             amounts[i] = _redeemable(asset);
@@ -689,7 +689,7 @@ contract GRAI is
     ///      assets above that snapshot (and over-claim the callback asset itself).
     function redeem(uint256 graiAmount) public nonReentrant {
         address holder = msg.sender;
-        if (!liquidation) revert LiquidationClosed();
+        _requireLiquidation();
 
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
         uint256 supply = totalSupply();
@@ -727,7 +727,7 @@ contract GRAI is
         address holder,
         uint256 graiAmount
     ) public view returns (address[] memory assetOuts, uint256[] memory amounts) {
-        if (!liquidation) revert LiquidationClosed();
+        _requireLiquidation();
         /// @dev Consolidation window: when liquidation opens, backing is still on Grinders and
         ///      custodians, while `redeem` pays only from tokens already held here. Blocking
         ///      claims until `liquidationPeriod` elapses gives keepers time to run permissionless
@@ -779,7 +779,8 @@ contract GRAI is
     ///      `totalPositions[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
     ///      shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
     function resettle() public {
-        if (!liquidation || liquidationAt == 0) revert LiquidationClosed();
+        _requireLiquidation();
+        if (liquidationAt == 0) revert LiquidationClosed();
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
             revert RedeemPeriodActive();
         }
@@ -812,6 +813,10 @@ contract GRAI is
 
     function _requireNotLiquidation() internal view {
         if (liquidation) revert LiquidationOpen();
+    }
+
+    function _requireLiquidation() internal view {
+        if (!liquidation) revert LiquidationClosed();
     }
 
     // forge-lint: disable-next-line(mixed-case-function)
