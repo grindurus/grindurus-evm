@@ -250,6 +250,21 @@ contract GRAI is
         }
     }
 
+    /// @inheritdoc IGRAI
+    /// @dev Full basket snapshot in `assetList` order (includes zero balances). Excludes dividend
+    ///      `totalClaimable` from each amount. Available anytime.
+    function getRedeemables() public view returns (address[] memory assetOuts, uint256[] memory amounts) {
+        uint256 len = assetList.length;
+        assetOuts = new address[](len);
+        amounts = new uint256[](len);
+        for (uint256 i; i < len;) {
+            address asset = assetList[i];
+            assetOuts[i] = asset;
+            amounts[i] = _redeemable(asset);
+            unchecked { ++i; }
+        }
+    }
+
     /// @inheritdoc IERC1046
     function tokenURI() public pure returns (string memory) {
         return "https://grindurus.xyz/metadata.json";
@@ -799,6 +814,7 @@ contract GRAI is
         if (liquidation) revert LiquidationOpen();
     }
 
+    // forge-lint: disable-next-line(mixed-case-function)
     function _requireNotGRAI(address asset) internal view {
         if (asset == address(this)) revert AssetUnknown();
     }
