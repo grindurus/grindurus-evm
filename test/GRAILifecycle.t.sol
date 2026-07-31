@@ -125,7 +125,7 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(usdc.balanceOf(address(grinders)), 0, "idle usdc swept");
         assertEq(address(grinders).balance, 0, "idle eth swept");
         assertEq(address(grai).balance, ETH_TOTAL, "eth basket on grai");
-        (,,,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
+        (,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
         assertEq(auctionRemaining, 0, "auctions cleared at liquidate");
         // Deposits + Dutch buyback cut; ±1 wei sticky dividend reserve dust.
         uint256 buybackCut = YIELD_USDC - treasuryCut - dividendCut;

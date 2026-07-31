@@ -883,8 +883,6 @@ contract GRAI is
         entry.minPayment = (graiAmount * (BPS - config.bribePremiumBps)) / BPS;
         entry.startTime = uint48(block.timestamp);
         entry.period = config.buybackPeriod;
-        entry.listingPrice = (value * (10 ** USD_DECIMALS)) / remaining;
-        entry.listingPriceDecimals = USD_DECIMALS;
         emit AuctionUpdate(asset, remaining, graiAmount, block.timestamp);
     }
 

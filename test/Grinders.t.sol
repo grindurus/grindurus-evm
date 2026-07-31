@@ -46,7 +46,7 @@ contract GrindersTest is GRAIFixture {
 
         assertEq(usdc.balanceOf(admin) - treasuryBefore, 4e6); // 20% treasury
         assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 50% auction + 30% dividends → auction
-        (,,,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
+        (,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
         assertEq(auctionRemaining, 16e6);
         assertEq(grinders.balance(address(usdc)), 0);
     }

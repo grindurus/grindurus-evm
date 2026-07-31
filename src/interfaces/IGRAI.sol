@@ -48,21 +48,17 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice One Dutch auction lot.
     /// @dev `remaining`/`initial` = sold asset quantity; `maxPayment`/`minPayment` = full-lot GRAI ask
-    ///      (mint-price max → usually 0 over `period`).
+    ///      (mint-price max → floor over `period`). Unit USD/GRAI ask = `maxPayment * 10**decimals / initial`.
     struct DutchAuction {
         address asset;
         uint48 startTime;
         /// @notice Snapshot of `config.buybackPeriod` at last `_place`.
         uint32 period;
-        /// @notice Decimals for `listingPrice`.
-        uint8 listingPriceDecimals;
-        /// @notice Listing-time unit price used when auction was (re)listed.
-        uint256 listingPrice;
         uint256 remaining;
         uint256 initial;
         /// @notice Full-lot Dutch start: GRAI ask at listing (mint price).
         uint256 maxPayment;
-        /// @notice Full-lot Dutch end: GRAI ask after `period` (usually 0).
+        /// @notice Full-lot Dutch end: GRAI ask after `period` (floor at `BPS - bribePremiumBps`).
         uint256 minPayment;
     }
 
@@ -192,8 +188,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             address asset_,
             uint48 startTime,
             uint32 period,
-            uint8 listingPriceDecimals,
-            uint256 listingPrice,
             uint256 remaining,
             uint256 initial,
             uint256 maxPayment,
