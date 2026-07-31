@@ -500,7 +500,6 @@ maxPayment = previewDeposit(asset, remaining).graiOut
 minPayment = maxPayment * (BPS - bribePremiumBps) / BPS  // default 98% (−2% max discount)
 startTime  = now                                  // every merge, including dust
 period     = config.buybackPeriod                 // snapshotted; default 7d
-listingPrice = value * 1e6 / remaining            // USD unit price snapshot (analytics)
 ```
 
 **Business logic:** the protocol **wants frequent** `_place`**s**, including dust top-ups from small `distribute` / bribe cuts. Each merge **intentionally** restarts the Dutch clock at the live mint ask for the full remaining lot — there is no “preserve elapsed on dust” path. Buyers should treat a near-floor ask as unstable until they land the fill; sandwich / repeated dust resets are accepted auction dynamics, not a defect. Ask never decays below the floor (unless `bribePremiumBps = BPS`).
