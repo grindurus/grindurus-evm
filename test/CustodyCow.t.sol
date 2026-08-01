@@ -159,8 +159,8 @@ contract CustodyCowTest is GRAIFixture {
         emit ICustodian.SetAssets(address(usdc), address(dai));
         grinders.setAssets(address(custodyWallet), address(usdc), address(dai));
 
-        assertEq(address(custodyWallet.baseAsset()), address(usdc));
-        assertEq(address(custodyWallet.quoteAsset()), address(dai));
+        assertEq(custodyWallet.baseAsset(), address(usdc));
+        assertEq(custodyWallet.quoteAsset(), address(dai));
         assertEq(dai.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
     }
 
@@ -188,8 +188,8 @@ contract CustodyCowTest is GRAIFixture {
 
         assertEq(custodyWallet.owner(), owner);
         assertEq(address(custodyWallet.grinders()), address(grinders));
-        assertEq(address(custodyWallet.baseAsset()), address(usdc));
-        assertEq(address(custodyWallet.quoteAsset()), address(weth));
+        assertEq(custodyWallet.baseAsset(), address(usdc));
+        assertEq(custodyWallet.quoteAsset(), address(weth));
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
     }
 
@@ -240,8 +240,8 @@ contract CustodyCowTest is GRAIFixture {
 
     function test_Approve_acceptsTradingAssets() public {
         vm.startPrank(owner);
-        custodyWallet.approve(usdc, 1e6);
-        custodyWallet.approve(weth, 1e18);
+        custodyWallet.approve(address(usdc), 1e6);
+        custodyWallet.approve(address(weth), 1e18);
         vm.stopPrank();
 
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), 1e6);
@@ -253,6 +253,6 @@ contract CustodyCowTest is GRAIFixture {
 
         vm.prank(owner);
         vm.expectRevert(CoWCustodian.NotTradingAsset.selector);
-        custodyWallet.approve(dai, 1e18);
+        custodyWallet.approve(address(dai), 1e18);
     }
 }
