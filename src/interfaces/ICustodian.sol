@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
 import {IGrinders} from "./IGrinders.sol";
 
 interface ICustodian {
@@ -30,8 +28,8 @@ interface ICustodian {
     function initialize(address grinders_) external;
     function custodianKind() external view returns (bytes32);
     function grinders() external view returns (IGrinders);
-    function baseAsset() external view returns (IERC20);
-    function quoteAsset() external view returns (IERC20);
+    function baseAsset() external view returns (address);
+    function quoteAsset() external view returns (address);
     function setAssets(address baseAsset_, address quoteAsset_) external;
     function deallocate(address asset, uint256 amount) external;
     function distribute(address asset, uint256 yieldAmount) external;

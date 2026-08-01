@@ -131,8 +131,8 @@ contract CoWCustodian is Custodian, IERC1271 {
     function _isConstrainedCustodyOrder(bytes32 hash, GPv2Order.Data memory order) internal view returns (bool) {
         address sell = address(order.sellToken);
         address buy = address(order.buyToken);
-        address base = address(baseAsset);
-        address quote = address(quoteAsset);
+        address base = baseAsset;
+        address quote = quoteAsset;
         if (sell != base && sell != quote) return false;
         if (buy != base && buy != quote) return false;
         if (sell == buy) return false;
@@ -159,19 +159,19 @@ contract CoWCustodian is Custodian, IERC1271 {
         signature = abi.encode(ecdsaSig, order);
     }
 
-    function approve(IERC20 token, uint256 amount) public {
+    function approve(address token, uint256 amount) public {
         _onlyOwner();
         if (token != baseAsset && token != quoteAsset) revert NotTradingAsset();
-        token.forceApprove(COW_VAULT_RELAYER, amount);
+        IERC20(token).forceApprove(COW_VAULT_RELAYER, amount);
     }
 
     function setAssets(address baseAsset_, address quoteAsset_) public override {
         super.setAssets(baseAsset_, quoteAsset_);
-        _approveVaultRelayer(IERC20(baseAsset_), IERC20(quoteAsset_));
+        _approveVaultRelayer(baseAsset_, quoteAsset_);
     }
 
-    function _approveVaultRelayer(IERC20 base_, IERC20 quote_) internal {
-        base_.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
-        quote_.forceApprove(COW_VAULT_RELAYER, type(uint256).max);
+    function _approveVaultRelayer(address base_, address quote_) internal {
+        IERC20(base_).forceApprove(COW_VAULT_RELAYER, type(uint256).max);
+        IERC20(quote_).forceApprove(COW_VAULT_RELAYER, type(uint256).max);
     }
 }

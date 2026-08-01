@@ -200,8 +200,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
                 ICustodian c = ICustodian(payable(custodian));
                 (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = c.liquidate();
                 _liquidate(address(0), ethOut);
-                _liquidate(address(c.baseAsset()), baseOut);
-                _liquidate(address(c.quoteAsset()), quoteOut);
+                _liquidate(c.baseAsset(), baseOut);
+                _liquidate(c.quoteAsset(), quoteOut);
             }
         }
         emit Liquidate(fromId, toId);
@@ -233,8 +233,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
                 ICustodian c = ICustodian(payable(custodian));
                 list[i].owner = _ownerOf(id);
                 list[i].kind = custodianKindOf(custodian);
-                list[i].baseAsset = address(c.baseAsset());
-                list[i].quoteAsset = address(c.quoteAsset());
+                list[i].baseAsset = c.baseAsset();
+                list[i].quoteAsset = c.quoteAsset();
                 list[i].ethBalance = custodian.balance;
                 list[i].baseBalance = list[i].baseAsset == address(0)
                     ? custodian.balance

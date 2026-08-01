@@ -55,21 +55,21 @@ contract SwapCustodian is Custodian {
         if (target == address(0)) revert TargetZero();
         if (data.length == 0) revert DataEmpty();
 
-        uint256 baseBefore = balance(address(baseAsset));
-        uint256 quoteBefore = balance(address(quoteAsset));
+        uint256 baseBefore = balance(baseAsset);
+        uint256 quoteBefore = balance(quoteAsset);
 
-        baseAsset.forceApprove(target, type(uint256).max);
-        quoteAsset.forceApprove(target, type(uint256).max);
+        IERC20(baseAsset).forceApprove(target, type(uint256).max);
+        IERC20(quoteAsset).forceApprove(target, type(uint256).max);
 
         (bool ok, bytes memory ret) = target.call(data);
 
-        baseAsset.forceApprove(target, 0);
-        quoteAsset.forceApprove(target, 0);
+        IERC20(baseAsset).forceApprove(target, 0);
+        IERC20(quoteAsset).forceApprove(target, 0);
 
         if (!ok) revert SwapFailed();
 
-        uint256 baseAfter = balance(address(baseAsset));
-        uint256 quoteAfter = balance(address(quoteAsset));
+        uint256 baseAfter = balance(baseAsset);
+        uint256 quoteAfter = balance(quoteAsset);
 
         uint256 baseDelta;
         uint256 quoteDelta;
@@ -98,8 +98,8 @@ contract SwapCustodian is Custodian {
     }
 
     function _quotePerBase(uint256 baseDelta, uint256 quoteDelta) internal view returns (uint256) {
-        uint8 baseDec = IERC20Metadata(address(baseAsset)).decimals();
-        uint8 quoteDec = IERC20Metadata(address(quoteAsset)).decimals();
+        uint8 baseDec = IERC20Metadata(baseAsset).decimals();
+        uint8 quoteDec = IERC20Metadata(quoteAsset).decimals();
         return (quoteDelta * (10 ** PRICE_DECIMALS) * (10 ** baseDec)) / (baseDelta * (10 ** quoteDec));
     }
 }

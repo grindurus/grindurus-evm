@@ -18,10 +18,19 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
 
     uint48 public constant DISABLE_DELAY = 24 hours;
 
+    /// @notice Parent Grinders registry / NFT issuer that minted this custodian.
     IGrinders public grinders;
-    IERC20 public baseAsset;
-    IERC20 public quoteAsset;
+    
+    /// @notice Primary trading asset for this sleeve (ERC20; set via `setAssets`).
+    address public baseAsset;
+    
+    /// @notice Secondary trading asset for this sleeve (ERC20; set via `setAssets`).
+    address public quoteAsset;
+    
+    /// @notice When true, UUPS `upgradeTo` is blocked until re-enable completes the delay.
     bool public isUpgradeableDisabled;
+    
+    /// @notice Timestamp after which upgrades may be re-enabled; `type(uint48).max` while locked.
     uint48 public upgradesDisableScheduledAt;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -84,8 +93,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     function nav() public view virtual returns (uint256) {
         if (address(grinders).code.length == 0) return 0;
         try grinders.grai() returns (IGRAI grai) {
-            uint256 baseAssetValue = grai.usdValue(address(baseAsset), balance(address(baseAsset)));
-            uint256 quoteAssetValue = grai.usdValue(address(quoteAsset), balance(address(quoteAsset)));
+            uint256 baseAssetValue = grai.usdValue(baseAsset, balance(baseAsset));
+            uint256 quoteAssetValue = grai.usdValue(quoteAsset, balance(quoteAsset));
             return baseAssetValue + quoteAssetValue;
         } catch {
             return 0;
@@ -106,13 +115,13 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
 
     function setAssets(address baseAsset_, address quoteAsset_) public virtual {
         _onlyGrinders();
-        if (balance(address(baseAsset)) != 0 || balance(address(quoteAsset)) != 0) revert NonZeroBalance();
+        if (balance(baseAsset) != 0 || balance(quoteAsset) != 0) revert NonZeroBalance();
         if (baseAsset_ == address(0)) revert BaseZero();
         if (quoteAsset_ == address(0)) revert QuoteZero();
         if (baseAsset_ == quoteAsset_) revert SameAsset();
 
-        baseAsset = IERC20(baseAsset_);
-        quoteAsset = IERC20(quoteAsset_);
+        baseAsset = baseAsset_;
+        quoteAsset = quoteAsset_;
         emit SetAssets(baseAsset_, quoteAsset_);
     }
 
@@ -157,8 +166,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     function liquidate() public virtual returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut) {
         _onlyGrinders();
         ethOut = _withdraw(address(grinders), address(0), balance(address(0)));
-        baseOut = _withdraw(address(grinders), address(baseAsset), balance(address(baseAsset)));
-        quoteOut = _withdraw(address(grinders), address(quoteAsset), balance(address(quoteAsset)));
+        baseOut = _withdraw(address(grinders), baseAsset, balance(baseAsset));
+        quoteOut = _withdraw(address(grinders), quoteAsset, balance(quoteAsset));
         emit Liquidate(ethOut, baseOut, quoteOut);
     }
 
