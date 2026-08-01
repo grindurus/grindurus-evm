@@ -6,7 +6,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {CoWCustodian, GPv2Order} from "../src/custodians/CoWCustodian.sol";
-import {Custodian} from "../src/Custodian.sol";
+import {ICustodian} from "../src/interfaces/ICustodian.sol";
 
 contract CustodyCowTest is GRAIFixture {
     CoWCustodian custodyWallet;
@@ -21,14 +21,12 @@ contract CustodyCowTest is GRAIFixture {
         CoWCustodian impl = new CoWCustodian();
         custodyWallet = CoWCustodian(
             payable(address(
-                    new ERC1967Proxy(
-                        address(impl),
-                        abi.encodeCall(CoWCustodian.initialize, (address(grinders), address(usdc), address(weth)))
-                    )
+                    new ERC1967Proxy(address(impl), abi.encodeCall(CoWCustodian.initialize, (address(grinders))))
                 ))
         );
         vm.startPrank(admin);
         grinders.register(address(custodyWallet), owner);
+        grinders.setAssets(address(custodyWallet), address(usdc), address(weth));
         vm.stopPrank();
     }
 
@@ -156,10 +154,10 @@ contract CustodyCowTest is GRAIFixture {
     function test_SetAssets() public {
         MockERC20 dai = new MockERC20("DAI", "DAI", 18);
 
-        vm.prank(owner);
+        vm.prank(admin);
         vm.expectEmit(true, true, false, true);
-        emit Custodian.AssetsUpdated(address(usdc), address(dai));
-        custodyWallet.setAssets(address(usdc), address(dai));
+        emit ICustodian.SetAssets(address(usdc), address(dai));
+        grinders.setAssets(address(custodyWallet), address(usdc), address(dai));
 
         assertEq(address(custodyWallet.baseAsset()), address(usdc));
         assertEq(address(custodyWallet.quoteAsset()), address(dai));
@@ -167,9 +165,9 @@ contract CustodyCowTest is GRAIFixture {
     }
 
     function test_SetAssets_revertsSameAsset() public {
-        vm.prank(owner);
-        vm.expectRevert(Custodian.SameAsset.selector);
-        custodyWallet.setAssets(address(usdc), address(usdc));
+        vm.prank(admin);
+        vm.expectRevert(ICustodian.SameAsset.selector);
+        grinders.setAssets(address(custodyWallet), address(usdc), address(usdc));
     }
 
     function test_SetAssets_revertsNonZeroBalance() public {
@@ -177,9 +175,9 @@ contract CustodyCowTest is GRAIFixture {
 
         MockERC20 dai = new MockERC20("DAI", "DAI", 18);
 
-        vm.prank(owner);
-        vm.expectRevert(Custodian.NonZeroBalance.selector);
-        custodyWallet.setAssets(address(usdc), address(dai));
+        vm.prank(admin);
+        vm.expectRevert(ICustodian.NonZeroBalance.selector);
+        grinders.setAssets(address(custodyWallet), address(usdc), address(dai));
     }
 
     function test_UpgradePreservesState() public {
@@ -202,7 +200,7 @@ contract CustodyCowTest is GRAIFixture {
 
         CoWCustodian implV2 = new CoWCustodian();
         vm.prank(owner);
-        vm.expectRevert(Custodian.FeatureDisabled.selector);
+        vm.expectRevert(ICustodian.FeatureDisabled.selector);
         custodyWallet.upgradeToAndCall(address(implV2), "");
     }
 
@@ -224,7 +222,7 @@ contract CustodyCowTest is GRAIFixture {
         custodyWallet.toggleUpgradeable();
 
         CoWCustodian implV2 = new CoWCustodian();
-        vm.expectRevert(Custodian.FeatureDelay.selector);
+        vm.expectRevert(ICustodian.FeatureDelay.selector);
         custodyWallet.upgradeToAndCall(address(implV2), "");
         vm.stopPrank();
     }

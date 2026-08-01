@@ -7,7 +7,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {SwapCustodian} from "../src/custodians/SwapCustodian.sol";
-import {Custodian} from "../src/Custodian.sol";
+import {ICustodian} from "../src/interfaces/ICustodian.sol";
 
 contract MockSwapRouter {
     using SafeERC20 for IERC20;
@@ -53,14 +53,12 @@ contract CustodySwapTest is GRAIFixture {
         SwapCustodian impl = new SwapCustodian();
         custodyWallet = SwapCustodian(
             payable(address(
-                    new ERC1967Proxy(
-                        address(impl),
-                        abi.encodeCall(SwapCustodian.initialize, (address(grinders), address(usdc), address(weth)))
-                    )
+                    new ERC1967Proxy(address(impl), abi.encodeCall(SwapCustodian.initialize, (address(grinders))))
                 ))
         );
         vm.startPrank(admin);
         grinders.register(address(custodyWallet), owner);
+        grinders.setAssets(address(custodyWallet), address(usdc), address(weth));
         vm.stopPrank();
 
         usdc.mint(address(custodyWallet), 100e6);
@@ -113,7 +111,7 @@ contract CustodySwapTest is GRAIFixture {
         bytes memory data = abi.encodeCall(MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT));
 
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(Custodian.NotOwner.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(ICustodian.NotOwner.selector, stranger));
         custodyWallet.swap(0, address(router), data);
     }
 

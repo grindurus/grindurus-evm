@@ -39,7 +39,7 @@ contract DumpGrinderArtTest is Test {
         vm.startPrank(admin);
         grinders.set(cow.custodianKind(), address(cow));
         for (uint256 i; i < 10; ++i) {
-            grinders.mint(cow.custodianKind(), address(usdc), address(wethToken), admin);
+            grinders.mint(cow.custodianKind(), admin, address(usdc), address(wethToken));
             // forge-lint: disable-next-line(unsafe-cheatcode)
             vm.writeFile(string.concat("out/bull-tokenuri-", vm.toString(i), ".txt"), grinders.tokenURI(i));
         }

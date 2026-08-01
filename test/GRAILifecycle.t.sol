@@ -121,7 +121,7 @@ contract GRAILifecycleTest is GRAIFixture {
         vm.warp(block.timestamp + uint256(cfg.liquidationPeriod));
 
         vm.prank(bob);
-        grinders.liquidate();
+        grinders.liquidate(0, 0);
         assertEq(usdc.balanceOf(address(grinders)), 0, "idle usdc swept");
         assertEq(address(grinders).balance, 0, "idle eth swept");
         assertEq(address(grai).balance, ETH_TOTAL, "eth basket on grai");

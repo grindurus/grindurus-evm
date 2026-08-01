@@ -54,7 +54,7 @@ contract GRAIRolesTest is Test {
         vm.stopPrank();
 
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.acceptOwnership, ()));
-        // Grinders uses immediate Ownable transfer (not 2-step).
+        _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.acceptOwnership, ()));
         assertEq(grinders.owner(), address(ownerMultisig));
     }
 

@@ -43,8 +43,8 @@ contract SwapCustodian is Custodian {
         return _CUSTODY_KIND;
     }
 
-    function initialize(address grinders_, address baseAsset_, address quoteAsset_) public override initializer {
-        __Custodian_init(grinders_, baseAsset_, quoteAsset_);
+    function initialize(address grinders_) public override initializer {
+        __Custodian_init(grinders_);
     }
 
     /// @notice Approve `target`, execute calldata, enforce price + NAV, then clear allowances.

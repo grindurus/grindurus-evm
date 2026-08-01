@@ -18,15 +18,30 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error CustodianKindMismatch(bytes32 expected, bytes32 actual);
     error CustodianZero();
     error UnknownCustodian();
+    error NotCustodianOwner();
     error InsufficientReserve();
     error CustodianNonexistent(uint256 custodianId);
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
     error NoLiquidation();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
+    error InvalidCustodianRange(uint256 fromId, uint256 toId);
+
+    /// @notice View row for `getCustodiansData`.
+    struct CustodianData {
+        address custodian;
+        uint256 id;
+        address owner;
+        bytes32 kind;
+        address baseAsset;
+        address quoteAsset;
+        uint256 ethBalance;
+        uint256 baseBalance;
+        uint256 quoteBalance;
+    }
 
     event GraiTokenUpdate(address indexed graiToken);
-    event Liquidate(uint256 fromId, uint256 toId, uint256 assets);
+    event Liquidate(uint256 fromId, uint256 toId);
     event CustodianImplementationUpdated(bytes32 indexed custodianKind, address implementation);
     event CustodianDeployed(
         bytes32 indexed custodianKind,
@@ -36,8 +51,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         address quoteAsset
     );
     event CustodianRegistered(address indexed custodian, address indexed owner, uint256 indexed custodianId);
-    event Allocate(address indexed asset, address indexed custodian, uint256 amount);
-    event Deallocate(address indexed asset, address indexed custodian, uint256 amount);
     event IdleLiquidate(uint256 assets);
 
     /// @notice The GRAI token this yield pool backs.
@@ -58,18 +71,25 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
 
     function custodianKindOf(address custodian) external view returns (bytes32);
 
+    /// @notice Custodian snapshots for NFT ids in `[fromId, toId)` (`totalSupply` clipped).
+    ///         Empty slots (`custodians[id] == 0`) return a zeroed row with that `id`.
+    function getCustodiansData(uint256 fromId, uint256 toId) external view returns (CustodianData[] memory list);
+
     function set(bytes32 custodianKind, address implementation) external;
-    function mint(bytes32 custodianKind, address baseAsset_, address quoteAsset_, address owner_)
+    /// @notice Retarget the linked GRAI core (liquidation checks / asset routing).
+    function setGrai(address grai_) external;
+    function mint(bytes32 custodianKind, address owner_, address baseAsset_, address quoteAsset_)
         external
         returns (address custodian);
     function register(address custodian, address owner_) external;
+    /// @notice NFT owner sets trading assets on a registered custodian.
+    function setAssets(address custodian, address baseAsset_, address quoteAsset_) external;
     function allocate(address custodian, address asset, uint256 amount) external;
-    /// @notice Custodian returns `amount` of `asset`. Not capped by `allocated` (post-swap inventory).
-    function deallocate(address asset, uint256 amount) external payable;
+    /// @notice NFT owner pulls `amount` of `asset` from `custodian`. Not capped by `allocated`.
+    function deallocate(address custodian, address asset, uint256 amount) external;
+    /// @notice NFT owner forwards yield `amount` of `asset` from `custodian` to GRAI.
+    function distribute(address custodian, address asset, uint256 amount) external;
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and transfer swept amounts to GRAI.
     function liquidate(uint256 fromId, uint256 toId) external;
-
-    /// @notice Permissionless while `grai.liquidation()`: transfer all listed idle assets to GRAI.
-    function liquidate() external;
 }

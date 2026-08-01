@@ -78,11 +78,10 @@ abstract contract GRAIFixture is Test {
     function _registerTestCustodian() internal virtual {
         LiFiCustodian impl = new LiFiCustodian();
         custodian = address(
-            new ERC1967Proxy(
-                address(impl), abi.encodeCall(Custodian.initialize, (address(grinders), address(usdc), address(weth)))
-            )
+            new ERC1967Proxy(address(impl), abi.encodeCall(Custodian.initialize, (address(grinders))))
         );
         grinders.register(custodian, admin);
+        grinders.setAssets(custodian, address(usdc), address(weth));
     }
 
     function _allocate(address asset, address custodian_, uint256 amount) internal {

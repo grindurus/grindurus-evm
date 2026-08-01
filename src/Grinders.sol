@@ -9,9 +9,9 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {Custodian} from "./Custodian.sol";
 import {GrinderArt} from "./GrinderArt.sol";
 import {IGrinders} from "./interfaces/IGrinders.sol";
+import {ICustodian} from "./interfaces/ICustodian.sol";
 import {IERC1046} from "./interfaces/IERC1046.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IGRAI} from "./interfaces/IGRAI.sol";
@@ -53,8 +53,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     function initialize(address owner_, address grai_) public initializer {
-        if (owner_ == address(0)) revert ZeroAddress();
-        if (grai_ == address(0)) revert GraiTokenZero();
+        if (owner_ == address(0)) owner_ = msg.sender;
+        if (grai_ == address(0)) grai_ = owner_;
         __ERC721_init("Grinders Custodians", "GRINDERS");
         __ERC721Enumerable_init();
         __Ownable_init(owner_);
@@ -63,11 +63,76 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         grai = IGRAI(grai_);
     }
 
+    /// @notice Retarget the linked GRAI core. Call before `GRAI.setGrinders` when rewiring
+    ///         (that setter requires `grinders.grai() == address(grai)`).
+    function setGrai(address grai_) public onlyOwner {
+        if (grai_ == address(0)) revert GraiTokenZero();
+        grai = IGRAI(grai_);
+        emit GraiTokenUpdate(grai_);
+    }
+
     receive() external payable {}
+
+    function set(bytes32 custodianKind, address implementation) public onlyOwner {
+        if (implementation == address(0)) revert ZeroAddress();
+        bytes32 implKind = ICustodian(payable(implementation)).custodianKind();
+        if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
+        custodianImplementations[custodianKind] = implementation;
+        emit CustodianImplementationUpdated(custodianKind, implementation);
+    }
+
+    /// @notice Deploy a custodian proxy, mint its Grinder NFT, and register it with `owner_`.
+    function mint(
+        bytes32 custodianKind,
+        address owner_,
+        address baseAsset_,
+        address quoteAsset_
+    ) public onlyOwner returns (address custodian) {
+        if (owner_ == address(0)) owner_ = owner();
+
+        address impl = custodianImplementations[custodianKind];
+        if (impl == address(0)) revert UnknownCustodianKind(custodianKind);
+        bytes32 implKind = ICustodian(payable(impl)).custodianKind();
+        if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
+
+        uint256 custodianId = totalSupply();
+
+        custodian = address(new ERC1967Proxy(impl, abi.encodeCall(ICustodian.initialize, (address(this)))));
+
+        custodians[custodianId] = custodian;
+        custodianIds[custodian] = custodianId;
+        _safeMint(owner_, custodianId);
+
+        ICustodian(payable(custodian)).setAssets(baseAsset_, quoteAsset_);
+
+        emit CustodianDeployed(custodianKind, custodian, owner_, baseAsset_, quoteAsset_);
+    }
+
+    /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
+    function register(address custodian, address owner_) public onlyOwner {
+        if (custodian == address(0)) revert CustodianZero();
+        if (owner_ == address(0)) owner_ = owner();
+        if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
+        if (address(ICustodian(payable(custodian)).grinders()) != address(this)) revert GrindersMismatch();
+
+        uint256 custodianId = totalSupply();
+        if (custodians[custodianId] != address(0)) revert CustodianAlreadyRegistered(custodianId);
+
+        custodians[custodianId] = custodian;
+        custodianIds[custodian] = custodianId;
+        _safeMint(owner_, custodianId);
+
+        emit CustodianRegistered(custodian, owner_, custodianId);
+    }
+
+    /// @notice Set trading assets on a registered custodian (protocol owner only).
+    function setAssets(address custodian, address baseAsset_, address quoteAsset_) public onlyOwner {
+        _requireCustodian(custodian);
+        ICustodian(payable(custodian)).setAssets(baseAsset_, quoteAsset_);
+    }
 
     function allocate(address custodian, address asset, uint256 amount) public onlyOwner {
         _requireCustodian(custodian);
-        if (amount == 0) revert AmountZero();
         if (balance(asset) < amount) revert InsufficientReserve();
 
         if (asset == address(0)) {
@@ -79,47 +144,30 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
 
         allocated[custodian][asset] += amount;
         totalAllocated[asset] += amount;
-
-        emit Allocate(asset, custodian, amount);
     }
 
     /// @notice Pull `amount` of `asset` from a custodian back to this contract.
-    /// @dev Amount is not capped by `allocated`: after swaps the returned token/size need not match
-    ///      what was allocated. Ledger is best-effort decreased (floored at 0) for accounting only.
-    function deallocate(address asset, uint256 amount) public payable {
-        address custodian = msg.sender;
+    /// @dev Protocol owner only. Amount is not capped by `allocated`: after swaps the
+    ///      returned token/size need not match what was allocated. Ledger is best-effort decreased
+    ///      (floored at 0) for accounting only.
+    function deallocate(address custodian, address asset, uint256 amount) public onlyOwner {
         _requireCustodian(custodian);
         if (amount == 0) revert AmountZero();
 
-        if (asset == address(0)) {
-            if (msg.value != amount) revert ValueMismatch();
-        } else {
-            if (msg.value != 0) revert UnexpectedValue();
-            IERC20(asset).safeTransferFrom(custodian, address(this), amount);
-        }
+        ICustodian(payable(custodian)).deallocate(asset, amount);
 
-        // Issuance ledger only — do not require amount <= allocated (swaps change token/size).
         uint256 prevAllocated = allocated[custodian][asset];
         allocated[custodian][asset] = prevAllocated > amount ? prevAllocated - amount : 0;
 
         uint256 prevTotalAllocated = totalAllocated[asset];
         totalAllocated[asset] = prevTotalAllocated > amount ? prevTotalAllocated - amount : 0;
-
-        emit Deallocate(asset, custodian, amount);
     }
 
-    /// @inheritdoc IGrinders
-    function liquidate() public {
-        _requireLiquidation();
-
-        IGRAI.DutchAuction[] memory assets = grai.getAssets();
-        uint256 len = assets.length;
-        for (uint256 i; i < len; ++i) {
-            address asset = assets[i].asset;
-            _liquidate(asset, balance(asset));
-        }
-
-        emit IdleLiquidate(len);
+    /// @notice Forward custodian yield `amount` of `asset` to GRAI.distribute.
+    /// @dev Protocol owner only. Not capped by `allocated`.
+    function distribute(address custodian, address asset, uint256 yieldAmount) public onlyOwner {
+        _requireCustodian(custodian);
+        ICustodian(payable(custodian)).distribute(asset, yieldAmount);
     }
 
     /// @inheritdoc IGrinders
@@ -129,32 +177,34 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     ///      custodian wallets are iterated, under the Grinders NFT custody model.
     function liquidate(uint256 fromId, uint256 toId) public {
         _requireLiquidation();
-        if (fromId >= toId) revert InvalidLiquidationRange(fromId, toId);
-
-        uint256 n = totalSupply();
-        if (toId > n) toId = n;
-
-        IGRAI.DutchAuction[] memory assets = grai.getAssets();
-        uint256 assetsLen = assets.length;
-        for (uint256 i = fromId; i < toId; ++i) {
-            address c = custodians[i];
-            if (c == address(0)) continue;
-
-            (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = Custodian(payable(c)).liquidate();
-            for (uint256 j; j < assetsLen; ++j) {
-                address asset = assets[j].asset;
-                delete allocated[c][asset];
-                delete totalAllocated[asset];
+        if (fromId >= toId) {
+            fromId = type(uint256).max;
+            toId = type(uint256).max;
+            IGRAI.DutchAuction[] memory assets;
+            try grai.getAssets() returns (IGRAI.DutchAuction[] memory list) {
+                assets = list;
+            } catch {
+                return;
             }
-
-            IERC20 base = Custodian(payable(c)).baseAsset();
-            IERC20 quote = Custodian(payable(c)).quoteAsset();
-            _liquidate(address(0), ethOut);
-            _liquidate(address(base), baseOut);
-            _liquidate(address(quote), quoteOut);
+            uint256 len = assets.length;
+            for (uint256 i; i < len; ++i) {
+                address asset = assets[i].asset;
+                _liquidate(asset, balance(asset));
+            }
+        } else {
+            uint256 n = totalSupply();
+            if (toId > n) toId = n;
+            for (uint256 i = fromId; i < toId; ++i) {
+                address custodian = custodians[i];
+                if (custodian == address(0)) continue;
+                ICustodian c = ICustodian(payable(custodian));
+                (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = c.liquidate();
+                _liquidate(address(0), ethOut);
+                _liquidate(address(c.baseAsset()), baseOut);
+                _liquidate(address(c.quoteAsset()), quoteOut);
+            }
         }
-
-        emit Liquidate(fromId, toId, assetsLen);
+        emit Liquidate(fromId, toId);
     }
 
     function _liquidate(address asset, uint256 amount) private {
@@ -167,62 +217,40 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         }
     }
 
-    function set(bytes32 custodianKind, address implementation) public onlyOwner {
-        if (implementation == address(0)) revert ZeroAddress();
-        bytes32 implKind = Custodian(payable(implementation)).custodianKind();
-        if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
-        custodianImplementations[custodianKind] = implementation;
-        emit CustodianImplementationUpdated(custodianKind, implementation);
-    }
-
-    /// @notice Deploy a custodian proxy, mint its Grinder NFT, and register it with `owner_`.
-    function mint(
-        bytes32 custodianKind,
-        address baseAsset_,
-        address quoteAsset_,
-        address owner_
-    ) public onlyOwner returns (address custodian) {
-        if (owner_ == address(0)) revert OwnerZero();
-
-        address impl = custodianImplementations[custodianKind];
-        if (impl == address(0)) revert UnknownCustodianKind(custodianKind);
-        bytes32 implKind = Custodian(payable(impl)).custodianKind();
-        if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
-
-        uint256 custodianId = totalSupply();
-
-        custodian = address(
-            new ERC1967Proxy(impl, abi.encodeCall(Custodian.initialize, (address(this), baseAsset_, quoteAsset_)))
-        );
-
-        custodians[custodianId] = custodian;
-        custodianIds[custodian] = custodianId;
-        _safeMint(owner_, custodianId);
-
-        emit CustodianDeployed(custodianKind, custodian, owner_, baseAsset_, quoteAsset_);
-    }
-
-    /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
-    function register(address custodian, address owner_) public onlyOwner {
-        if (custodian == address(0)) revert CustodianZero();
-        if (owner_ == address(0)) revert OwnerZero();
-        if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
-        if (address(Custodian(payable(custodian)).grinders()) != address(this)) revert GrindersMismatch();
-
-        uint256 custodianId = totalSupply();
-        if (custodians[custodianId] != address(0)) revert CustodianAlreadyRegistered(custodianId);
-
-        custodians[custodianId] = custodian;
-        custodianIds[custodian] = custodianId;
-        _safeMint(owner_, custodianId);
-
-        emit CustodianRegistered(custodian, owner_, custodianId);
+    /// @inheritdoc IGrinders
+    function getCustodiansData(uint256 fromId, uint256 toId) public view returns (CustodianData[] memory list) {
+        if (fromId >= toId) revert InvalidCustodianRange(fromId, toId);
+        uint256 n = totalSupply();
+        if (toId > n) toId = n;
+        uint256 len = toId - fromId;
+        list = new CustodianData[](len);
+        for (uint256 i; i < len;) {
+            uint256 id = fromId + i;
+            address custodian = custodians[id];
+            list[i].id = id;
+            list[i].custodian = custodian;
+            if (custodian != address(0)) {
+                ICustodian c = ICustodian(payable(custodian));
+                list[i].owner = _ownerOf(id);
+                list[i].kind = custodianKindOf(custodian);
+                list[i].baseAsset = address(c.baseAsset());
+                list[i].quoteAsset = address(c.quoteAsset());
+                list[i].ethBalance = custodian.balance;
+                list[i].baseBalance = list[i].baseAsset == address(0)
+                    ? custodian.balance
+                    : IERC20(list[i].baseAsset).balanceOf(custodian);
+                list[i].quoteBalance = list[i].quoteAsset == address(0)
+                    ? custodian.balance
+                    : IERC20(list[i].quoteAsset).balanceOf(custodian);
+            }
+            unchecked { ++i; }
+        }
     }
 
     function custodianKindOf(address custodian) public view returns (bytes32 kind) {
         if (custodian == address(0)) return kind;
         if (custodian.code.length == 0) return bytes32(0);
-        try Custodian(payable(custodian)).custodianKind() returns (bytes32 k) {
+        try ICustodian(payable(custodian)).custodianKind() returns (bytes32 k) {
             return k;
         } catch {
             return kind;

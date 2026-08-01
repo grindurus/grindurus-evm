@@ -86,7 +86,7 @@ library GPv2Order {
 ///   `toggleUpgradeable()` locks instantly; call again while locked to schedule a 24h unlock delay.
 ///
 /// @dev Use the ERC1967Proxy address only, not the implementation.
-///      VaultRelayer max-allowance for base/quote is set in `initialize` / `setAssets`.
+///      VaultRelayer max-allowance for base/quote is set in `setAssets`.
 contract CoWCustodian is Custodian, IERC1271 {
     using SafeERC20 for IERC20;
 
@@ -106,9 +106,8 @@ contract CoWCustodian is Custodian, IERC1271 {
         )
     );
 
-    function initialize(address grinders_, address baseAsset_, address quoteAsset_) public override initializer {
-        __Custodian_init(grinders_, baseAsset_, quoteAsset_);
-        _approveVaultRelayer(IERC20(baseAsset_), IERC20(quoteAsset_));
+    function initialize(address grinders_) public override initializer {
+        __Custodian_init(grinders_);
     }
 
     /// @inheritdoc Custodian
