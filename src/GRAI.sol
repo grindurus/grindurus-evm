@@ -122,6 +122,7 @@ contract GRAI is
             buybackCutBps: 33_33, // 33.33%
             dividendCutBps: 33_34, // 33.34%
             treasuryCutBps: 33_33, // 33.33%
+            claimTipBps: 1_00, // 1%
             quorumBps: 66_67, // 66.67% ~ 2/3
             bribePremiumBps: 2_00, // 2%; also Dutch buyback max discount (floor = BPS − this)
             unlockFeeBps: 10_00, // 10% at lock time
@@ -132,22 +133,41 @@ contract GRAI is
         });
     }
 
-    function setConfig(Config calldata cfg) external onlyOwner {
-        if (
-            cfg.buybackCutBps > BPS
-            || cfg.dividendCutBps > BPS
-            || cfg.treasuryCutBps > BPS
-            || 2 * cfg.bribePremiumBps > BPS
-            || cfg.quorumBps > BPS
-            || cfg.unlockFeeBps > BPS
-        ) revert BpsTooHigh();
-        if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) {
-            revert InvalidCuts();
-        }
-        if (cfg.buybackPeriod < 7 days) revert BuybackPeriodTooShort();
-        if (cfg.liquidationPeriod == 0 || cfg.redeemPeriod == 0) revert PeriodZero();
+    /// @inheritdoc IGRAI
+    /// @dev `id` selects the field(s); `data` is the packed value(s). `ConfigId.FULL` packs the whole slot.
+    function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/resettle clocks; freeze both windows for the whole liquidation.
         if (liquidation) revert LiquidationOpen();
+
+        Config memory cfg = config;
+        if (id == ConfigId.FULL) {
+            cfg = _unpackConfig(data);
+        } else if (id == ConfigId.DISTRIBUTE_CUTS) {
+            // Narrowing is intentional: each ConfigId writes a fixed-width field window.
+            // forge-lint: disable-start(unsafe-typecast)
+            cfg.buybackCutBps = uint16(data);
+            cfg.dividendCutBps = uint16(data >> 16);
+            cfg.treasuryCutBps = uint16(data >> 32);
+        } else if (id == ConfigId.CLAIM_TIP) {
+            cfg.claimTipBps = uint16(data);
+        } else if (id == ConfigId.BRIBE_PREMIUM) {
+            cfg.bribePremiumBps = uint16(data);
+        } else if (id == ConfigId.QUORUM) {
+            cfg.quorumBps = uint16(data);
+        } else if (id == ConfigId.UNLOCK_FEE) {
+            cfg.unlockFeeBps = uint16(data);
+        } else if (id == ConfigId.BUYBACK_PERIOD) {
+            cfg.buybackPeriod = uint32(data);
+        } else if (id == ConfigId.LIQUIDATION_PERIOD) {
+            cfg.liquidationPeriod = uint32(data);
+        } else if (id == ConfigId.REDEEM_PERIOD) {
+            cfg.redeemPeriod = uint32(data);
+        } else if (id == ConfigId.UNLOCK_PENALTY_PERIOD) {
+            cfg.unlockPenaltyPeriod = uint32(data);
+        }
+        // forge-lint: disable-end(unsafe-typecast)
+
+        _requireValidConfig(cfg);
         config = cfg;
         emit ConfigUpdate(cfg);
     }
@@ -197,7 +217,6 @@ contract GRAI is
     function setAssetConfig(address asset, AssetConfig calldata cfg) public onlyOwner {
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         assets[asset].paused = cfg.paused;
-        emit AssetConfigUpdate(asset, assets[asset]);
     }
 
     receive() external payable {}
@@ -205,14 +224,9 @@ contract GRAI is
     //////////////////// GETTERS ////////////////////
 
     /// @inheritdoc IGRAI
-    function getAssets()
-        public
-        view
-        returns (DutchAuction[] memory list)
-    {
-        uint256 len = assetList.length;
-        list = new DutchAuction[](len);
-        for (uint256 i; i < len;) {
+    function getAssets() external view returns (DutchAuction[] memory list) {
+        list = new DutchAuction[](assetList.length);
+        for (uint256 i; i < assetList.length;) {
             address asset = assetList[i];
             DutchAuction storage entry = auctions[asset];
             if (entry.startTime != 0) {
@@ -225,10 +239,9 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    function getLockers(uint256 fromId, uint256 toId) public view returns (Escrow[] memory escrowList) {
-        if (fromId >= toId) revert InvalidLockerRange(fromId, toId);
-        uint256 n = lockers.length;
-        if (toId > n) toId = n;
+    function getLockers(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList) {
+        if (fromId >= toId) revert InvalidRange(fromId, toId);
+        if (toId > lockers.length) toId = lockers.length;
         uint256 len = toId - fromId;
         escrowList = new Escrow[](len);
         for (uint256 i; i < len;) {
@@ -239,9 +252,8 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     function getVoters(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList) {
-        if (fromId >= toId) revert InvalidVoterRange(fromId, toId);
-        uint256 n = voters.length;
-        if (toId > n) toId = n;
+        if (fromId >= toId) revert InvalidRange(fromId, toId);
+        if (toId > voters.length) toId = voters.length;
         uint256 len = toId - fromId;
         escrowList = new Escrow[](len);
         for (uint256 i; i < len;) {
@@ -253,7 +265,7 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Full basket snapshot in `assetList` order (includes zero balances). Excludes dividend
     ///      `totalClaimable` from each amount. Only while liquidation is open.
-    function getRedeemables() public view returns (address[] memory assetOuts, uint256[] memory amounts) {
+    function getRedeemables() external view returns (address[] memory assetOuts, uint256[] memory amounts) {
         _requireLiquidation();
         assetOuts = new address[](assetList.length);
         amounts = new uint256[](assetList.length);
@@ -288,7 +300,7 @@ contract GRAI is
         _requireNotLiquidation();
         _requireNotGRAI(asset);
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
-        if (yieldAmount == 0) revert AmountZero();
+        if (yieldAmount == 0) revert InvalidAmount();
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(this), asset, yieldAmount, false);
         positions[msg.sender][asset].yielded += received;
@@ -311,13 +323,13 @@ contract GRAI is
     function deposit(address asset, uint256 amount, bool lock_) public payable returns (uint256 graiOut, uint256 value) {
         _requireNotLiquidation();
         _requireNotGRAI(asset);
-        if (amount == 0) revert AmountZero();
+        if (amount == 0) revert InvalidAmount();
         if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
         if (assets[asset].paused) revert Paused();
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(grinders), asset, amount, false);
         (value, graiOut) = previewDeposit(asset, received);
-        if (value == 0 || graiOut == 0) revert AmountZero();
+        if (value == 0 || graiOut == 0) revert InvalidAmount();
 
         totalValue += value;
         _mint(msg.sender, graiOut);
@@ -343,7 +355,7 @@ contract GRAI is
     ///      Not required before `vote` — `vote` locks any shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
     function lock(uint256 graiAmount) public {
         _requireNotLiquidation();
-        if (graiAmount == 0) revert AmountZero();
+        if (graiAmount == 0) revert InvalidAmount();
         address account = msg.sender;
         Escrow storage entry = escrows[account];
 
@@ -369,7 +381,7 @@ contract GRAI is
         _requireNotLiquidation();
         address account = msg.sender;
         Escrow storage entry = escrows[account];
-        if (graiAmount == 0) revert AmountZero();
+        if (graiAmount == 0) revert InvalidAmount();
         if (graiAmount > entry.amount) revert InvalidAmount();
 
         _accrueDividends(account);
@@ -423,25 +435,29 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev `type(uint256).max` claims the full accrued balance; otherwise claims `min(amount, claimable)`.
-    function claim(address holder, address asset, uint256 amount) public returns (uint256 claimed) {
+    ///      Pays tip to `msg.sender`, remainder to `locker`.
+    function claim(address locker, address asset, uint256 amount) public returns (uint256 claimed) {
         _requireNotGRAI(asset);
-        _accrueDividend(holder, asset);
-        uint256 claimable = positions[holder][asset].claimable;
+        _accrueDividend(locker, asset);
+        uint256 claimable = positions[locker][asset].claimable;
         if (claimable == 0) return 0;
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
-        positions[holder][asset].claimable -= claimed;
+        positions[locker][asset].claimable -= claimed;
         totalPositions[asset].totalClaimable -= claimed;
-        if (claimed > 0) _withdraw(holder, asset, claimed);
-        emit Claim(holder, asset, claimed);
+        uint256 tip = (claimed * config.claimTipBps) / BPS;
+        uint256 toLocker = claimed - tip;
+        if (toLocker > 0) _withdraw(locker, asset, toLocker);
+        if (tip > 0) _withdraw(msg.sender, asset, tip);
+        emit Claim(locker, asset, claimed);
     }
 
     /// @inheritdoc IGRAI
     /// @dev Pending = stored `claimable` plus unrealized accrual vs `totalPositions[asset].accShare` on unvoted lock
     ///      (`amount - voted`). `type(uint256).max` = full pending; otherwise `min(amount, pending)`.
-    function previewClaim(address holder, address asset, uint256 amount) public view returns (uint256) {
+    function previewClaim(address locker, address asset, uint256 amount) public view returns (uint256) {
         _requireNotGRAI(asset);
-        Position storage pos = positions[holder][asset];
-        uint256 accumulated = (_unvoted(holder) * totalPositions[asset].accShare) / PRECISION;
+        Position storage pos = positions[locker][asset];
+        uint256 accumulated = (_unvoted(locker) * totalPositions[asset].accShare) / PRECISION;
         uint256 pending = pos.claimable + accumulated - pos.debt;
         if (amount == type(uint256).max || amount >= pending) return pending;
         return amount;
@@ -450,25 +466,24 @@ contract GRAI is
     //////////////////// CLAIM ALL ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Pays every listed-asset dividend for `holder`.
-    function claimAll(address holder) public {
+    /// @dev Pays every listed-asset dividend for `locker`.
+    function claimAll(address locker) public {
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
-            claim(holder, assetList[i], type(uint256).max);
+            claim(locker, assetList[i], type(uint256).max);
             unchecked { ++i; }
         }
     }
 
     /// @inheritdoc IGRAI
     /// @dev One entry per listed asset in `assetList` order (amount may be 0).
-    function previewClaimAll(address holder) public view returns (address[] memory claimAssets, uint256[] memory amounts) {
-        uint256 len = assetList.length;
-        claimAssets = new address[](len);
-        amounts = new uint256[](len);
-        for (uint256 i; i < len;) {
+    function previewClaimAll(address locker) public view returns (address[] memory claimAssets, uint256[] memory amounts) {
+        claimAssets = new address[](assetList.length);
+        amounts = new uint256[](assetList.length);
+        for (uint256 i; i < assetList.length;) {
             address asset = assetList[i];
             claimAssets[i] = asset;
-            amounts[i] = previewClaim(holder, asset, type(uint256).max);
+            amounts[i] = previewClaim(locker, asset, type(uint256).max);
             unchecked { ++i; }
         }
     }
@@ -495,7 +510,7 @@ contract GRAI is
         }
 
         (uint256 graiIn, uint256 amountOut) = previewBuyback(asset, amount, block.timestamp);
-        if (graiIn == 0 || amountOut == 0) revert AmountZero();
+        if (graiIn == 0 || amountOut == 0) revert InvalidAmount();
 
         DutchAuction storage entry = auctions[asset];
         if (entry.remaining > amountOut) {
@@ -540,7 +555,7 @@ contract GRAI is
     ///      exit also via `unlock` (clamps vote, unlock penalty).
     function vote(uint256 graiAmount) public {
         _requireNotLiquidation();
-        if (graiAmount == 0) revert AmountZero();
+        if (graiAmount == 0) revert InvalidAmount();
         address voter = msg.sender;
         Escrow storage entry = escrows[voter];
 
@@ -589,7 +604,7 @@ contract GRAI is
         _transfer(address(this), briber, graiAmount);
         (uint256 received, uint256 refund) = _pay(briber, address(this), bribeAsset, bribeAmount, false);
         
-        if (received != bribeAmount) revert AmountZero();
+        if (received != bribeAmount) revert InvalidAmount();
         if (entry.voted == 0) _removeVoter(voter);
         if (entry.amount == 0) _removeLocker(voter);
 
@@ -624,7 +639,7 @@ contract GRAI is
     ///      `bribeAmount = book - discount`); the other half is carved to cuts in `bribe`.
     function previewBribe(address voter, uint256 graiAmount) public view returns (uint256 bribeAmount, uint256 premium, uint256 discount) {
         if (feeds[bribeAsset].feedType == FEED_NONE) revert BribeAssetUnset();
-        if (graiAmount == 0) revert AmountZero();
+        if (graiAmount == 0) revert InvalidAmount();
         Escrow storage entry = escrows[voter];
         if (graiAmount > entry.voted) revert InvalidAmount();
 
@@ -647,7 +662,7 @@ contract GRAI is
             discount = (book - fullAsk) / 2;
             bribeAmount = book - discount;
         }
-        if (bribeAmount == 0) revert AmountZero();
+        if (bribeAmount == 0) revert InvalidAmount();
     }
 
     //////////////////// LIQUIDATE ////////////////////
@@ -694,7 +709,7 @@ contract GRAI is
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
         uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (totalValue * graiAmount) / supply : 0;
-        if (value == 0) revert AmountZero();
+        if (value == 0) revert InvalidAmount();
 
         uint256 walletAmount = balanceOf(holder);
         _accrueDividends(holder);
@@ -793,7 +808,6 @@ contract GRAI is
                 nav += usdValue(asset, redeemable);
                 _withdraw(address(grinders), asset, redeemable);
             }
-            emit AssetConfigUpdate(asset, assets[asset]);
             unchecked { ++i; }
         }
         uint256 supply = totalSupply();
@@ -822,6 +836,38 @@ contract GRAI is
     // forge-lint: disable-next-line(mixed-case-function)
     function _requireNotGRAI(address asset) internal view {
         if (asset == address(this)) revert AssetUnknown();
+    }
+
+    function _requireValidConfig(Config memory cfg) internal pure {
+        if (cfg.buybackCutBps > BPS) revert BpsTooHigh();
+        if (cfg.dividendCutBps > BPS) revert BpsTooHigh();
+        if (cfg.treasuryCutBps > BPS) revert BpsTooHigh();
+        if (cfg.claimTipBps > 20_00) revert BpsTooHigh(); // max 20%
+        if (2 * cfg.bribePremiumBps > BPS) revert BpsTooHigh();
+        if (cfg.quorumBps > BPS) revert BpsTooHigh();
+        if (cfg.unlockFeeBps > BPS) revert BpsTooHigh();
+        if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) revert InvalidCuts();
+        if (cfg.buybackPeriod < 7 days) revert BuybackPeriodTooShort();
+        if (cfg.liquidationPeriod == 0 || cfg.redeemPeriod == 0) revert PeriodZero();
+    }
+
+    /// @dev Packing matches Solidity's single-slot `Config` layout (low bits first).
+    function _unpackConfig(uint256 data) internal pure returns (Config memory cfg) {
+        // Each field is a fixed bit window of `data`; high bits outside that window are discarded.
+        // forge-lint: disable-start(unsafe-typecast)
+        cfg.buybackCutBps = uint16(data);
+        cfg.dividendCutBps = uint16(data >> 16);
+        cfg.treasuryCutBps = uint16(data >> 32);
+        cfg.claimTipBps = uint16(data >> 48);
+        cfg.bribePremiumBps = uint16(data >> 64);
+        cfg.quorumBps = uint16(data >> 80);
+        cfg.unlockFeeBps = uint16(data >> 96);
+        cfg.buybackPeriod = uint32(data >> 112);
+        cfg.liquidationPeriod = uint32(data >> 144);
+        cfg.redeemPeriod = uint32(data >> 176);
+        cfg.unlockPenaltyPeriod = uint32(data >> 208);
+        data >> 240;
+        // forge-lint: disable-end(unsafe-typecast)
     }
 
     /// @notice Contract balance of `asset` (`address(0)` = native ETH).
@@ -1048,7 +1094,7 @@ contract GRAI is
     function _withdraw(address to, address asset, uint256 amount) internal {
         if (asset == address(0)) {
             if (to == address(0)) revert ZeroAddress();
-            if (amount == 0) revert AmountZero();
+            if (amount == 0) revert InvalidAmount();
             _sendEth(to, amount);
         } else {
             IERC20(asset).safeTransfer(to, amount);

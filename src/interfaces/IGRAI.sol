@@ -15,8 +15,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error Paused();
     error AuctionNotFound();
     error ZeroAddress();
-    error AmountZero();
-    /// @notice An amount/limit is out of range (exceeds balance/allowance/supply, min>max, payment bounds).
+    /// @notice Amount is zero or otherwise out of range (balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
     error EthTransferFailed();
     error GrindersGraiMismatch();
@@ -32,10 +31,21 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error PeriodZero();
     error BribeAssetUnset();
     error InvalidCuts();
-    /// @notice Deposit book is zero while shares remain (bootstrap mint would tax new capital).
-    error InsolventBook();
-    error InvalidVoterRange(uint256 fromId, uint256 toId);
-    error InvalidLockerRange(uint256 fromId, uint256 toId);
+    error InvalidRange(uint256 fromId, uint256 toId);
+
+    /// @notice Field selector for `setConfig`. `FULL` packs the whole `Config` slot in `data`.
+    enum ConfigId {
+        FULL,
+        DISTRIBUTE_CUTS,
+        CLAIM_TIP,
+        BRIBE_PREMIUM,
+        QUORUM,
+        UNLOCK_FEE,
+        BUYBACK_PERIOD,
+        LIQUIDATION_PERIOD,
+        REDEEM_PERIOD,
+        UNLOCK_PENALTY_PERIOD
+    }
 
     struct AssetConfig {
         /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
@@ -103,6 +113,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 dividendCutBps;
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
+        /// @notice Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
+        uint16 claimTipBps;
         /// @notice Slope scale for dynamic bribe ask adj, in bps of book value per half-quorum of
         ///         vote-share (also Dutch buyback max discount).
         /// @dev Ask scales linearly with vote-share vs half-quorum: `|adj| = bribePremiumBps` at 0
@@ -128,7 +140,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     }
 
     event AssetUpdate(address indexed asset, bool listed);
-    event AssetConfigUpdate(address indexed asset, AssetConfig cfg);
     event Deposit(address indexed depositor, uint256 graiOut, address indexed asset, uint256 amount, uint256 value);
     event Distribute(
         address indexed from,
@@ -163,6 +174,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 buybackCutBps,
             uint16 dividendCutBps,
             uint16 treasuryCutBps,
+            uint16 claimTipBps,
             uint16 bribePremiumBps,
             uint16 quorumBps,
             uint16 unlockFeeBps,
@@ -263,7 +275,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice List (`feedType != 0`) or delist (`feedType == 0`, `cfg` ignored) an asset.
     function set(address asset, Feed calldata feed, AssetConfig calldata cfg) external;
 
-    function setConfig(Config calldata cfg) external;
+    function setConfig(ConfigId id, uint256 data) external;
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
@@ -322,21 +334,23 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Preview yield dividends claimable for `asset`: `type(uint256).max` = full pending,
     ///         otherwise `min(amount, pending)` (including unrealized index accrual).
-    function previewClaim(address holder, address asset, uint256 amount) external view returns (uint256);
+    function previewClaim(address locker, address asset, uint256 amount) external view returns (uint256);
 
-    /// @notice Pending yield dividends for every listed asset accrued to `holder`'s lock.
+    /// @notice Pending yield dividends for every listed asset accrued to `locker`'s lock.
     ///         Parallel arrays in `assetList` order (amount may be 0).
-    function previewClaimAll(address holder)
+    function previewClaimAll(address locker)
         external
         view
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
-    /// @notice Claim yield dividends for `asset` accrued to `holder`'s active lock; paid to `holder`.
-    ///         `type(uint256).max` claims the full accrued balance; otherwise `min(amount, claimable)`.
-    function claim(address holder, address asset, uint256 amount) external returns (uint256 claimed);
+    /// @notice Claim yield dividends for `asset` accrued to `locker`'s active lock; pays tip to
+    ///         `msg.sender`, remainder to `locker`. `type(uint256).max` claims the full accrued
+    ///         balance; otherwise `min(amount, claimable)`.
+    function claim(address locker, address asset, uint256 amount) external returns (uint256 claimed);
 
-    /// @notice Claim yield dividends for every listed asset accrued to `holder`'s lock; paid to `holder`.
-    function claimAll(address holder) external;
+    /// @notice Claim yield dividends for every listed asset accrued to `locker`'s lock.
+    ///         Same tip split as `claim` per asset.
+    function claimAll(address locker) external;
 
     /// @notice Preview bribe ask in `bribeAsset`: `bribeAmount`, plus absolute `premium` or `discount`
     ///         vs book (one is always 0). `premium > 0` ⇒ scarce votes (favor voting); `discount > 0`

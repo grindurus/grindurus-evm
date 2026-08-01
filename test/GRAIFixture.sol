@@ -153,6 +153,7 @@ abstract contract GRAIFixture is Test {
             cfg.buybackCutBps,
             cfg.dividendCutBps,
             cfg.treasuryCutBps,
+            cfg.claimTipBps,
             cfg.bribePremiumBps,
             cfg.quorumBps,
             cfg.unlockFeeBps,
@@ -165,11 +166,16 @@ abstract contract GRAIFixture is Test {
 
     /// @dev Test economics often assume 50/30/20; initialize defaults are ~33/33/33.
     function _setYieldSplitFiftyThirtyTwenty() internal {
-        IGRAI.Config memory cfg = _readConfig();
-        cfg.buybackCutBps = BUYBACK_CUT_BPS;
-        cfg.dividendCutBps = DIVIDEND_CUT_BPS;
-        cfg.treasuryCutBps = TREASURY_CUT_BPS;
-        grai.setConfig(cfg);
+        uint256 data = uint256(BUYBACK_CUT_BPS) | (uint256(DIVIDEND_CUT_BPS) << 16) | (uint256(TREASURY_CUT_BPS) << 32);
+        grai.setConfig(IGRAI.ConfigId.DISTRIBUTE_CUTS, data);
+    }
+
+    function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
+        data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
+            | (uint256(cfg.claimTipBps) << 48) | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
+            | (uint256(cfg.unlockFeeBps) << 96) | (uint256(cfg.buybackPeriod) << 112)
+            | (uint256(cfg.liquidationPeriod) << 144) | (uint256(cfg.redeemPeriod) << 176)
+            | (uint256(cfg.unlockPenaltyPeriod) << 208);
     }
 
     /// @dev Buy from the open auction for `asset` as `buyer`, paying GRAI.

@@ -126,6 +126,7 @@ contract GRAIRolesTest is Test {
             buybackCutBps: 5_000,
             dividendCutBps: 3_000,
             treasuryCutBps: 2_000,
+            claimTipBps: 100,
             bribePremiumBps: 300,
             quorumBps: 5_000,
             unlockFeeBps: 1_000,
@@ -134,12 +135,18 @@ contract GRAIRolesTest is Test {
             redeemPeriod: uint32(3 days),
             unlockPenaltyPeriod: uint32(24 hours)
         });
-        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setConfig, (cfg)));
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.FULL, _packConfig(cfg)))
+        );
 
         (
             uint16 buybackCutBps,
             uint16 dividendCutBps,
             uint16 treasuryCutBps,
+            uint16 claimTipBps,
             uint16 bribePremiumBps,
             uint16 quorum,
             uint16 unlockFeeBps,
@@ -151,6 +158,7 @@ contract GRAIRolesTest is Test {
         assertEq(buybackCutBps, 5_000);
         assertEq(dividendCutBps, 3_000);
         assertEq(treasuryCutBps, 2_000);
+        assertEq(claimTipBps, 100);
         assertEq(bribePremiumBps, 300);
         assertEq(quorum, 5_000);
         assertEq(unlockFeeBps, 1_000);
@@ -158,6 +166,17 @@ contract GRAIRolesTest is Test {
         assertEq(liquidationPeriod, 12 hours);
         assertEq(redeemPeriod, 3 days);
         assertEq(unlockPenaltyPeriod, 24 hours);
+    }
+
+    function test_OwnerCanPatchClaimTipBps() public {
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
+        );
+        (,,, uint16 claimTipBps,,,,,,,) = grai.config();
+        assertEq(claimTipBps, 50);
     }
 
     function test_OwnerCanSetTreasuryAndVaults() public {
@@ -292,6 +311,14 @@ contract GRAIRolesTest is Test {
         fresh = Grinders(
             payable(address(new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (DEPLOYER, graiAddr)))))
         );
+    }
+
+    function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
+        data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
+            | (uint256(cfg.claimTipBps) << 48) | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
+            | (uint256(cfg.unlockFeeBps) << 96) | (uint256(cfg.buybackPeriod) << 112)
+            | (uint256(cfg.liquidationPeriod) << 144) | (uint256(cfg.redeemPeriod) << 176)
+            | (uint256(cfg.unlockPenaltyPeriod) << 208);
     }
 
     function _exec(MockMultisig multisig, address signer, address target, bytes memory data) internal {
