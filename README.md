@@ -69,16 +69,16 @@ Each `Grinders.mint(custodianKind, base, quote, owner)` deploys an ERC-1967 prox
 | `keccak256("grindurus.custodian.cow")` | `CoWCustodian` | CoW Protocol EIP-1271 orders |
 | `keccak256("grindurus.custodian.lifi")` | `LiFiCustodian` | LiFi routing |
 
-`allocated[custodian][asset]` is an issuance ledger only — not a deallocate cap (custodians may
-return a different token/size after swaps).
+Track Grinders `Allocate` / `Deallocate` events off-chain for issuance accounting (custodians may
+return a different token/size after swaps; there is no on-chain allocate ledger).
 
 ## Lifecycle
 
 ```
 initialize(admin, weth)
    ↓
+setConfig(ConfigId, data)   // patch one field or ConfigId.FULL packed slot
 setFeed(asset, feed) + setAssetConfig(paused)   // list asset
-setConfig({ buybackCutBps, dividendCutBps, treasuryCutBps, … })
 setBribeAsset(usdc)
 setGrinders(grinders)
    ↓
@@ -263,20 +263,16 @@ grai.setFeed(USDC, IPriceOracleRouter.Feed({
 }));
 grai.setAssetConfig(USDC, IGRAI.AssetConfig({ asset: USDC, id: 0, paused: false }));
 
-// Optional retarget: cuts, Dutch floor (−bribePremium max), unlock fee — owner
-// (initialize already sets ≈33.33/33.34/33.33; buybackPeriod must be >= 7 days)
-grai.setConfig(IGRAI.Config({
-    buybackCutBps: 5_000,
-    dividendCutBps: 3_000,
-    treasuryCutBps: 2_000,
-    bribePremiumBps: 200,
-    quorumBps: 6_667,
-    unlockFeeBps: 1_000,
-    buybackPeriod: uint32(7 days),
-    liquidationPeriod: uint32(24 hours),
-    redeemPeriod: uint32(7 days),
-    unlockPenaltyPeriod: uint32(24 hours)
-}));
+// Optional retarget — owner. `ConfigId.FULL` packs the whole Config slot; or patch one field
+// (buybackPeriod must stay >= 7 days)
+grai.setConfig(
+    IGRAI.ConfigId.FULL,
+    /* packed: */ uint256(5_000) | (uint256(3_000) << 16) | (uint256(2_000) << 32) | (uint256(100) << 48)
+        | (uint256(200) << 64) | (uint256(6_667) << 80) | (uint256(1_000) << 96)
+        | (uint256(uint32(7 days)) << 112) | (uint256(uint32(24 hours)) << 144)
+        | (uint256(uint32(7 days)) << 176) | (uint256(uint32(24 hours)) << 208)
+);
+// e.g. tip only: grai.setConfig(IGRAI.ConfigId.CLAIM_TIP, 100);
 
 // Pyth (source = per-network Pyth contract, data = shared price id)
 grai.setFeed(WETH, IPriceOracleRouter.Feed({
