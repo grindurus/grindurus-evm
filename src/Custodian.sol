@@ -125,7 +125,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         emit SetAssets(baseAsset_, quoteAsset_);
     }
 
-    /// @notice Return inventory to Grinders. Not limited by `allocated` (custodian may hold swapped assets).
+    /// @notice Return inventory to Grinders. Not capped by prior allocations (custodian may hold swapped assets).
     function deallocate(address asset, uint256 amount) public virtual {
         _onlyGrinders();
         if (liquidation()) revert LiquidationOpen();
@@ -134,10 +134,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     }
 
     /// @notice Forward reported yield to GRAI for treasury sharing and auctioning.
-    /// @dev This is intentionally not capped by `Grinders.allocated`: custodians may swap principal
-    ///      between assets, making a reliable on-chain `balance - allocated` profit check complex.
-    ///      Any principal reported as yield remains observable in Grinders' public allocation ledger
-    ///      and GRAI's per-custodian yield analytics, allowing monitoring and governance response.
+    /// @dev Intentionally not capped by prior allocations: custodians may swap principal between assets,
+    ///      so a reliable on-chain `balance - allocated` profit check is complex. Track Grinders
+    ///      `Allocate` / `Deallocate` events off-chain for issuance accounting.
     function distribute(address asset, uint256 yieldAmount) public virtual {
         _onlyGrinders();
         if (liquidation()) revert LiquidationOpen();
