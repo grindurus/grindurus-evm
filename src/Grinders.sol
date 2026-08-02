@@ -34,18 +34,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     /// @notice Reverse index: registered custodian address => NFT id.
     mapping(address custodian => uint256) public custodianIds;
 
-    /// @notice Issuance ledger: how much of `asset` was sent to `custodian` via `allocate`.
-    /// @dev Not an escrow balance and not a cap on returns. Custodians swap base↔quote, so they may
-    ///      `deallocate` an arbitrary amount of any held asset (often a different token than allocated).
-    ///      On deallocate the ledger is floored toward zero for that asset only; it must not gate the pull.
-    mapping(address custodian => mapping(address asset => uint256)) public allocated;
-
-    /// @notice Aggregate issuance ledger per asset across all custodians.
-    /// @dev Accounting-only mirror of `allocated`; not used as a balance oracle or transfer cap.
-    mapping(address asset => uint256) public totalAllocated;
-
-    /// @dev Storage gap for future upgrades (includes slots formerly used by local liquidation state).
-    uint256[41] private _gap;
+    /// @dev Storage gap for future upgrades (includes slots formerly used by local liquidation
+    ///      state and the removed `allocated` / `totalAllocated` issuance ledgers).
+    uint256[43] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -142,29 +133,23 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
             IERC20(asset).safeTransfer(custodian, amount);
         }
 
-        allocated[custodian][asset] += amount;
-        totalAllocated[asset] += amount;
+        emit Allocate(custodian, asset, amount);
     }
 
     /// @notice Pull `amount` of `asset` from a custodian back to this contract.
-    /// @dev Protocol owner only. Amount is not capped by `allocated`: after swaps the
-    ///      returned token/size need not match what was allocated. Ledger is best-effort decreased
-    ///      (floored at 0) for accounting only.
+    /// @dev Protocol owner only. Not capped by prior allocations — after swaps the returned
+    ///      token/size need not match what was sent. Track `Allocate` / `Deallocate` off-chain.
     function deallocate(address custodian, address asset, uint256 amount) public onlyOwner {
         _requireCustodian(custodian);
         if (amount == 0) revert AmountZero();
 
         ICustodian(payable(custodian)).deallocate(asset, amount);
 
-        uint256 prevAllocated = allocated[custodian][asset];
-        allocated[custodian][asset] = prevAllocated > amount ? prevAllocated - amount : 0;
-
-        uint256 prevTotalAllocated = totalAllocated[asset];
-        totalAllocated[asset] = prevTotalAllocated > amount ? prevTotalAllocated - amount : 0;
+        emit Deallocate(custodian, asset, amount);
     }
 
     /// @notice Forward custodian yield `amount` of `asset` to GRAI.distribute.
-    /// @dev Protocol owner only. Not capped by `allocated`.
+    /// @dev Protocol owner only.
     function distribute(address custodian, address asset, uint256 yieldAmount) public onlyOwner {
         _requireCustodian(custodian);
         ICustodian(payable(custodian)).distribute(asset, yieldAmount);

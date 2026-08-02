@@ -52,6 +52,10 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     );
     event CustodianRegistered(address indexed custodian, address indexed owner, uint256 indexed custodianId);
     event IdleLiquidate(uint256 assets);
+    /// @notice Junior capital sent from Grinders to `custodian` (`asset == address(0)` = ETH).
+    event Allocate(address indexed custodian, address indexed asset, uint256 amount);
+    /// @notice Junior capital pulled from `custodian` back to Grinders (`asset == address(0)` = ETH).
+    event Deallocate(address indexed custodian, address indexed asset, uint256 amount);
 
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
@@ -63,9 +67,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function custodianIds(address custodian) external view returns (uint256);
     /// @notice Registered NFT id for `account`, or `type(uint256).max` if not a custodian.
     function custodyIdOf(address account) external view returns (uint256);
-    /// @notice Issuance ledger of `allocate` amounts (not a wallet balance / deallocate cap).
-    function allocated(address custodian, address asset) external view returns (uint256);
-    function totalAllocated(address asset) external view returns (uint256);
 
     function isCustodian(address custodian) external view returns (bool);
 
@@ -82,12 +83,12 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         external
         returns (address custodian);
     function register(address custodian, address owner_) external;
-    /// @notice NFT owner sets trading assets on a registered custodian.
+    /// @notice Protocol owner sets trading assets on a registered custodian.
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) external;
     function allocate(address custodian, address asset, uint256 amount) external;
-    /// @notice NFT owner pulls `amount` of `asset` from `custodian`. Not capped by `allocated`.
+    /// @notice Protocol owner pulls `amount` of `asset` from `custodian`.
     function deallocate(address custodian, address asset, uint256 amount) external;
-    /// @notice NFT owner forwards yield `amount` of `asset` from `custodian` to GRAI.
+    /// @notice Protocol owner forwards yield `amount` of `asset` from `custodian` to GRAI.
     function distribute(address custodian, address asset, uint256 amount) external;
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and transfer swept amounts to GRAI.
