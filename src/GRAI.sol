@@ -45,32 +45,35 @@ contract GRAI is
     /// @notice Listed assets eligible for deposit, yield distribution, and liquidation redemption.
     address[] public assetList;
 
-    /// @notice Per-asset listing config (`id` indexes `assetList`; `paused` gates deposits only —
-    ///         not buyback, distribute, or claim).
+    /// @notice Per-asset listing + dividend state (`id` / `paused` / `accShare` / `totalClaimable`).
+    /// @dev `paused` gates deposits only — not buyback, distribute, or claim.
     mapping(address asset => AssetConfig) public assets;
 
     /// @notice One open Dutch auction per sold asset (`remaining` = asset qty; payment = GRAI).
     mapping(address asset => DutchAuction) public auctions;
 
-    /// @notice Per-asset dividend index (`accShare`) and claim reserve (`totalClaimable`).
-    mapping(address asset => TotalPosition) public totalPositions;
-
-    /// @notice Accounts with an open escrow; `escrows[account].lockerId` is the index here.
+    /// @notice Accounts with an open escrow; `escrows[locker].lockerId` is the index here.
     address[] public lockers;
 
-    /// @notice Accounts with an open liquidation vote; `escrows[account].voterId` is the index here.
+    /// @notice Accounts with an open liquidation vote; `escrows[locker].voterId` is the index here.
     address[] public voters;
 
-    /// @notice Per-account, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
-    mapping(address account => mapping(address asset => Position)) public positions;
+    /// @notice Deposit whitelist: only `true` addresses may call `deposit`.
+    mapping(address depositor => bool) public isDepositor;
 
-    /// @notice Per-user lock + liquidation vote (GRAI held by this contract while locked).
-    mapping(address account => Escrow) public escrows;
+    /// @notice Per-locker lock + liquidation vote (GRAI held by this contract while locked).
+    mapping(address locker => Escrow) public escrows;
 
-    /// @notice Sum of GRAI escrowed in all active locks (`escrows[account].amount`).
+    /// @notice Per-locker, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
+    mapping(address locker => mapping(address asset => Position)) public positions;
+
+    /// @notice Count of addresses with `isDepositor == true`. When `0`, deposit is open (no whitelist).
+    uint256 public totalDepositors;
+
+    /// @notice Sum of GRAI escrowed in all active locks (`escrows[locker].amount`).
     uint256 public totalLocked;
 
-    /// @notice Sum of GRAI committed toward liquidation quorum (`escrows[account].voted`; ≤ `totalLocked`).
+    /// @notice Sum of GRAI committed toward liquidation quorum (`escrows[locker].voted`; ≤ `totalLocked`).
     uint256 public totalVoted;
 
     /// @notice Book NAV in `USD_DECIMALS` (6); mint rate = `value * totalSupply / totalValue`. Moves on
@@ -99,9 +102,6 @@ contract GRAI is
 
     /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
     Config public config;
-
-    /// @dev Storage gap for future upgrades (+3: merged positions / removed vote rewards / merged dividend fields).
-    uint256[24] private _gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -133,11 +133,27 @@ contract GRAI is
         });
     }
 
+    /// @dev Setting a real feed (feedType != None) lists the asset; clearing it (None) delists it.
+    ///      Delisting inherits the guards of asset removal (must be paused with zero balance).
+    function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyOwner {
+        if (feed.feedType == FeedType.None) {
+            _removeAsset(asset);
+        } else {
+            super.setFeed(asset, feed);
+            _addAsset(asset);
+        }
+    }
+
+    function setAssetPause(address asset, bool paused) public onlyOwner {
+        _requireListed(asset);
+        assets[asset].paused = paused;
+    }
+
     /// @inheritdoc IGRAI
     /// @dev `id` selects the field(s); `data` is the packed value(s). `ConfigId.FULL` packs the whole slot.
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/resettle clocks; freeze both windows for the whole liquidation.
-        if (liquidation) revert LiquidationOpen();
+        _requireNotLiquidation();
 
         Config memory cfg = config;
         if (id == ConfigId.FULL) {
@@ -169,7 +185,16 @@ contract GRAI is
 
         _requireValidConfig(cfg);
         config = cfg;
-        emit ConfigUpdate(cfg);
+    }
+
+    /// @notice Grant or revoke permission to call `deposit`.
+    function setDepositor(address depositor, bool isDepositor_) external onlyOwner {
+        if (isDepositor[depositor] == isDepositor_) return;
+        isDepositor[depositor] = isDepositor_;
+        unchecked {
+            if (isDepositor_) ++totalDepositors;
+            else --totalDepositors;
+        }
     }
 
     function setGrinders(address grinders_) external onlyOwner {
@@ -190,33 +215,8 @@ contract GRAI is
     ///      Auctions price in GRAI, so open lots / locks do not block the switch.
     function setBribeAsset(address bribeAsset_) external onlyOwner {
         _requireNotGRAI(bribeAsset_);
-        if (feeds[bribeAsset_].feedType == FEED_NONE) revert AssetUnknown();
+        _requireListed(bribeAsset_);
         bribeAsset = bribeAsset_;
-    }
-
-    /// @notice List or delist an asset: non-`FEED_NONE` lists (feed + config); `FEED_NONE` delists (`cfg` ignored).
-    /// @dev `cfg.asset` / `cfg.id` ignored on list. Delist still requires pause + zero balance via `_removeAsset`.
-    function set(address asset, Feed calldata feed, AssetConfig calldata cfg) external onlyOwner {
-        setFeed(asset, feed);
-        if (feed.feedType == FEED_NONE) return;
-        setAssetConfig(asset, cfg);
-    }
-
-    /// @dev Setting a real feed (feedType != FEED_NONE) lists the asset; clearing it (FEED_NONE) delists it.
-    ///      Delisting inherits the guards of asset removal (must be paused with zero balance).
-    function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyOwner {
-        if (feed.feedType == FEED_NONE) {
-            _removeAsset(asset);
-        } else {
-            super.setFeed(asset, feed);
-            _addAsset(asset);
-        }
-    }
-
-    /// @dev `cfg.asset` and `cfg.id` are ignored: the `asset` param is authoritative and the `assetList` index is managed internally.
-    function setAssetConfig(address asset, AssetConfig calldata cfg) public onlyOwner {
-        if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
-        assets[asset].paused = cfg.paused;
     }
 
     receive() external payable {}
@@ -299,8 +299,8 @@ contract GRAI is
     function distribute(address asset, uint256 yieldAmount) public payable {
         _requireNotLiquidation();
         _requireNotGRAI(asset);
-        if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
-        if (yieldAmount == 0) revert InvalidAmount();
+        _requireListed(asset);
+        _requireNotZeroAmount(yieldAmount);
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(this), asset, yieldAmount, false);
         positions[msg.sender][asset].yielded += received;
@@ -323,13 +323,15 @@ contract GRAI is
     function deposit(address asset, uint256 amount, bool lock_) public payable returns (uint256 graiOut, uint256 value) {
         _requireNotLiquidation();
         _requireNotGRAI(asset);
-        if (amount == 0) revert InvalidAmount();
-        if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
+        _requireListed(asset);
+        _requireNotZeroAmount(amount);
+        if (totalDepositors > 0 && !isDepositor[msg.sender]) revert NotDepositor();
         if (assets[asset].paused) revert Paused();
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(grinders), asset, amount, false);
         (value, graiOut) = previewDeposit(asset, received);
-        if (value == 0 || graiOut == 0) revert InvalidAmount();
+        _requireNotZeroAmount(value);
+        _requireNotZeroAmount(graiOut);
 
         totalValue += value;
         _mint(msg.sender, graiOut);
@@ -355,20 +357,20 @@ contract GRAI is
     ///      Not required before `vote` — `vote` locks any shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
     function lock(uint256 graiAmount) public {
         _requireNotLiquidation();
-        if (graiAmount == 0) revert InvalidAmount();
-        address account = msg.sender;
-        Escrow storage entry = escrows[account];
+        _requireNotZeroAmount(graiAmount);
+        address locker = msg.sender;
+        Escrow storage entry = escrows[locker];
 
-        if (graiAmount > balanceOf(account)) revert InvalidAmount();
-        _accrueDividends(account);
+        if (graiAmount > balanceOf(locker)) revert InvalidAmount();
+        _accrueDividends(locker);
         totalLocked += graiAmount;
-        if (entry.amount == 0) _addLocker(account);
+        if (entry.amount == 0) _addLocker(locker);
         entry.amount += graiAmount;
         entry.lockedAt = uint48(block.timestamp);
-        _syncDividendDebts(account);
+        _syncDividendDebts(locker);
 
-        _transfer(account, address(this), graiAmount);
-        emit Lock(account, graiAmount, totalLocked);
+        _transfer(locker, address(this), graiAmount);
+        emit Lock(locker, graiAmount, totalLocked);
     }
 
     //////////////////// UNLOCK ////////////////////
@@ -381,7 +383,7 @@ contract GRAI is
         _requireNotLiquidation();
         address account = msg.sender;
         Escrow storage entry = escrows[account];
-        if (graiAmount == 0) revert InvalidAmount();
+        _requireNotZeroAmount(graiAmount);
         if (graiAmount > entry.amount) revert InvalidAmount();
 
         _accrueDividends(account);
@@ -443,7 +445,7 @@ contract GRAI is
         if (claimable == 0) return 0;
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
         positions[locker][asset].claimable -= claimed;
-        totalPositions[asset].totalClaimable -= claimed;
+        assets[asset].totalClaimable -= claimed;
         uint256 tip = (claimed * config.claimTipBps) / BPS;
         uint256 toLocker = claimed - tip;
         if (toLocker > 0) _withdraw(locker, asset, toLocker);
@@ -452,12 +454,12 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Pending = stored `claimable` plus unrealized accrual vs `totalPositions[asset].accShare` on unvoted lock
+    /// @dev Pending = stored `claimable` plus unrealized accrual vs `assets[asset].accShare` on unvoted lock
     ///      (`amount - voted`). `type(uint256).max` = full pending; otherwise `min(amount, pending)`.
     function previewClaim(address locker, address asset, uint256 amount) public view returns (uint256) {
         _requireNotGRAI(asset);
         Position storage pos = positions[locker][asset];
-        uint256 accumulated = (_unvoted(locker) * totalPositions[asset].accShare) / PRECISION;
+        uint256 accumulated = (_unvoted(locker) * assets[asset].accShare) / PRECISION;
         uint256 pending = pos.claimable + accumulated - pos.debt;
         if (amount == type(uint256).max || amount >= pending) return pending;
         return amount;
@@ -510,7 +512,8 @@ contract GRAI is
         }
 
         (uint256 graiIn, uint256 amountOut) = previewBuyback(asset, amount, block.timestamp);
-        if (graiIn == 0 || amountOut == 0) revert InvalidAmount();
+        _requireNotZeroAmount(graiIn);
+        _requireNotZeroAmount(amountOut);
 
         DutchAuction storage entry = auctions[asset];
         if (entry.remaining > amountOut) {
@@ -555,7 +558,7 @@ contract GRAI is
     ///      exit also via `unlock` (clamps vote, unlock penalty).
     function vote(uint256 graiAmount) public {
         _requireNotLiquidation();
-        if (graiAmount == 0) revert InvalidAmount();
+        _requireNotZeroAmount(graiAmount);
         address voter = msg.sender;
         Escrow storage entry = escrows[voter];
 
@@ -638,8 +641,8 @@ contract GRAI is
     ///      Discount regime: ask applies only half the book−fullAsk gap (`discount = gap / 2`,
     ///      `bribeAmount = book - discount`); the other half is carved to cuts in `bribe`.
     function previewBribe(address voter, uint256 graiAmount) public view returns (uint256 bribeAmount, uint256 premium, uint256 discount) {
-        if (feeds[bribeAsset].feedType == FEED_NONE) revert BribeAssetUnset();
-        if (graiAmount == 0) revert InvalidAmount();
+        _requireListed(bribeAsset);
+        _requireNotZeroAmount(graiAmount);
         Escrow storage entry = escrows[voter];
         if (graiAmount > entry.voted) revert InvalidAmount();
 
@@ -662,7 +665,7 @@ contract GRAI is
             discount = (book - fullAsk) / 2;
             bribeAmount = book - discount;
         }
-        if (bribeAmount == 0) revert InvalidAmount();
+        _requireNotZeroAmount(bribeAmount);
     }
 
     //////////////////// LIQUIDATE ////////////////////
@@ -709,7 +712,7 @@ contract GRAI is
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
         uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (totalValue * graiAmount) / supply : 0;
-        if (value == 0) revert InvalidAmount();
+        _requireNotZeroAmount(value);
 
         uint256 walletAmount = balanceOf(holder);
         _accrueDividends(holder);
@@ -791,7 +794,7 @@ contract GRAI is
     ///      With leftover shares, marks `totalValue = totalNAV` only when that raises mint price
     ///      (`totalNAV >= totalValue`); otherwise keeps book `totalValue` and still clears
     ///      liquidation (underwater reopen is allowed). Dividend inventory in
-    ///      `totalPositions[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
+    ///      `assets[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
     ///      shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
     function resettle() public {
         _requireLiquidation();
@@ -825,17 +828,25 @@ contract GRAI is
 
     ////////////////////////////// INTERNAL HELPERS //////////////////////////////
 
-    function _requireNotLiquidation() internal view {
-        if (liquidation) revert LiquidationOpen();
+    function _requireListed(address asset) internal view {
+        if (feeds[asset].feedType == FeedType.None) revert AssetUnknown();
     }
 
     function _requireLiquidation() internal view {
         if (!liquidation) revert LiquidationClosed();
     }
 
+    function _requireNotLiquidation() internal view {
+        if (liquidation) revert LiquidationOpen();
+    }
+
     // forge-lint: disable-next-line(mixed-case-function)
     function _requireNotGRAI(address asset) internal view {
         if (asset == address(this)) revert AssetUnknown();
+    }
+
+    function _requireNotZeroAmount(uint256 amount) internal pure {
+        if (amount == 0) revert InvalidAmount();
     }
 
     function _requireValidConfig(Config memory cfg) internal pure {
@@ -885,7 +896,7 @@ contract GRAI is
     /// @notice Balance available to liquidation redeem / resettle (excludes dividend claim reserve).
     function _redeemable(address asset) internal view returns (uint256) {
         uint256 bal = _balance(asset);
-        uint256 reserved = totalPositions[asset].totalClaimable;
+        uint256 reserved = assets[asset].totalClaimable;
         return bal > reserved ? bal - reserved : 0;
     }
 
@@ -915,7 +926,7 @@ contract GRAI is
     ///      live mint ask over preserving Dutch elapsed across top-ups.
     function _place(address asset, uint256 amount) internal {
         _requireNotGRAI(asset);
-        if (feeds[asset].feedType == FEED_NONE) revert AssetUnknown();
+        _requireListed(asset);
 
         DutchAuction storage entry = auctions[asset];
         uint256 remaining = entry.remaining + amount;
@@ -941,7 +952,7 @@ contract GRAI is
         if (indexIncrease == 0) {
             _place(asset, amount);
         } else {
-            TotalPosition storage div = totalPositions[asset];
+            AssetConfig storage div = assets[asset];
             div.accShare += indexIncrease;
             div.totalClaimable += amount;
         }
@@ -957,7 +968,7 @@ contract GRAI is
 
     function _accrueDividend(address account, address asset) internal {
         Position storage pos = positions[account][asset];
-        uint256 accumulated = (_unvoted(account) * totalPositions[asset].accShare) / PRECISION;
+        uint256 accumulated = (_unvoted(account) * assets[asset].accShare) / PRECISION;
         pos.claimable += accumulated - pos.debt;
         pos.debt = accumulated;
     }
@@ -967,7 +978,7 @@ contract GRAI is
         uint256 unvoted = _unvoted(account);
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            positions[account][asset].debt = (unvoted * totalPositions[asset].accShare) / PRECISION;
+            positions[account][asset].debt = (unvoted * assets[asset].accShare) / PRECISION;
             unchecked { ++i; }
         }
     }
@@ -978,7 +989,7 @@ contract GRAI is
         if (existingId < assetList.length && assetList[existingId] == asset) return;
 
         uint32 id = uint32(assetList.length);
-        assets[asset] = AssetConfig({asset: asset, id: id, paused: false});
+        assets[asset] = AssetConfig({asset: asset, id: id, paused: false, accShare: 0, totalClaimable: 0});
         assetList.push(asset);
         emit AssetUpdate(asset, true);
     }
@@ -1094,7 +1105,7 @@ contract GRAI is
     function _withdraw(address to, address asset, uint256 amount) internal {
         if (asset == address(0)) {
             if (to == address(0)) revert ZeroAddress();
-            if (amount == 0) revert InvalidAmount();
+            _requireNotZeroAmount(amount);
             _sendEth(to, amount);
         } else {
             IERC20(asset).safeTransfer(to, amount);

@@ -29,9 +29,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error RedeemPeriodActive();
     error BuybackPeriodTooShort();
     error PeriodZero();
-    error BribeAssetUnset();
     error InvalidCuts();
     error InvalidRange(uint256 fromId, uint256 toId);
+    error NotDepositor();
 
     /// @notice Field selector for `setConfig`. `FULL` packs the whole `Config` slot in `data`.
     enum ConfigId {
@@ -54,6 +54,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 id;
         /// @notice When true, blocks `deposit` for this asset only (not buyback / distribute / claim).
         bool paused;
+        /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`amount - voted`), scaled by 1e18.
+        uint256 accShare;
+        /// @notice Tokens reserved for locker claims (excluded from redeem / resettle).
+        uint256 totalClaimable;
     }
 
     /// @notice One Dutch auction lot.
@@ -77,14 +81,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 debt;
         uint256 claimable;
         uint256 yielded;
-    }
-
-    /// @notice Per-asset locker dividend index and reserved inventory.
-    struct TotalPosition {
-        /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`amount - voted`), scaled by 1e18.
-        uint256 accShare;
-        /// @notice Tokens reserved for locker claims (excluded from redeem / resettle).
-        uint256 totalClaimable;
     }
 
     /// @notice Per-user escrow: locked GRAI (dividends) and optional liquidation vote.
@@ -165,8 +161,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 totalVoted
     );
     event Liquidate(bool liquidation);
-    event ConfigUpdate(Config config);
-
     function config()
         external
         view
@@ -188,7 +182,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function totalValue() external view returns (uint256);
 
-    function positions(address account, address asset)
+    function positions(address locker, address asset)
         external
         view
         returns (uint256 debt, uint256 claimable, uint256 yielded);
@@ -210,7 +204,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @dev One `DutchAuction` per listed asset; `startTime == 0` means no open auction (`asset` is still set).
     function getAssets() external view returns (DutchAuction[] memory list);
 
-    function escrows(address account)
+    function escrows(address locker)
         external
         view
         returns (
@@ -242,8 +236,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function totalVoted() external view returns (uint256);
 
-    function totalPositions(address asset) external view returns (uint256 accShare, uint256 totalClaimable);
-
     /// @notice True when voted GRAI is at least `config.quorumBps` of `totalSupply`.
     function hasQuorum() external view returns (bool);
 
@@ -256,7 +248,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
     function liquidationAt() external view returns (uint48);
 
-    function assets(address asset) external view returns (address asset_, uint32 id, bool paused);
+    function assets(address asset)
+        external
+        view
+        returns (address asset_, uint32 id, bool paused, uint256 accShare, uint256 totalClaimable);
 
     function assetList(uint256 index) external view returns (address);
 
@@ -272,10 +267,16 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Set bribe settlement asset (listed feed). Must not be fee-on-transfer.
     function setBribeAsset(address bribeAsset_) external;
 
-    /// @notice List (`feedType != 0`) or delist (`feedType == 0`, `cfg` ignored) an asset.
-    function set(address asset, Feed calldata feed, AssetConfig calldata cfg) external;
-
     function setConfig(ConfigId id, uint256 data) external;
+
+    /// @notice Whether `account` may call `deposit`.
+    function isDepositor(address account) external view returns (bool);
+
+    /// @notice Number of addresses with `isDepositor == true`. When `0`, deposit is open (no whitelist).
+    function totalDepositors() external view returns (uint256);
+
+    /// @notice Owner grants or revokes deposit permission.
+    function setDepositor(address depositor, bool isDepositor_) external;
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
@@ -285,9 +286,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (uint256 graiIn, uint256 amountOut);
 
-    function setAssetConfig(address asset, AssetConfig calldata cfg) external;
+    function setAssetPause(address asset, bool paused) external;
 
-    /// @notice Mint GRAI against deposited `asset`. If `lock`, escrow the minted `graiOut` for dividends in the same tx.
+    /// @notice Mint GRAI against deposited `asset`. When `totalDepositors > 0`, caller must be whitelisted (`isDepositor`). If `lock`, escrow the minted `graiOut` for dividends in the same tx.
     function deposit(address asset, uint256 amount, bool lock)
         external
         payable
