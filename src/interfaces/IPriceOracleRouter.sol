@@ -18,18 +18,20 @@ interface IPriceOracleRouter {
     error ExpoTooLarge();
 
     enum FeedType {
-        None,
-        Custom,
-        Chainlink,
-        Pyth
+        NONE,
+        CUSTOM,
+        CHAINLINK,
+        PYTH
     }
 
     struct Feed {
         FeedType feedType;
         address asset;
         address source;
-        bytes32 data;
         uint8 decimals;
+        bytes32 data;
+        /// @notice When true, blocks `deposit` for this asset only (not buyback / distribute / claim).
+        bool paused;
         int256 storedPrice;
         uint256 storedUpdatedAt;
         uint256 maxStaleness;
