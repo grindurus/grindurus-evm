@@ -28,7 +28,7 @@ contract PythForkTest is ForkFixture {
         PriceOracleRouter router = _newRouter();
         _setPythFeed(router, asset, pyth, id);
 
-        (,,,,,,, uint256 maxStaleness) = router.feeds(asset);
+        (,,,,,,,, uint256 maxStaleness) = router.feeds(asset);
         if (block.timestamp - raw.publishTime > maxStaleness) {
             emit log("skipping router leg: on-chain pyth price is stale on this fork block");
             vm.skip(true);

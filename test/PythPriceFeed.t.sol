@@ -68,11 +68,13 @@ contract PythPriceFeedTest is GRAIFixture {
         grai.setFeed(
             address(asset),
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Pyth,
+                feedType: IPriceOracleRouter.FeedType.PYTH,
                 asset: address(asset),
                 source: address(0),
-                data: PYTH_WETH_USD,
                 decimals: 0,
+                data: PYTH_WETH_USD,
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: 1 hours
@@ -82,11 +84,13 @@ contract PythPriceFeedTest is GRAIFixture {
         grai.setFeed(
             address(asset),
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Pyth,
+                feedType: IPriceOracleRouter.FeedType.PYTH,
                 asset: address(asset),
                 source: address(0x1),
-                data: bytes32(0),
                 decimals: 0,
+                data: bytes32(0),
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: 1 hours

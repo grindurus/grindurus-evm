@@ -16,11 +16,13 @@ contract CustomPriceFeedTest is GRAIFixture {
         grai.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Custom,
+                feedType: IPriceOracleRouter.FeedType.CUSTOM,
                 asset: address(mock),
                 source: address(custom),
-                data: bytes32(MockCustomOracle.getPrice.selector),
                 decimals: 0,
+                data: bytes32(MockCustomOracle.getPrice.selector),
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS
@@ -41,11 +43,13 @@ contract CustomPriceFeedTest is GRAIFixture {
         grai.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Custom,
+                feedType: IPriceOracleRouter.FeedType.CUSTOM,
                 asset: address(mock),
                 source: address(custom),
-                data: bytes32(MockCustomOracle.getPrice.selector),
                 decimals: 0,
+                data: bytes32(MockCustomOracle.getPrice.selector),
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS
@@ -67,11 +71,13 @@ contract CustomPriceFeedTest is GRAIFixture {
         grai.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Custom,
+                feedType: IPriceOracleRouter.FeedType.CUSTOM,
                 asset: address(mock),
                 source: address(custom),
-                data: bytes32(MockCustomOracle.getPrice.selector),
                 decimals: 0,
+                data: bytes32(MockCustomOracle.getPrice.selector),
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS
@@ -89,11 +95,13 @@ contract CustomPriceFeedTest is GRAIFixture {
         grai.setFeed(
             address(mock),
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Custom,
+                feedType: IPriceOracleRouter.FeedType.CUSTOM,
                 asset: address(mock),
                 source: makeAddr("noCode"),
-                data: bytes32(uint256(1)),
                 decimals: 0,
+                data: bytes32(uint256(1)),
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS

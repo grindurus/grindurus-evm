@@ -43,11 +43,13 @@ abstract contract ForkFixture is Test {
         router.setFeed(
             asset,
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Chainlink,
+                feedType: IPriceOracleRouter.FeedType.CHAINLINK,
                 asset: asset,
                 source: aggregator,
-                data: bytes32(0),
                 decimals: 0,
+                data: bytes32(0),
+
+                paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS
@@ -59,11 +61,13 @@ abstract contract ForkFixture is Test {
         router.setFeed(
             asset,
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Pyth,
+                feedType: IPriceOracleRouter.FeedType.PYTH,
                 asset: asset,
                 source: pyth,
-                data: priceId,
                 decimals: 0,
+                data: priceId,
+
+                paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS

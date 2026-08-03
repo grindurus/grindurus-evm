@@ -97,19 +97,45 @@ abstract contract GRAIFixture is Test {
     }
 
     function _setAssetPause(address asset, bool paused) internal {
-        grai.setAssetPause(asset, paused);
+        (
+            IPriceOracleRouter.FeedType feedType,
+            address feedAsset,
+            address source,
+            uint8 decimals,
+            bytes32 data,
+            ,
+            int256 storedPrice,
+            uint256 storedUpdatedAt,
+            uint256 maxStaleness
+        ) = grai.feeds(asset);
+        grai.setFeed(
+            asset,
+            IPriceOracleRouter.Feed({
+                feedType: feedType,
+                asset: feedAsset,
+                source: source,
+                decimals: decimals,
+                data: data,
+                paused: paused,
+                storedPrice: storedPrice,
+                storedUpdatedAt: storedUpdatedAt,
+                maxStaleness: maxStaleness
+            })
+        );
     }
 
-    /// @dev Clearing a feed (FeedType.None) delists the asset (must be paused with zero balance).
+    /// @dev Clearing a feed (FeedType.NONE) delists the asset (must be paused with zero balance).
     function _clearFeed(address asset) internal {
         grai.setFeed(
             asset,
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.None,
+                feedType: IPriceOracleRouter.FeedType.NONE,
                 asset: asset,
                 source: address(0),
-                data: bytes32(0),
                 decimals: 0,
+                data: bytes32(0),
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: 0
@@ -121,11 +147,13 @@ abstract contract GRAIFixture is Test {
         grai.setFeed(
             asset,
             IPriceOracleRouter.Feed({
-                feedType: IPriceOracleRouter.FeedType.Pyth,
+                feedType: IPriceOracleRouter.FeedType.PYTH,
                 asset: asset,
                 source: pyth,
-                data: priceId,
                 decimals: 0,
+                data: priceId,
+
+            paused: false,
                 storedPrice: 0,
                 storedUpdatedAt: 0,
                 maxStaleness: DEFAULT_MAX_STALENESS
@@ -135,11 +163,13 @@ abstract contract GRAIFixture is Test {
 
     function _chainlinkFeed(address asset, address aggregator) internal pure returns (IPriceOracleRouter.Feed memory) {
         return IPriceOracleRouter.Feed({
-            feedType: IPriceOracleRouter.FeedType.Chainlink,
+            feedType: IPriceOracleRouter.FeedType.CHAINLINK,
             asset: asset,
             source: aggregator,
-            data: bytes32(0),
             decimals: 0,
+            data: bytes32(0),
+
+            paused: false,
             storedPrice: 0,
             storedUpdatedAt: 0,
             maxStaleness: DEFAULT_MAX_STALENESS

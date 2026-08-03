@@ -41,7 +41,7 @@ contract ChainlinkForkTest is ForkFixture {
         (,,, uint256 updatedAt,) = AggregatorV3Interface(aggregator).latestRoundData();
         PriceOracleRouter router = _newRouter();
         _setChainlinkFeed(router, asset, aggregator);
-        (,,,,,,, uint256 maxStaleness) = router.feeds(asset);
+        (,,,,,,,, uint256 maxStaleness) = router.feeds(asset);
         if (block.timestamp - updatedAt > maxStaleness) {
             emit log("skipping router leg: chainlink round is stale on this fork block");
             vm.skip(true);
@@ -87,7 +87,7 @@ contract ChainlinkForkTest is ForkFixture {
         address asset = makeAddr("eth-usd-stale");
         _setChainlinkFeed(router, asset, ETH_ETHUSD);
 
-        (,,,,,,, uint256 maxStaleness) = router.feeds(asset);
+        (,,,,,,,, uint256 maxStaleness) = router.feeds(asset);
         vm.warp(block.timestamp + maxStaleness + 1);
         vm.expectRevert(IPriceOracleRouter.StalePrice.selector);
         router.getPrice(asset);
