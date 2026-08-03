@@ -134,17 +134,32 @@ contract GRAI is
         });
     }
 
-    /// @dev Waterfall: list → pause-only while live → replace while paused → delist on `NONE`.
+    /// @dev Owner feed waterfall on `feeds[asset]`:
+    ///      - Not listed (`feedType == NONE`): writes `feed` and appends to `assetList` (list).
+    ///      - Listed + unpaused: only `feed.paused` is applied; oracle fields are ignored.
+    ///      - Listed + paused + `feedType != NONE`: full oracle replace via `_writeFeed` (may set
+    ///        `paused: false` in the same call to go live on the new feed).
+    ///      - Listed + paused + `feedType == NONE`: delist (`_removeAsset`; requires zero balance).
+    ///
+    ///      To replace an oracle while deposits stay blocked:
+    ///        1) `setFeed` with current (or any) feed and `paused: true`;
+    ///        2) `setFeed` with the new oracle fields (`feedType` / `source` / `data` / …) and
+    ///           `paused: true` or `false` as desired.
+    ///      To delist: pause → drain balance → `setFeed` with `feedType: NONE`.
     function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyOwner {
         Feed storage f = feeds[asset];
         if (f.feedType == FeedType.NONE) {
+            // list asset
             _writeFeed(asset, feed);
             _addAsset(asset);
         } else if (!f.paused) {
+            // pause / unpause
             f.paused = feed.paused;
         } else if (feed.feedType == FeedType.NONE) {
+            // remove (delist)
             _removeAsset(asset);
         } else {
+            // replace oracle
             _writeFeed(asset, feed);
         }
     }
