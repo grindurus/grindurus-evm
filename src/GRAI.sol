@@ -45,8 +45,9 @@ contract GRAI is
     /// @notice Listed assets eligible for deposit, yield distribution, and liquidation redemption.
     address[] public assetList;
 
-    /// @notice Per-asset listing + dividend state (`id` / `paused` / `accShare` / `totalClaimable`).
-    /// @dev `paused` gates deposits only — not buyback, distribute, or claim.
+    /// @notice Per-asset listing + dividend state (`id` / `accShare` / `totalClaimable`).
+    /// @dev Deposit pause lives on `feeds[asset].paused` (gates deposits only — not buyback,
+    ///      distribute, or claim).
     mapping(address asset => AssetConfig) public assets;
 
     /// @notice One open Dutch auction per sold asset (`remaining` = asset qty; payment = GRAI).
@@ -133,20 +134,19 @@ contract GRAI is
         });
     }
 
-    /// @dev Setting a real feed (feedType != None) lists the asset; clearing it (None) delists it.
-    ///      Delisting inherits the guards of asset removal (must be paused with zero balance).
+    /// @dev Waterfall: list → pause-only while live → replace while paused → delist on `NONE`.
     function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyOwner {
-        if (feed.feedType == FeedType.None) {
+        Feed storage f = feeds[asset];
+        if (f.feedType == FeedType.NONE) {
+            _writeFeed(asset, feed);
+            _addAsset(asset);
+        } else if (!f.paused) {
+            f.paused = feed.paused;
+        } else if (feed.feedType == FeedType.NONE) {
             _removeAsset(asset);
         } else {
-            super.setFeed(asset, feed);
-            _addAsset(asset);
+            _writeFeed(asset, feed);
         }
-    }
-
-    function setAssetPause(address asset, bool paused) public onlyOwner {
-        _requireListed(asset);
-        assets[asset].paused = paused;
     }
 
     /// @inheritdoc IGRAI
@@ -326,7 +326,7 @@ contract GRAI is
         _requireListed(asset);
         _requireNotZeroAmount(amount);
         if (totalDepositors > 0 && !isDepositor[msg.sender]) revert NotDepositor();
-        if (assets[asset].paused) revert Paused();
+        if (feeds[asset].paused) revert Paused();
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(grinders), asset, amount, false);
         (value, graiOut) = previewDeposit(asset, received);
@@ -829,7 +829,7 @@ contract GRAI is
     ////////////////////////////// INTERNAL HELPERS //////////////////////////////
 
     function _requireListed(address asset) internal view {
-        if (feeds[asset].feedType == FeedType.None) revert AssetUnknown();
+        if (feeds[asset].feedType == FeedType.NONE) revert AssetUnknown();
     }
 
     function _requireLiquidation() internal view {
@@ -989,7 +989,7 @@ contract GRAI is
         if (existingId < assetList.length && assetList[existingId] == asset) return;
 
         uint32 id = uint32(assetList.length);
-        assets[asset] = AssetConfig({asset: asset, id: id, paused: false, accShare: 0, totalClaimable: 0});
+        assets[asset] = AssetConfig({asset: asset, id: id, accShare: 0, totalClaimable: 0});
         assetList.push(asset);
         emit AssetUpdate(asset, true);
     }
@@ -997,7 +997,7 @@ contract GRAI is
     function _removeAsset(address asset) internal {
         uint256 index = assets[asset].id;
         if (index >= assetList.length || assetList[index] != asset) revert AssetUnknown();
-        if (!assets[asset].paused) revert NotPaused();
+        if (!feeds[asset].paused) revert NotPaused();
         if (_balance(asset) > 0) revert AssetBalanceNonZero();
 
         uint256 lastIndex = assetList.length - 1;

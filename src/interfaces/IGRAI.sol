@@ -52,8 +52,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         address asset;
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
-        /// @notice When true, blocks `deposit` for this asset only (not buyback / distribute / claim).
-        bool paused;
         /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`amount - voted`), scaled by 1e18.
         uint256 accShare;
         /// @notice Tokens reserved for locker claims (excluded from redeem / resettle).
@@ -251,7 +249,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function assets(address asset)
         external
         view
-        returns (address asset_, uint32 id, bool paused, uint256 accShare, uint256 totalClaimable);
+        returns (address asset_, uint32 id, uint256 accShare, uint256 totalClaimable);
 
     function assetList(uint256 index) external view returns (address);
 
@@ -285,8 +283,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         external
         view
         returns (uint256 graiIn, uint256 amountOut);
-
-    function setAssetPause(address asset, bool paused) external;
 
     /// @notice Mint GRAI against deposited `asset`. When `totalDepositors > 0`, caller must be whitelisted (`isDepositor`). If `lock`, escrow the minted `graiOut` for dividends in the same tx.
     function deposit(address asset, uint256 amount, bool lock)
