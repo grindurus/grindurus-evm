@@ -10,7 +10,6 @@ interface IPriceOracleRouter {
     error PriceIdZero();
     error FeedDataZero();
     error AssetMismatch();
-    error FeedNotSet();
     error BadCall();
     error BadPrice();
     error RoundIncomplete();
@@ -18,8 +17,15 @@ interface IPriceOracleRouter {
     error BadExpo();
     error ExpoTooLarge();
 
+    enum FeedType {
+        None,
+        Custom,
+        Chainlink,
+        Pyth
+    }
+
     struct Feed {
-        uint8 feedType;
+        FeedType feedType;
         address asset;
         address source;
         bytes32 data;
@@ -28,16 +34,6 @@ interface IPriceOracleRouter {
         uint256 storedUpdatedAt;
         uint256 maxStaleness;
     }
-
-    event FeedAdd(address indexed asset, uint8 feedType);
-
-    function FEED_NONE() external view returns (uint8);
-
-    function FEED_CUSTOM() external view returns (uint8);
-
-    function FEED_CHAINLINK() external view returns (uint8);
-
-    function FEED_PYTH() external view returns (uint8);
 
     function setFeed(address asset, Feed calldata feed) external;
 

@@ -9,38 +9,31 @@ import {IPyth, PythStructs} from "./interfaces/IPyth.sol";
 /// @title PriceOracleRouter
 /// @notice Asset-keyed oracle router for Chainlink, Pyth, and custom on-chain price feeds.
 /// @dev Registers one feed per asset via `setFeed`; re-registration reverts. Each feed carries its own
-///      `maxStaleness` and must return a positive price with a fresh timestamp. Feed types: `1` custom,
-///      `2` Chainlink (`source` = aggregator), `3` Pyth (`source` = Pyth contract, `data` = price id).
+///      `maxStaleness` and must return a positive price with a fresh timestamp. Feed types: `Custom`,
+///      `Chainlink` (`source` = aggregator), `Pyth` (`source` = Pyth contract, `data` = price id).
 ///      Custom feed call shape is documented on `_custom`.
 contract PriceOracleRouter is IPriceOracleRouter {
-    uint8 public constant USD_DECIMALS = 6;
-
-    uint8 public constant FEED_NONE = 0;
-    uint8 public constant FEED_CUSTOM = 1;
-    uint8 public constant FEED_CHAINLINK = 2;
-    uint8 public constant FEED_PYTH = 3;
+    uint8 internal constant USD_DECIMALS = 6;
 
     mapping(address asset => Feed) public feeds;
 
     function setFeed(address asset, Feed calldata feed) public virtual {
-        if (feed.feedType == FEED_NONE) revert FeedTypeZero();
-        if (feed.feedType > FEED_PYTH) revert UnknownFeedType();
-        if (feeds[asset].feedType != FEED_NONE) revert FeedExists();
+        if (feed.feedType == FeedType.None) revert FeedTypeZero();
+        if (feeds[asset].feedType != FeedType.None) revert FeedExists();
         if (feed.source == address(0)) revert SourceZero();
         if (feed.maxStaleness == 0) revert StalenessZero();
-        if (feed.feedType == FEED_PYTH && feed.data == bytes32(0)) revert PriceIdZero();
-        if (feed.feedType == FEED_CUSTOM && feed.data == bytes32(0)) revert FeedDataZero();
+        if (feed.feedType == FeedType.Pyth && feed.data == bytes32(0)) revert PriceIdZero();
+        if (feed.feedType == FeedType.Custom && feed.data == bytes32(0)) revert FeedDataZero();
         if (feed.asset != asset) revert AssetMismatch();
         feeds[asset] = feed;
-        emit FeedAdd(asset, feed.feedType);
     }
 
     function getPrice(address asset) public view returns (uint256 price, uint8 priceDecimals) {
         Feed storage f = feeds[asset];
-        uint8 feedType = f.feedType;
-        if (feedType == FEED_CUSTOM) return _custom(f);
-        if (feedType == FEED_CHAINLINK) return _chainlink(f);
-        if (feedType == FEED_PYTH) return _pyth(f);
+        FeedType feedType = f.feedType;
+        if (feedType == FeedType.Custom) return _custom(f);
+        if (feedType == FeedType.Chainlink) return _chainlink(f);
+        if (feedType == FeedType.Pyth) return _pyth(f);
         revert UnknownFeedType();
     }
 
@@ -48,13 +41,13 @@ contract PriceOracleRouter is IPriceOracleRouter {
         if (amount == 0) return 0;
         (uint256 price, uint8 pdec) = getPrice(asset);
         uint8 adec = asset == address(0) ? 18 : IERC20Metadata(asset).decimals();
-        return (amount * price * (10 ** USD_DECIMALS)) / (10 ** adec) / (10 ** pdec);
+        return (amount * price * (10 ** USD_DECIMALS)) / (10 ** (adec + pdec));
     }
 
     /// @dev Custom feed: staticcall to `source` with selector `bytes4(data)` and `asset` as the only argument.
     ///
     /// Register via `setFeed`:
-    ///   feedType = FEED_CUSTOM (1)
+    ///   feedType = FeedType.Custom
     ///   source   = custom oracle contract address
     ///   data     = bytes32(functionSelector) — e.g. bytes32(IOracle.getPrice.selector)
     ///   asset    = address passed as the call argument (must equal the mapping key)
@@ -68,7 +61,7 @@ contract PriceOracleRouter is IPriceOracleRouter {
     ///
     /// Example registration:
     ///   setFeed(TOKEN, Feed({
-    ///       feedType: 1,
+    ///       feedType: FeedType.Custom,
     ///       asset: TOKEN,
     ///       source: address(customOracle),
     ///       data: bytes32(customOracle.getPrice.selector),
