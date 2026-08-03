@@ -17,7 +17,7 @@ contract MathPrecisionProbe is GRAIFixture {
     function test_AuctionPaymentProRataAtStart() public {
         vm.startPrank(admin);
         grai.setBribeAsset(address(usdc));
-        _setAssetConfig(address(weth), false);
+        _setAssetPause(address(weth), false);
         vm.stopPrank();
 
         // 2 WETH → 50% auction = 1 WETH @ mint-price 2000 GRAI.
@@ -47,10 +47,10 @@ contract MathPrecisionProbe is GRAIFixture {
         }
 
         vm.startPrank(admin);
-        _setAssetConfig(address(usdc), true);
+        _setAssetPause(address(usdc), true);
         _clearFeed(address(usdc)); // delist (paused + drained)
         _setChainlinkFeed(address(usdc), address(usdcFeed)); // re-list
-        _setAssetConfig(address(usdc), false);
+        _setAssetPause(address(usdc), false);
         vm.stopPrank();
 
         _deposit(bob, usdc, 100e6);

@@ -19,7 +19,7 @@ contract GRAILifecycleTest is GRAIFixture {
         grai.setGrinders(address(grinders));
         // Native ETH deposits / redeem basket (same ETH/USD feed as WETH).
         _setChainlinkFeed(address(0), address(wethFeed));
-        _setAssetConfig(address(0), false);
+        _setAssetPause(address(0), false);
         vm.stopPrank();
 
         // Extra USDC beyond the fixture's 1_000e6 Alice/Bob mints (Carol + yield payer).
@@ -173,6 +173,8 @@ contract GRAILifecycleTest is GRAIFixture {
     ////////////////////////////// HELPERS //////////////////////////////
 
     function _depositUsdc(address user, uint256 amount) internal {
+        vm.prank(admin);
+        grai.setDepositor(user, true);
         vm.startPrank(user);
         usdc.approve(address(grai), amount);
         grai.deposit(address(usdc), amount, false);
@@ -180,6 +182,8 @@ contract GRAILifecycleTest is GRAIFixture {
     }
 
     function _depositEth(address user, uint256 amount) internal {
+        vm.prank(admin);
+        grai.setDepositor(user, true);
         vm.prank(user);
         grai.deposit{value: amount}(address(0), amount, false);
     }

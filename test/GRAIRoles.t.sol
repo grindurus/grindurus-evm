@@ -99,25 +99,17 @@ contract GRAIRolesTest is Test {
         address asset = makeAddr("opsAsset");
         _setFeedAsOwner(asset, new MockAggregator(8, 1e8));
 
-        (, uint32 id,) = grai.assets(asset);
+        (, uint32 id,,,) = grai.assets(asset);
         assertEq(grai.assetList(id), asset);
     }
 
-    function test_OwnerCanSetAssetConfig() public {
+    function test_OwnerCanSetAssetPause() public {
         address asset = makeAddr("cfgAsset");
         _setFeedAsOwner(asset, new MockAggregator(8, 1e8));
 
-        _exec(
-            ownerMultisig,
-            ownerSigner,
-            address(grai),
-            abi.encodeCall(
-                grai.setAssetConfig,
-                (asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: true}))
-            )
-        );
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setAssetPause, (asset, true)));
 
-        (,, bool paused) = grai.assets(asset);
+        (,, bool paused,,) = grai.assets(asset);
         assertTrue(paused);
     }
 
@@ -265,10 +257,7 @@ contract GRAIRolesTest is Test {
             ownerMultisig,
             makeAddr("stranger"),
             address(grai),
-            abi.encodeCall(
-                grai.setAssetConfig,
-                (address(0), IGRAI.AssetConfig({asset: address(0), id: 0, paused: true}))
-            )
+            abi.encodeCall(grai.setAssetPause, (address(0), true))
         );
     }
 
@@ -291,7 +280,7 @@ contract GRAIRolesTest is Test {
 
     function _chainlinkFeed(address asset, address aggregator) internal pure returns (IPriceOracleRouter.Feed memory) {
         return IPriceOracleRouter.Feed({
-            feedType: 2,
+            feedType: IPriceOracleRouter.FeedType.Chainlink,
             asset: asset,
             source: aggregator,
             data: bytes32(0),

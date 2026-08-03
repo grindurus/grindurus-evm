@@ -53,8 +53,11 @@ abstract contract GRAIFixture is Test {
 
         _setChainlinkFeed(address(usdc), address(usdcFeed));
         _setChainlinkFeed(address(weth), address(wethFeed));
-        _setAssetConfig(address(usdc), false);
-        _setAssetConfig(address(weth), false);
+        _setAssetPause(address(usdc), false);
+        _setAssetPause(address(weth), false);
+        grai.setDepositor(alice, true);
+        grai.setDepositor(bob, true);
+        grai.setDepositor(admin, true);
         _registerTestCustodian();
         vm.stopPrank();
 
@@ -93,16 +96,16 @@ abstract contract GRAIFixture is Test {
         grai.setFeed(asset, _chainlinkFeed(asset, aggregator));
     }
 
-    function _setAssetConfig(address asset, bool paused) internal {
-        grai.setAssetConfig(asset, IGRAI.AssetConfig({asset: asset, id: 0, paused: paused}));
+    function _setAssetPause(address asset, bool paused) internal {
+        grai.setAssetPause(asset, paused);
     }
 
-    /// @dev Clearing a feed (FEED_NONE) delists the asset (must be paused with zero balance).
+    /// @dev Clearing a feed (FeedType.None) delists the asset (must be paused with zero balance).
     function _clearFeed(address asset) internal {
         grai.setFeed(
             asset,
             IPriceOracleRouter.Feed({
-                feedType: 0,
+                feedType: IPriceOracleRouter.FeedType.None,
                 asset: asset,
                 source: address(0),
                 data: bytes32(0),
@@ -118,7 +121,7 @@ abstract contract GRAIFixture is Test {
         grai.setFeed(
             asset,
             IPriceOracleRouter.Feed({
-                feedType: 3,
+                feedType: IPriceOracleRouter.FeedType.Pyth,
                 asset: asset,
                 source: pyth,
                 data: priceId,
@@ -132,7 +135,7 @@ abstract contract GRAIFixture is Test {
 
     function _chainlinkFeed(address asset, address aggregator) internal pure returns (IPriceOracleRouter.Feed memory) {
         return IPriceOracleRouter.Feed({
-            feedType: 2,
+            feedType: IPriceOracleRouter.FeedType.Chainlink,
             asset: asset,
             source: aggregator,
             data: bytes32(0),
@@ -185,6 +188,8 @@ abstract contract GRAIFixture is Test {
     }
 
     function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
+        vm.prank(admin);
+        grai.setDepositor(user, true);
         vm.startPrank(user);
         token.approve(address(grai), amount);
         (graiOut,) = grai.deposit(address(token), amount, false);
