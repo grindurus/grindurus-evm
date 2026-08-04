@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC1046} from "./IERC1046.sol";
 import {IPriceOracleRouter} from "./IPriceOracleRouter.sol";
+import {ITreasury} from "./ITreasury.sol";
 import {IWETH} from "./IWETH.sol";
 
 interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
@@ -18,7 +19,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Amount is zero or otherwise out of range (balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
     error EthTransferFailed();
-    error GrindersGraiMismatch();
+    error GraiMismatch();
     error ValueMismatch();
     error UnexpectedValue();
     error LiquidationQuorumNotMet();
@@ -37,6 +38,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     enum ConfigId {
         FULL,
         DISTRIBUTE_CUTS,
+        REVENUE_SHARE,
         CLAIM_TIP,
         BRIBE_PREMIUM,
         QUORUM,
@@ -52,7 +54,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         address asset;
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
-        /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`amount - voted`), scaled by 1e18.
+        /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`locked - voted`), scaled by 1e18.
         uint256 accShare;
         /// @notice Tokens reserved for locker claims (excluded from redeem / resettle).
         uint256 totalClaimable;
@@ -81,22 +83,26 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 yielded;
     }
 
-    /// @notice Per-user escrow: locked GRAI (dividends) and optional liquidation vote.
+    /// @notice Per-user escrow: locked GRAI (dividends), optional liquidation vote, and sticky referrer.
+    /// @dev Survives full unlock (`locked == 0`): `_removeLocker` only drops the `lockers` index so
+    ///      `referrer` is not wiped. Active locker ⟺ `locked > 0` (and present in `lockers`).
     struct Escrow {
         /// @notice The account this escrow belongs to (mirrors the `escrows` mapping key).
         address account;
-        /// @notice Index of this account in `lockers` while `amount` is non-zero.
+        /// @notice Index of this account in `lockers` while `locked` is non-zero.
         uint32 lockerId;
-        /// @notice Actively locked GRAI (dividend share; max voting capacity).
-        uint256 amount;
-        /// @notice GRAI counted toward liquidation quorum (≤ `amount`).
-        uint256 voted;
         /// @notice Timestamp of the latest `lock`.
         uint48 lockedAt;
-        /// @notice Timestamp of the latest `vote`.
-        uint48 votedAt;
+        /// @notice Actively locked GRAI (dividend share; max voting capacity).
+        uint256 locked;
+        /// @notice GRAI counted toward liquidation quorum (≤ `locked`).
+        uint256 voted;
         /// @notice Index of this account in `voters` while `voted` is non-zero.
         uint32 voterId;
+        /// @notice Timestamp of the latest `vote`.
+        uint48 votedAt;
+        /// @notice Affiliate who referred this locker; set once, kept across unlock/re-lock.
+        address referrer;
     }
 
     /// @notice Yield split, bribe premium, liquidation quorum, unlock fee, and timing.
@@ -107,6 +113,11 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 dividendCutBps;
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
+        /// @notice Slice of treasury yield income paid to referrers on `claim` (bps of yield, ≤ `treasuryCutBps`).
+        /// @dev On claim: `revenueShare = claimed * revenueShareBps / dividendCutBps` → referrer;
+        ///      `beneficiarShare - revenueShare` → `Treasury.beneficiar`
+        ///      (`beneficiarShare = claimed * treasuryCutBps / dividendCutBps`).
+        uint16 revenueShareBps;
         /// @notice Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
         uint16 claimTipBps;
         /// @notice Slope scale for dynamic bribe ask adj, in bps of book value per half-quorum of
@@ -166,6 +177,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 buybackCutBps,
             uint16 dividendCutBps,
             uint16 treasuryCutBps,
+            uint16 revenueShareBps,
             uint16 claimTipBps,
             uint16 bribePremiumBps,
             uint16 quorumBps,
@@ -176,7 +188,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint32 unlockPenaltyPeriod
         );
 
-    function treasury() external view returns (address);
+    function treasury() external view returns (ITreasury);
+
+    function owner() external view returns (address);
 
     function totalValue() external view returns (uint256);
 
@@ -206,13 +220,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         external
         view
         returns (
-            address account_,
+            address account,
             uint32 lockerId,
-            uint256 amount,
-            uint256 voted,
             uint48 lockedAt,
+            uint256 locked,
+            uint256 voted,
+            uint32 voterId,
             uint48 votedAt,
-            uint32 voterId
+            address referrer
         );
 
     function lockers(uint256 index) external view returns (address);
@@ -310,7 +325,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function lock(uint256 graiAmount) external;
 
     /// @notice Commit GRAI toward liquidation quorum. No prior `lock` required: locks any wallet
-    ///         shortfall first so `voted + graiAmount` ends ≤ locked `amount`.
+    ///         shortfall first so `voted + graiAmount` ends ≤ `locked`.
     function vote(uint256 graiAmount) external;
 
     /// @notice Accrue residual dividends and return `graiAmount` from the active lock to the wallet.
@@ -341,7 +356,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
     /// @notice Claim yield dividends for `asset` accrued to `locker`'s active lock; pays tip to
-    ///         `msg.sender`, remainder to `locker`. `type(uint256).max` claims the full accrued
+    ///         `msg.sender`, remainder to `locker`. Claim-time treasury income is split via
+    ///         `treasury.distribute`: `revenueShare` → sticky `referrer` (else beneficiar), remainder of
+    ///         the treasury slice → `Treasury.beneficiar`. `type(uint256).max` claims the full accrued
     ///         balance; otherwise `min(amount, claimable)`.
     function claim(address locker, address asset, uint256 amount) external returns (uint256 claimed);
 

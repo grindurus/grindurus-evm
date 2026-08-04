@@ -7,6 +7,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
+import {Treasury} from "../src/Treasury.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
@@ -121,6 +122,7 @@ contract GRAIRolesTest is Test {
             buybackCutBps: 5_000,
             dividendCutBps: 3_000,
             treasuryCutBps: 2_000,
+            revenueShareBps: 500,
             claimTipBps: 100,
             bribePremiumBps: 300,
             quorumBps: 5_000,
@@ -141,6 +143,7 @@ contract GRAIRolesTest is Test {
             uint16 buybackCutBps,
             uint16 dividendCutBps,
             uint16 treasuryCutBps,
+            uint16 revenueShareBps,
             uint16 claimTipBps,
             uint16 bribePremiumBps,
             uint16 quorum,
@@ -153,6 +156,7 @@ contract GRAIRolesTest is Test {
         assertEq(buybackCutBps, 5_000);
         assertEq(dividendCutBps, 3_000);
         assertEq(treasuryCutBps, 2_000);
+        assertEq(revenueShareBps, 500);
         assertEq(claimTipBps, 100);
         assertEq(bribePremiumBps, 300);
         assertEq(quorum, 5_000);
@@ -170,20 +174,23 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
         );
-        (,,, uint16 claimTipBps,,,,,,,) = grai.config();
+        (,,,, uint16 claimTipBps,,,,,,,) = grai.config();
         assertEq(claimTipBps, 50);
     }
 
     function test_OwnerCanSetTreasuryAndVaults() public {
-        address treasury = makeAddr("treasury");
+        Treasury nextImpl = new Treasury();
+        address nextTreasury = address(
+            new ERC1967Proxy(address(nextImpl), abi.encodeCall(Treasury.initialize, (address(grai))))
+        );
         MockAggregator ethFeed = new MockAggregator(8, 1000e8);
         _setFeedAsOwner(address(0), ethFeed);
 
-        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setTreasury, (treasury)));
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setTreasury, (nextTreasury)));
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setGrinders, (address(grinders))));
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setBribeAsset, (address(0))));
 
-        assertEq(grai.treasury(), treasury);
+        assertEq(address(grai.treasury()), nextTreasury);
         assertEq(address(grai.grinders()), address(grinders));
         assertEq(grai.bribeAsset(), address(0));
     }
@@ -309,10 +316,10 @@ contract GRAIRolesTest is Test {
 
     function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
         data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
-            | (uint256(cfg.claimTipBps) << 48) | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
-            | (uint256(cfg.unlockFeeBps) << 96) | (uint256(cfg.buybackPeriod) << 112)
-            | (uint256(cfg.liquidationPeriod) << 144) | (uint256(cfg.redeemPeriod) << 176)
-            | (uint256(cfg.unlockPenaltyPeriod) << 208);
+            | (uint256(cfg.revenueShareBps) << 48) | (uint256(cfg.claimTipBps) << 64) | (uint256(cfg.bribePremiumBps) << 80)
+            | (uint256(cfg.quorumBps) << 96) | (uint256(cfg.unlockFeeBps) << 112) | (uint256(cfg.buybackPeriod) << 128)
+            | (uint256(cfg.liquidationPeriod) << 160) | (uint256(cfg.redeemPeriod) << 192)
+            | (uint256(cfg.unlockPenaltyPeriod) << 224);
     }
 
     function _exec(MockMultisig multisig, address signer, address target, bytes memory data) internal {

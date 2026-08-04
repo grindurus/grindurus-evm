@@ -6,6 +6,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 
 import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
+import {Treasury} from "../src/Treasury.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {Custodian} from "../src/Custodian.sol";
 import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
@@ -24,6 +25,7 @@ abstract contract GRAIFixture is Test {
 
     Grinders grinders;
     GRAI grai;
+    Treasury treasury;
 
     MockERC20 usdc; // 6 decimals
     MockWETH weth; // 18 decimals
@@ -42,6 +44,18 @@ abstract contract GRAIFixture is Test {
         vm.startPrank(admin);
         address tokenAddr = _deployGraiToken();
         grai = GRAI(payable(tokenAddr));
+
+        Treasury treasuryImpl = new Treasury();
+        treasury = Treasury(
+            payable(
+                address(
+                    new ERC1967Proxy(
+                        address(treasuryImpl), abi.encodeCall(Treasury.initialize, (tokenAddr))
+                    )
+                )
+            )
+        );
+        grai.setTreasury(address(treasury));
 
         Grinders impl = new Grinders();
         bytes memory init = abi.encodeCall(Grinders.initialize, (admin, tokenAddr));
@@ -186,6 +200,7 @@ abstract contract GRAIFixture is Test {
             cfg.buybackCutBps,
             cfg.dividendCutBps,
             cfg.treasuryCutBps,
+            cfg.revenueShareBps,
             cfg.claimTipBps,
             cfg.bribePremiumBps,
             cfg.quorumBps,
@@ -205,10 +220,10 @@ abstract contract GRAIFixture is Test {
 
     function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
         data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
-            | (uint256(cfg.claimTipBps) << 48) | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
-            | (uint256(cfg.unlockFeeBps) << 96) | (uint256(cfg.buybackPeriod) << 112)
-            | (uint256(cfg.liquidationPeriod) << 144) | (uint256(cfg.redeemPeriod) << 176)
-            | (uint256(cfg.unlockPenaltyPeriod) << 208);
+            | (uint256(cfg.revenueShareBps) << 48) | (uint256(cfg.claimTipBps) << 64) | (uint256(cfg.bribePremiumBps) << 80)
+            | (uint256(cfg.quorumBps) << 96) | (uint256(cfg.unlockFeeBps) << 112) | (uint256(cfg.buybackPeriod) << 128)
+            | (uint256(cfg.liquidationPeriod) << 160) | (uint256(cfg.redeemPeriod) << 192)
+            | (uint256(cfg.unlockPenaltyPeriod) << 224);
     }
 
     /// @dev Buy from the open auction for `asset` as `buyer`, paying GRAI.

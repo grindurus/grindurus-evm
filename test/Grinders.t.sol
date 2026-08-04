@@ -40,11 +40,11 @@ contract GrindersTest is GRAIFixture {
         grinders.allocate(custodyWallet, address(usdc), 50e6);
 
         uint256 graiUsdcBefore = usdc.balanceOf(address(grai));
-        uint256 treasuryBefore = usdc.balanceOf(admin);
+        uint256 treasuryBefore = usdc.balanceOf(address(treasury));
         vm.prank(admin);
         grinders.distribute(custodyWallet, address(usdc), 20e6);
 
-        assertEq(usdc.balanceOf(admin) - treasuryBefore, 4e6); // 20% treasury
+        assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, 4e6); // 20% treasury
         assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 50% auction + 30% dividends → auction
         (,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
         assertEq(auctionRemaining, 16e6);

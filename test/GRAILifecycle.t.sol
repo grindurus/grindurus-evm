@@ -67,7 +67,7 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(grai.totalLocked(), supply);
 
         // ── 3. Protocol income → auction / dividend / treasury cuts ──
-        uint256 treasuryBefore = usdc.balanceOf(admin);
+        uint256 treasuryBefore = usdc.balanceOf(address(treasury));
         usdc.mint(address(this), YIELD_USDC);
         usdc.approve(address(grai), YIELD_USDC);
         grai.distribute(address(usdc), YIELD_USDC);
@@ -75,7 +75,7 @@ contract GRAILifecycleTest is GRAIFixture {
         IGRAI.Config memory cfg = _readConfig();
         uint256 dividendCut = (YIELD_USDC * cfg.dividendCutBps) / BPS;
         uint256 treasuryCut = (YIELD_USDC * cfg.treasuryCutBps) / BPS;
-        assertEq(usdc.balanceOf(admin) - treasuryBefore, treasuryCut, "treasury cut");
+        assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, treasuryCut, "treasury cut");
         assertGt(dividendCut, 0, "dividend cut");
 
         // ── 4. Everyone claims USDC dividends ──
@@ -199,8 +199,8 @@ contract GRAILifecycleTest is GRAIFixture {
     }
 
     function _redeemAll(address user) internal {
-        (,, uint256 amount,,,,) = grai.escrows(user);
+        (,,, uint256 locked,,,,) = grai.escrows(user);
         vm.prank(user);
-        grai.redeem(amount);
+        grai.redeem(locked);
     }
 }
