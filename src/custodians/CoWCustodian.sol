@@ -6,8 +6,11 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
-import {IGPv2Settlement} from "../interfaces/IGPv2Settlement.sol";
 import {Custodian} from "../Custodian.sol";
+
+interface IGPv2Settlement {
+    function setPreSignature(bytes calldata orderUid, bool signed) external;
+}
 
 /// @title Gnosis Protocol v2 Order Library (vendored from CoW Protocol)
 /// @dev https://github.com/cowprotocol/contracts/blob/main/src/contracts/libraries/GPv2Order.sol
