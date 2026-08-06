@@ -237,7 +237,7 @@ abstract contract GRAIFixture is Test {
         grai.setDepositor(user, true);
         vm.startPrank(user);
         token.approve(address(grai), amount);
-        (graiOut,) = grai.deposit(address(token), amount, false);
+        (graiOut,) = grai.deposit(address(token), amount, false, address(0));
         vm.stopPrank();
     }
 

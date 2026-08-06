@@ -177,7 +177,7 @@ contract GRAILifecycleTest is GRAIFixture {
         grai.setDepositor(user, true);
         vm.startPrank(user);
         usdc.approve(address(grai), amount);
-        grai.deposit(address(usdc), amount, false);
+        grai.deposit(address(usdc), amount, false, address(0));
         vm.stopPrank();
     }
 
@@ -185,7 +185,7 @@ contract GRAILifecycleTest is GRAIFixture {
         vm.prank(admin);
         grai.setDepositor(user, true);
         vm.prank(user);
-        grai.deposit{value: amount}(address(0), amount, false);
+        grai.deposit{value: amount}(address(0), amount, false, address(0));
     }
 
     function _lock(address user, uint256 amount) internal {
@@ -199,7 +199,7 @@ contract GRAILifecycleTest is GRAIFixture {
     }
 
     function _redeemAll(address user) internal {
-        (,,, uint256 locked,,,,) = grai.escrows(user);
+        (,,, uint256 locked,,,) = grai.escrows(user);
         vm.prank(user);
         grai.redeem(locked);
     }

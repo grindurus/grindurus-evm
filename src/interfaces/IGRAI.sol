@@ -33,6 +33,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidCuts();
     error InvalidRange(uint256 fromId, uint256 toId);
     error NotDepositor();
+    error TreasuryNotEmpty();
 
     /// @notice Field selector for `setConfig`. `FULL` packs the whole `Config` slot in `data`.
     enum ConfigId {
@@ -83,9 +84,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 yielded;
     }
 
-    /// @notice Per-user escrow: locked GRAI (dividends), optional liquidation vote, and sticky referrer.
-    /// @dev Survives full unlock (`locked == 0`): `_removeLocker` only drops the `lockers` index so
-    ///      `referrer` is not wiped. Active locker ⟺ `locked > 0` (and present in `lockers`).
+    /// @notice Per-user escrow: locked GRAI (dividends) and optional liquidation vote.
+    /// @dev Survives full unlock (`locked == 0`): `_removeLocker` only drops the `lockers` index.
+    ///      Active locker ⟺ `locked > 0` (and present in `lockers`). Sticky referrer lives on Treasury.
     struct Escrow {
         /// @notice The account this escrow belongs to (mirrors the `escrows` mapping key).
         address account;
@@ -101,8 +102,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 voterId;
         /// @notice Timestamp of the latest `vote`.
         uint48 votedAt;
-        /// @notice Affiliate who referred this locker; set once, kept across unlock/re-lock.
-        address referrer;
     }
 
     /// @notice Yield split, bribe premium, liquidation quorum, unlock fee, and timing.
@@ -114,9 +113,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
         /// @notice Slice of treasury yield income paid to referrers on `claim` (bps of yield, ≤ `treasuryCutBps`).
-        /// @dev On claim: `revenueShare = claimed * revenueShareBps / dividendCutBps` → referrer;
-        ///      `beneficiarShare - revenueShare` → `Treasury.beneficiar`
-        ///      (`beneficiarShare = claimed * treasuryCutBps / dividendCutBps`).
+        /// @dev On claim: `revenueShare = claimed * revenueShareBps / dividendCutBps` → referrers;
+        ///      `netProfitShare - allocated` → `Treasury.beneficiar`
+        ///      (`netProfitShare = claimed * treasuryCutBps / dividendCutBps`).
         uint16 revenueShareBps;
         /// @notice Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
         uint16 claimTipBps;
@@ -190,6 +189,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function treasury() external view returns (ITreasury);
 
+    /// @notice Protocol fee recipient on the linked `Treasury` (`treasury.beneficiar()`).
+    function beneficiar() external view returns (address);
+
     function owner() external view returns (address);
 
     function totalValue() external view returns (uint256);
@@ -226,21 +228,20 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint256 locked,
             uint256 voted,
             uint32 voterId,
-            uint48 votedAt,
-            address referrer
+            uint48 votedAt
         );
 
     function lockers(uint256 index) external view returns (address);
 
-    /// @notice Accounts with a non-zero lock escrow in `[fromId, toId)`.
-    function getLockers(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList);
+    /// @notice Escrows for `lockers` (`voters_ == false`) or `voters` (`true`) in `[fromId, toId)`.
+    function getEscrows(bool voters_, uint256 fromId, uint256 toId)
+        external
+        view
+        returns (Escrow[] memory escrowList);
 
     function totalLocked() external view returns (uint256);
 
     function voters(uint256 index) external view returns (address);
-
-    /// @notice Accounts with an open liquidation vote (`voted > 0`) in `[fromId, toId)`.
-    function getVoters(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList);
 
     /// @notice Redeem / resettle basket in `assetList` order: every listed asset and its
     ///         `_redeemable` balance (contract balance minus `totalClaimable`; may be 0).
@@ -299,8 +300,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (uint256 graiIn, uint256 amountOut);
 
-    /// @notice Mint GRAI against deposited `asset`. When `totalDepositors > 0`, caller must be whitelisted (`isDepositor`). If `lock`, escrow the minted `graiOut` for dividends in the same tx.
-    function deposit(address asset, uint256 amount, bool lock)
+    /// @notice Mint GRAI against deposited `asset`. When `totalDepositors > 0`, caller must be whitelisted (`isDepositor`). If `lock`, escrow the minted `graiOut` for dividends in the same tx. Sticky affiliate bind via `referrer` (once; `address(0)` → self).
+    function deposit(address asset, uint256 amount, bool lock, address referrer)
         external
         payable
         returns (uint256 graiOut, uint256 depositValue);
@@ -357,8 +358,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Claim yield dividends for `asset` accrued to `locker`'s active lock; pays tip to
     ///         `msg.sender`, remainder to `locker`. Claim-time treasury income is split via
-    ///         `treasury.distribute`: `revenueShare` → sticky `referrer` (else beneficiar), remainder of
-    ///         the treasury slice → `Treasury.beneficiar`. `type(uint256).max` claims the full accrued
+    ///         `treasury.distribute(asset, locker, netProfitShare, revenueShare)` resolves
+    ///         sticky referrers and pays them; remainder of net profit → `beneficiar`.
+    ///         `type(uint256).max` claims the full accrued
     ///         balance; otherwise `min(amount, claimable)`.
     function claim(address locker, address asset, uint256 amount) external returns (uint256 claimed);
 

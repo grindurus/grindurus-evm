@@ -42,8 +42,7 @@ contract GRAI is
     ///         yield pulled into GRAI via `distribute`.
     IGrinders public grinders;
 
-    /// @notice Linked Treasury: protocol fee sink for `treasuryCut` from `distribute` / bribes,
-    ///         unlock penalties, and rejected/stray ETH fallbacks.
+    /// @notice Linked Treasury: fee sink, sticky referrer NFTs, and claim-time affiliate / beneficiar split.
     ITreasury public treasury;
 
     /// @notice Listed assets eligible for deposit, yield distribution, and liquidation redemption.
@@ -58,7 +57,7 @@ contract GRAI is
     mapping(address asset => DutchAuction) public auctions;
 
     /// @notice Accounts with `escrows[locker].locked > 0`; `lockerId` is the index here.
-    /// @dev Full unlock clears list membership only — escrow storage (e.g. `referrer`) is kept.
+    /// @dev Full unlock clears list membership only — escrow storage is kept.
     address[] public lockers;
 
     /// @notice Accounts with an open liquidation vote; `escrows[locker].voterId` is the index here.
@@ -177,20 +176,24 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev `id` selects the field(s); `data` is the packed value(s). `ConfigId.FULL` packs the whole slot.
+    ///      Cut / revenue-share changes require empty `treasury` so claim math cannot diverge from deposited net profit.
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/resettle clocks; freeze both windows for the whole liquidation.
         _requireNotLiquidation();
 
         Config memory cfg = config;
         if (id == ConfigId.FULL) {
+            _requireTreasuryEmpty();
             cfg = _unpackConfig(data);
         } else if (id == ConfigId.DISTRIBUTE_CUTS) {
+            _requireTreasuryEmpty();
             // Narrowing is intentional: each ConfigId writes a fixed-width field window.
             // forge-lint: disable-start(unsafe-typecast)
             cfg.buybackCutBps = uint16(data);
             cfg.dividendCutBps = uint16(data >> 16);
             cfg.treasuryCutBps = uint16(data >> 32);
         } else if (id == ConfigId.REVENUE_SHARE) {
+            _requireTreasuryEmpty();
             cfg.revenueShareBps = uint16(data);
         } else if (id == ConfigId.CLAIM_TIP) {
             cfg.claimTipBps = uint16(data);
@@ -251,6 +254,15 @@ contract GRAI is
     //////////////////// GETTERS ////////////////////
 
     /// @inheritdoc IGRAI
+    function beneficiar() public view returns (address) {
+        try treasury.beneficiar() returns (address beneficiar_) {
+            return beneficiar_;
+        } catch {
+            return address(treasury);
+        }
+    }
+
+    /// @inheritdoc IGRAI
     function getAssets() external view returns (DutchAuction[] memory list) {
         list = new DutchAuction[](assetList.length);
         for (uint256 i; i < assetList.length;) {
@@ -266,25 +278,19 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    function getLockers(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList) {
+    /// @dev `voters_ == false` → `lockers`; `true` → `voters`.
+    function getEscrows(
+        bool voters_, 
+        uint256 fromId,
+        uint256 toId
+    ) external view returns (Escrow[] memory escrowList) {
+        address[] storage accounts = voters_ ? voters : lockers;
         if (fromId >= toId) revert InvalidRange(fromId, toId);
-        if (toId > lockers.length) toId = lockers.length;
+        if (toId > accounts.length) toId = accounts.length;
         uint256 len = toId - fromId;
         escrowList = new Escrow[](len);
         for (uint256 i; i < len;) {
-            escrowList[i] = escrows[lockers[fromId + i]];
-            unchecked { ++i; }
-        }
-    }
-
-    /// @inheritdoc IGRAI
-    function getVoters(uint256 fromId, uint256 toId) external view returns (Escrow[] memory escrowList) {
-        if (fromId >= toId) revert InvalidRange(fromId, toId);
-        if (toId > voters.length) toId = voters.length;
-        uint256 len = toId - fromId;
-        escrowList = new Escrow[](len);
-        for (uint256 i; i < len;) {
-            escrowList[i] = escrows[voters[fromId + i]];
+            escrowList[i] = escrows[accounts[fromId + i]];
             unchecked { ++i; }
         }
     }
@@ -347,7 +353,12 @@ contract GRAI is
     //////////////////// DEPOSIT ////////////////////
 
     /// @inheritdoc IGRAI
-    function deposit(address asset, uint256 amount, bool lock_) public payable returns (uint256 graiOut, uint256 value) {
+    function deposit(
+        address asset,
+        uint256 amount,
+        bool lock_,
+        address referrer
+    ) public payable returns (uint256 graiOut, uint256 value) {
         _requireNotLiquidation();
         _requireNotGRAI(asset);
         _requireListed(asset);
@@ -362,6 +373,7 @@ contract GRAI is
 
         totalValue += value;
         _mint(msg.sender, graiOut);
+        try treasury.mint(msg.sender, referrer) {} catch {}
         if (lock_) lock(graiOut);
         if (refund > 0) _sendEth(msg.sender, refund);
         emit Deposit(msg.sender, graiOut, asset, received, value);
@@ -391,7 +403,7 @@ contract GRAI is
         if (graiAmount > balanceOf(locker)) revert InvalidAmount();
         _accrueDividends(locker);
         totalLocked += graiAmount;
-        if (entry.locked == 0) _addLocker(locker);
+        if (entry.locked == 0) _addAccount(locker, false);
         entry.locked += graiAmount;
         entry.lockedAt = uint48(block.timestamp);
         _syncDividendDebts(locker);
@@ -423,7 +435,7 @@ contract GRAI is
         _syncDividendDebts(account);
 
         if (unlockAmount > 0) _transfer(address(this), account, unlockAmount);
-        if (entry.locked == 0) _removeLocker(account);
+        if (entry.locked == 0) _removeAccount(account, false);
         emit Unlock(account, graiAmount, totalLocked);
     }
 
@@ -467,12 +479,11 @@ contract GRAI is
     ///      Pays tip to `msg.sender`, remainder to `locker` (locker claim is not cut for affiliates).
     ///
     ///      Claim-time treasury income (allocation key = `claimed` share of the dividend slice):
-    ///      `beneficiarShare = claimed * treasuryCutBps / dividendCutBps` (full treasury slice),
-    ///      `revenueShare   = claimed * revenueShareBps / dividendCutBps` (≤ that slice).
-    ///      On full dividend claim, Σ ≈ `R * treasuryCutBps / BPS` and `R * revenueShareBps / BPS`.
-    ///      `treasury.distribute` pays `revenueShare` → sticky `referrer` (else folds into beneficiar)
-    ///      and `beneficiarShare - revenueShare` → `Treasury.beneficiar`. Wrapped in try/catch so a
-    ///      treasury without `distribute` (or a reverting one) does not block locker/tip payouts.
+    ///      `netProfitShare = claimed * treasuryCutBps / dividendCutBps` (full treasury / net-profit slice),
+    ///      `revenueShare   = claimed * revenueShareBps / dividendCutBps` (≤ that slice → affiliates).
+    ///      `treasury.distribute` pays referrers from `revenueShareInfo`, remainder of `netProfitShare`
+    ///      → `Treasury.beneficiar`. Wrapped in
+    ///      try/catch so a missing/reverting treasury does not block locker/tip payouts.
     function claim(address locker, address asset, uint256 amount) public returns (uint256 claimed) {
         _requireNotGRAI(asset);
         _accrueDividend(locker, asset);
@@ -484,14 +495,9 @@ contract GRAI is
         uint256 tip = (claimed * config.claimTipBps) / BPS;
         uint256 toLocker = claimed - tip;
         // Allocation key only; economic base = treasury income (see @dev above).
-        uint256 beneficiarShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
+        uint256 netProfitShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
         uint256 revenueShare = (claimed * config.revenueShareBps) / config.dividendCutBps;
-        // Optional treasury hook: missing/reverting `distribute` must not brick `claim`.
-        if (beneficiarShare > 0) {
-            try treasury.distribute(
-                asset, escrows[locker].referrer, revenueShare, beneficiarShare - revenueShare
-            ) {} catch {}
-        }
+        try treasury.distribute(asset, locker, netProfitShare, revenueShare) {} catch {}
         if (toLocker > 0) _withdraw(locker, asset, toLocker);
         if (tip > 0) _withdraw(msg.sender, asset, tip);
         emit Claim(locker, asset, claimed);
@@ -610,7 +616,7 @@ contract GRAI is
         if (entry.locked < needLocked) lock(needLocked - entry.locked);
 
         _accrueDividends(voter);
-        if (entry.voted == 0) _addVoter(voter);
+        if (entry.voted == 0) _addAccount(voter, true);
         totalVoted += graiAmount;
         entry.voted += graiAmount;
         entry.votedAt = uint48(block.timestamp);
@@ -650,10 +656,10 @@ contract GRAI is
         _syncDividendDebts(voter);
         _transfer(address(this), briber, graiAmount);
         (uint256 received, uint256 refund) = _pay(briber, address(this), bribeAsset, bribeAmount, false);
-        
+
         if (received != bribeAmount) revert InvalidAmount();
-        if (entry.voted == 0) _removeVoter(voter);
-        if (entry.locked == 0) _removeLocker(voter);
+        if (entry.voted == 0) _removeAccount(voter, true);
+        if (entry.locked == 0) _removeAccount(voter, false);
 
         uint256 cutPool;
         if (premium > 0) {
@@ -772,7 +778,7 @@ contract GRAI is
             _clampVote(holder);
             _syncDividendDebts(holder);
             _burn(address(this), escrowBurn);
-            if (entry.locked == 0) _removeLocker(holder);
+            if (entry.locked == 0) _removeAccount(holder, false);
         }
         totalValue -= value;
 
@@ -893,6 +899,19 @@ contract GRAI is
     function _requireGraiMatch(address target) internal view {
         if (target == address(0)) revert ZeroAddress();
         if (address(ITreasury(target).grai()) != address(this)) revert GraiMismatch();
+    }
+
+    /// @dev Cut / revenue-share config must not change while net profit is still sitting in `treasury`.
+    function _requireTreasuryEmpty() internal view {
+        address t = address(treasury);
+        if (t.balance != 0) revert TreasuryNotEmpty();
+        uint256 len = assetList.length;
+        for (uint256 i; i < len;) {
+            if (IERC20(assetList[i]).balanceOf(t) != 0) revert TreasuryNotEmpty();
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     function _requireNotZeroAmount(uint256 amount) internal pure {
@@ -1066,47 +1085,40 @@ contract GRAI is
         emit AssetUpdate(asset, false);
     }
 
-    function _addLocker(address account) internal {
-        escrows[account].account = account;
-        escrows[account].lockerId = uint32(lockers.length);
-        lockers.push(account);
-    }
-
-    function _removeLocker(address account) internal {
-        _clampVote(account);
-        uint256 index = escrows[account].lockerId;
-        if (index >= lockers.length || lockers[index] != account) return;
-        uint256 lastIndex = lockers.length - 1;
-        if (index != lastIndex) {
-            address moved = lockers[lastIndex];
-            lockers[index] = moved;
-            // lockers length / index always fit uint32 in practice
+    function _addAccount(address account, bool asVoter) internal {
+        Escrow storage e = escrows[account];
+        if (asVoter) {
             // forge-lint: disable-next-line(unsafe-typecast)
-            escrows[moved].lockerId = uint32(index);
-        }
-        lockers.pop();
-        // Keep escrow storage (incl. `referrer`); only clear list membership.
-        escrows[account].lockerId = 0;
-    }
-
-    function _addVoter(address voter) internal {
-        escrows[voter].voterId = uint32(voters.length);
-        voters.push(voter);
-    }
-
-    function _removeVoter(address voter) internal {
-        uint256 index = escrows[voter].voterId;
-        if (index >= voters.length || voters[index] != voter) return;
-        uint256 lastIndex = voters.length - 1;
-        if (index != lastIndex) {
-            address moved = voters[lastIndex];
-            voters[index] = moved;
-            // voters length / index always fit uint32 in practice
+            e.voterId = uint32(voters.length);
+            voters.push(account);
+        } else {
+            e.account = account;
             // forge-lint: disable-next-line(unsafe-typecast)
-            escrows[moved].voterId = uint32(index);
+            e.lockerId = uint32(lockers.length);
+            lockers.push(account);
         }
-        voters.pop();
-        escrows[voter].voterId = 0;
+    }
+
+    function _removeAccount(address account, bool asVoter) internal {
+        if (!asVoter) _clampVote(account);
+        Escrow storage e = escrows[account];
+        address[] storage list = asVoter ? voters : lockers;
+        uint256 index = asVoter ? e.voterId : e.lockerId;
+        if (index >= list.length || list[index] != account) return;
+        uint256 lastIndex = list.length - 1;
+        if (index != lastIndex) {
+            address moved = list[lastIndex];
+            list[index] = moved;
+            // list length / index always fit uint32 in practice
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint32 id = uint32(index);
+            if (asVoter) escrows[moved].voterId = id;
+            else escrows[moved].lockerId = id;
+        }
+        list.pop();
+        // Keep escrow storage; only clear list membership.
+        if (asVoter) e.voterId = 0;
+        else e.lockerId = 0;
     }
 
     /// @dev Ensure `escrows[account].voted` never exceeds `locked` after reductions.
@@ -1118,7 +1130,7 @@ contract GRAI is
         if (voted <= locked) return;
         totalVoted -= voted - locked;
         entry.voted = locked;
-        if (locked == 0) _removeVoter(account);
+        if (locked == 0) _removeAccount(account, true);
     }
 
     /// @dev Pulls `amount` from `from` to `to` and returns tokens actually credited (FoT-safe for ERC20)
@@ -1134,7 +1146,7 @@ contract GRAI is
             if (toRefund && refund > 0) _sendEth(msg.sender, refund);
             paid = amount;
         } else {
-            if (msg.value > 0) _sendEth(address(treasury), msg.value);
+            if (msg.value > 0) _sendEth(beneficiar(), msg.value);
             uint256 before = IERC20(asset).balanceOf(to);
             IERC20(asset).safeTransferFrom(from, to, amount);
             paid = IERC20(asset).balanceOf(to) - before;
@@ -1147,7 +1159,7 @@ contract GRAI is
             try weth.deposit{value: amount}() {
                 weth.safeTransfer(to, amount);
             } catch {
-                (bool treasuryOk,) = payable(address(treasury)).call{value: amount}("");
+                (bool treasuryOk,) = payable(beneficiar()).call{value: amount}("");
                 if (!treasuryOk) revert EthTransferFailed();
             }
         }
