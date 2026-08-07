@@ -43,8 +43,7 @@ bribe(voter)               [permissionless]
 | Contract | Role |
 |----------|------|
 | `GRAI` | UUPS ERC20 fund share + oracle router + auctions + lock/vote/dividends + liquidation. Implements [ERC-1046](https://eips.ethereum.org/EIPS/eip-1046). |
-| `Grinders` | UUPS ERC-721 **Grinders Custodians** collection, custodian proxy wallets, `allocate` / `deallocate`. On-chain NFT art via inlined `GrinderArt`. |
-| `GrinderArt` | Internal Solidity library (pixel SVG/JSON). Compiled into `Grinders` — **no separate deploy / DELEGATECALL**. |
+| `Grinders` | UUPS ERC-721 **Grinders Custodians** collection, custodian proxy wallets, `allocate` / `deallocate`. On-chain NFT art via embedded `GrinderArt` library. |
 | `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
 | `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
 | `PriceOracleRouter` | Base of `GRAI`. Chainlink / Pyth / custom feeds per asset. |
@@ -77,8 +76,8 @@ return a different token/size after swaps; there is no on-chain allocate ledger)
 ```
 initialize(admin, weth)
    ↓
-setConfig(ConfigId, data)   // patch one field or ConfigId.FULL packed slot
-setFeed(asset, feed) + setAssetConfig(paused)   // list asset
+setConfig(ConfigId, data)   // patch knobs; yield cuts fixed at initialize
+setFeed(asset, feed)                           // list asset (`Feed.paused` on struct)
 setBribeAsset(usdc)
 setGrinders(grinders)
    ↓
@@ -106,7 +105,7 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
 - **deposit:** `graiOut = depositValue * totalSupply / totalValue` when book is live; bootstrap mint
   when `totalValue == 0` is `graiOut = depositValue` (1 GRAI per $1). Optional `lock` escrows minted
   GRAI in the same tx. `paused` blocks deposits only (not buyback / distribute / claim)
-- **lock / claim:** only **unvoted** locked GRAI (`escrow.amount − voted`) earns listed-asset dividends
+- **lock / claim:** only **unvoted** locked GRAI (`escrow.locked − voted`) earns listed-asset dividends
   from `dividendCutBps`; `claim` / `claimAll` (and `previewClaim` / `previewClaimAll`) pay accrued
   dividends to the holder — **allowed while liquidation is open** (pays only the `totalClaimable`
   reserve, excluded from redeem / resettle). If `totalLocked == totalVoted` (no eligible base), the
@@ -158,10 +157,9 @@ management is `onlyOwner` — there is no separate oracle owner.
 
 - `setConfig` — cuts, quorum, auction/liquidation/redeem/unlock timing (blocked while liquidation open)
 - `setGrinders` — wire the Grinders yield pool (validates `grinders.grai() == this`)
-- `setTreasury` — protocol profit recipient
+- `setTreasury` — protocol profit recipient (`Treasury` contract)
 - `setBribeAsset` — bribe payment asset (must have a feed; non-FoT)
-- `setFeed` — set a price feed (**lists** the asset); clearing it (`feedType = FEED_NONE`) **delists** it
-- `setAssetConfig` — per-asset `paused` flag only
+- `setFeed` — list / delist / pause; while paused, may fully replace the feed; while unpaused, only `paused` changes
 - `liquidate` — 2-of-2 limb (toggle `confirmed` or open with quorum)
 - `_authorizeUpgrade` — UUPS implementation swap
 
@@ -187,11 +185,12 @@ Permissionless (after windows):
 - `Grinders.liquidate` / `Grinders.liquidate(fromId, toId)` while GRAI liquidation is open
 - `Grinders.deallocate` — from the custodian
 - views: `previewDeposit`, `previewBuyback`, `previewUnlock`, `previewClaim`, `previewClaimAll`,
-  `previewBribe`, `previewRedeem`, `hasQuorum`, `confirmed`, `getAssets`, `getLockers`, `getVoters`,
+  `previewBribe`, `previewRedeem`, `hasQuorum`, `confirmed`, `getAssets`, `getEscrows`,
   `tokenURI`
 
-On deploy, `initialize(admin, weth)` sets `owner = admin`, `treasury = admin`, and points
-`grinders` at the contract itself until wired. For production, hand off ownership to a multisig:
+On deploy, `initialize(admin, weth)` sets `owner = admin`, `treasury = admin` temporarily; scripts then
+deploy `Treasury` and `setTreasury`. `grinders` points at the contract itself until wired. For production,
+hand off ownership to a multisig:
 
 ```solidity
 // Deployer proposes; multisig must accept (Ownable2Step) — both contracts
@@ -216,7 +215,7 @@ forge fmt
 CREATE3 (Nick's CREATE2 factory + fixed Solmate proxy) places **four** contracts at deterministic
 addresses — `GRAI` impl + ERC-1967 proxy and `Grinders` impl + ERC-1967 proxy — then wires
 `GRAI.setGrinders(grinders)`. Addresses depend only on the salt tag, not on admin / WETH / bytecode.
-`GrinderArt` is inlined into `Grinders` (no fifth deploy).
+`GrinderArt` library lives in `Grinders.sol` (inlined, no separate deploy).
 
 | Script | Purpose |
 |--------|---------|
@@ -255,32 +254,25 @@ grai.setFeed(USDC, IPriceOracleRouter.Feed({
     feedType: 2, // FEED_CHAINLINK
     asset: USDC,
     source: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6, // USDC/USD aggregator
+    decimals: 0,
     data: bytes32(0),
-    decimals: 0,          // read from the aggregator
+          // read from the aggregator
     storedPrice: 0,
     storedUpdatedAt: 0,
     maxStaleness: 1 hours
 }));
-grai.setAssetConfig(USDC, IGRAI.AssetConfig({ asset: USDC, id: 0, paused: false }));
 
-// Optional retarget — owner. `ConfigId.FULL` packs the whole Config slot; or patch one field
-// (buybackPeriod must stay >= 7 days)
-grai.setConfig(
-    IGRAI.ConfigId.FULL,
-    /* packed: */ uint256(5_000) | (uint256(3_000) << 16) | (uint256(2_000) << 32) | (uint256(100) << 48)
-        | (uint256(200) << 64) | (uint256(6_667) << 80) | (uint256(1_000) << 96)
-        | (uint256(uint32(7 days)) << 112) | (uint256(uint32(24 hours)) << 144)
-        | (uint256(uint32(7 days)) << 176) | (uint256(uint32(24 hours)) << 208)
-);
-// e.g. tip only: grai.setConfig(IGRAI.ConfigId.CLAIM_TIP, 100);
+// Optional retarget — owner. Yield cuts are fixed at initialize; patch knobs via dedicated ids.
+grai.setConfig(IGRAI.ConfigId.CLAIM_TIP, 100);
+grai.setConfig(IGRAI.ConfigId.REVENUE_SHARE, 500);
 
 // Pyth (source = per-network Pyth contract, data = shared price id)
 grai.setFeed(WETH, IPriceOracleRouter.Feed({
     feedType: 3, // FEED_PYTH
     asset: WETH,
     source: 0x4305FB66699C3B2702D4d05CF36551390A4c69C6, // Ethereum Pyth
-    data: 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH/USD price id
     decimals: 0,          // derived from Pyth expo
+    data: 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH/USD price id
     storedPrice: 0,
     storedUpdatedAt: 0,
     maxStaleness: 1 hours
@@ -291,8 +283,10 @@ grai.setFeed(address(0), IPriceOracleRouter.Feed({
     feedType: 2,
     asset: address(0),
     source: 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, // ETH/USD aggregator
-    data: bytes32(0),
     decimals: 0,
+    data: bytes32(0),
+
+    paused: false,
     storedPrice: 0,
     storedUpdatedAt: 0,
     maxStaleness: 1 hours
@@ -300,9 +294,11 @@ grai.setFeed(address(0), IPriceOracleRouter.Feed({
 // deposit ETH: grai.deposit{value: 1 ether}(address(0), 1 ether, false);
 ```
 
-`cfg.asset` and `cfg.id` in `setAssetConfig` are ignored (the `asset` param and internal index
-are authoritative). To **delist** an asset, pause it, drain its balance, then
-`setFeed(asset, feed)` with `feedType = FEED_NONE` (0).
+To **change** a feed: `setFeed` with `paused: true`, then `setFeed` again with the new
+oracle fields (full replace while paused; may set `paused: false` in the same call).
+
+To **delist** an asset, `setFeed` with `paused: true`, drain its balance, then
+`setFeed(asset, feed)` with `feedType = FeedType.NONE` (0).
 
 Register custodian kinds on Grinders (owner), then mint custodian NFTs:
 
@@ -379,8 +375,9 @@ grai.setFeed(WETH, IPriceOracleRouter.Feed({
     feedType: 3, // FEED_PYTH
     asset: WETH,
     source: 0x4305FB66699C3B2702D4d05CF36551390A4c69C6, // Ethereum Pyth contract
-    data: 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH/USD price id
     decimals: 0,
+    data: 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace, // ETH/USD price id
+    paused: false,
     storedPrice: 0,
     storedUpdatedAt: 0,
     maxStaleness: 1 hours
@@ -418,7 +415,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 | USDT/USD | `0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b` |
 | ARB/USD  | `0x3fa4252848f9f0a1480be62745a4629d9eb1322aebab8a791e344b3b9c1adcf5` |
 
-### Common USDC token addresses (for `setFeed` / `setAssetConfig`)
+### Common USDC token addresses (for `setFeed`)
 
 | Network | USDC address |
 |---------|--------------|
@@ -430,7 +427,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 ## Production notes
 
 - Hold GRAI + Grinders ownership behind a multisig / timelock (`Ownable2Step` on both):
-  - **owner** — asset ops, wiring, upgrades (`setFeed`, `setAssetConfig`, `liquidate` /
+  - **owner** — asset ops, wiring, upgrades (`setFeed`, `liquidate` /
     `confirmed`, `setConfig` / `setGrinders` / `setTreasury` / `setBribeAsset`, UUPS)
   - **`resettle`** — permissionless after redeem window (restarts the fund)
 - On L2s (Arbitrum, Base, Optimism), additionally check the Chainlink **L2 Sequencer Uptime
@@ -459,5 +456,5 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 
 ## License
 
-- Core protocol (`GRAI.sol`, `Grinders.sol`, `GrinderArt.sol`, `Custodian.sol`): [GPL-3.0](LICENSE)
+- Core protocol (`GRAI.sol`, `Grinders.sol`, `Custodian.sol`): [GPL-3.0](LICENSE)
 - Other files under [`src/`](src/): MIT (see SPDX headers)
