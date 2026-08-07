@@ -309,12 +309,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function distribute(address asset, uint256 yieldAmount) external payable;
 
     /// @notice Pro-rata asset amounts paid for burning wallet-held and/or locked GRAI.
+    ///         Denominator excludes orphan/dead GRAI on GRAI (`balanceOf(this) − totalLocked`).
     function previewRedeem(address holder, uint256 graiAmount)
         external
         view
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
-    /// @notice Burn wallet-held and/or locked GRAI for a pro-rata share of the liquidation basket.
+    /// @notice Burn wallet-held and/or locked GRAI for a pro-rata share of the liquidation basket
+    ///         (same orphan-excluding denominator as `previewRedeem`).
     function redeem(uint256 graiAmount) external;
 
     /// @notice Escrow wallet GRAI for dividend eligibility (optional if only voting — `vote` auto-locks).

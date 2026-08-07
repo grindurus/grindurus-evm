@@ -439,10 +439,10 @@ contract GRAI is
         uint256 graiAmount
     ) public view returns (uint256 unlockAmount, uint256 penalty) {
         uint256 feeBps = config.unlockPenaltyBps;
-        uint256 graiDust = (BPS + feeBps - 1) / feeBps;
+        uint256 graiDust = feeBps > 0 ? (BPS + feeBps - 1) / feeBps : 0;
         if (graiAmount > escrows[account].locked) revert InvalidAmount();
         if (graiAmount < graiDust) revert InvalidAmount();
-        penalty = (graiAmount * feeBps) / BPS;
+        penalty = (graiAmount * feeBps + BPS - 1) / BPS;
         unlockAmount = graiAmount - penalty;
     }
 
@@ -730,15 +730,16 @@ contract GRAI is
     //////////////////// REDEEM ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Pays the frozen `previewRedeem` vector after burns/`totalValue` cut. `nonReentrant` is
-    ///      required: without it, an ETH/ERC777 callback mid-loop can nest `redeem` and skim later
-    ///      assets above that snapshot (and over-claim the callback asset itself).
+    /// @dev Pays the frozen `previewRedeem` vector after burns/`totalValue` cut (both use
+    ///      `_redeemSupply` = totalSupply − orphan). `nonReentrant` is required: without it, an
+    ///      ETH/ERC777 callback mid-loop can nest `redeem` and skim later assets above that
+    ///      snapshot (and over-claim the callback asset itself).
     function redeem(uint256 graiAmount) public nonReentrant {
         address holder = msg.sender;
         _requireLiquidation();
 
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
-        uint256 supply = totalSupply();
+        uint256 supply = _redeemSupply();
         uint256 value = supply > 0 ? (totalValue * graiAmount) / supply : 0;
         _requireNotZeroAmount(value);
 
@@ -781,7 +782,8 @@ contract GRAI is
         ///      `totalValue` while `previewRedeem` returns zero assets, forfeiting backing to
         ///      later claimants.
         if (block.timestamp < liquidationAt + config.liquidationPeriod) revert LiquidationDelay();
-        uint256 supply = totalSupply();
+        uint256 supply = _redeemSupply();
+        if (supply == 0) revert InvalidAmount();
         Escrow storage entry = escrows[holder];
         uint256 holderAmount = balanceOf(holder) + entry.locked;
         if (graiAmount == 0 || graiAmount > holderAmount) revert InvalidAmount();
@@ -888,11 +890,11 @@ contract GRAI is
         if (cfg.dividendCutBps > BPS) revert BpsTooHigh();
         if (cfg.treasuryCutBps > BPS) revert BpsTooHigh();
         if (cfg.revenueShareBps > cfg.treasuryCutBps) revert BpsTooHigh();
-        if (cfg.claimTipBps > 20_00) revert BpsTooHigh(); // max 20%
+        if (cfg.claimTipBps > 5_00) revert BpsTooHigh(); // max 5%
         if (2 * cfg.bribePremiumBps > BPS) revert BpsTooHigh();
         if (cfg.quorumBps >= BPS) revert BpsTooHigh();
-        if (cfg.unlockPenaltyBps > BPS) revert BpsTooHigh();
-        if (cfg.quorumBps == 0) revert UnexpectedValue();
+        if (cfg.unlockPenaltyBps > 10_00) revert BpsTooHigh();
+        if (cfg.quorumBps < 2) revert UnexpectedValue();
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) revert InvalidCuts();
         if (cfg.buybackPeriod < 7 days) revert BuybackPeriodTooShort();
@@ -916,6 +918,15 @@ contract GRAI is
         uint256 bal = _balance(asset);
         uint256 reserved = assets[asset].totalClaimable;
         return bal > reserved ? bal - reserved : 0;
+    }
+
+    /// @dev Share denominator for liquidation redeem: `totalSupply` minus orphan/dead GRAI on this
+    ///      contract (`balanceOf(this) - totalLocked`). Orphans cannot redeem while buyback is blocked.
+    function _redeemSupply() internal view returns (uint256) {
+        uint256 supply = totalSupply();
+        uint256 bal = balanceOf(address(this));
+        uint256 orphan = bal > totalLocked ? bal - totalLocked : 0;
+        return supply > orphan ? supply - orphan : 0;
     }
 
     /// @notice Linear Dutch amount: decays `maxAmount` → `minAmount` over `duration`; `elapsed` past
@@ -1017,7 +1028,6 @@ contract GRAI is
         uint256 index = assets[asset].id;
         if (index >= assetList.length || assetList[index] != asset) revert AssetUnknown();
         if (!feeds[asset].paused) revert NotPaused();
-        if (_balance(asset) > 0) revert AssetBalanceNonZero();
         if (assets[asset].totalClaimable > 0) revert AssetClaimableNonZero();
 
         uint256 lastIndex = assetList.length - 1;
