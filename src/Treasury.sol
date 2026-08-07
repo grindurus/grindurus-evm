@@ -18,6 +18,9 @@ import {IWETH} from "./interfaces/IWETH.sol";
 ///      from `revenueShareInfo`, unpaid levels + protocol slice → `beneficiar`.
 ///      UUPS; `mint`/`distribute` = only GRAI; upgrades = `GRAI.owner()`. Interact via ERC1967Proxy only.
 contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable, UUPSUpgradeable {
+    using Strings for uint256;
+    using Strings for address;
+
     uint16 public constant BPS = 100_00; // 100%
 
     /// @notice Linked GRAI that may call `mint` / `distribute`; upgrades authorized by its `owner`.
@@ -181,8 +184,23 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         // casting to 'uint160' is safe because tokenId is always uint256(uint160(locker)) from mint
         // forge-lint: disable-next-line(unsafe-typecast)
         address locker = address(uint160(tokenId));
+        address affiliate = ownerOf(tokenId);
         return string.concat(
-            "data:application/json;base64,", Base64.encode(bytes(TreasuryArt.tokenJson(tokenId, locker, ownerOf(tokenId))))
+            "data:application/json;base64,",
+            Base64.encode(
+                bytes(
+                    string.concat(
+                        '{"name":"Treasury 0x',
+                        tokenId.toString(),
+                        '","description":"Tradable claim on GRAI revenue share for a depositor locker.",',
+                        '"attributes":[{"trait_type":"Locker","value":"',
+                        locker.toHexString(),
+                        '"},{"trait_type":"Affiliate","value":"',
+                        affiliate.toHexString(),
+                        '"}]}'
+                    )
+                )
+            )
         );
     }
 
@@ -241,147 +259,5 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
     function _authorizeUpgrade(address) internal view override {
         _onlyGraiOwner();
-    }
-}
-
-/// @title On-chain 16×16 treasury-chest pixel art for affiliate NFTs.
-/// @dev 2 bits/px row-major: 0=bg, 1=body, 2=highlight, 3=gold accent. Seeded palettes per token.
-library TreasuryArt {
-    using Strings for uint256;
-    using Strings for address;
-
-    bytes private constant DIGITS = "0123456789";
-
-    /// @dev 16×16 vault / chest (64 bytes).
-    bytes private constant MASK =
-        hex"000000000055550001ffff4007aaaad01eaaaab47aaffaad6aa76aa96aa56aa9555555556aaaaaa96a9556a96a9ff6a96a9556a96aaaaaa95555555500000000";
-
-    bytes private constant BG = hex"0000000a06121a0a221408280e10200c1830184020201850";
-    bytes private constant BODY = hex"3a45583c48603e4a58364a682e3c502834482c38502a3040";
-    bytes private constant HI = hex"c8d0dce0e8f0d8e0e8f0f4fff0e8e0e8f0f0fff8e0f0fff0";
-    bytes private constant ACC = hex"ffd700ffb000e8a020ffc84dff8c00ffd400ffaa00e8c040";
-
-    function tokenJson(uint256 tokenId, address locker, address affiliate) internal view returns (string memory) {
-        uint256 s = uint256(keccak256(abi.encodePacked("grindurus.treasury", block.chainid, tokenId)));
-        return string.concat(
-            '{"name":"Grindurus Treasury #',
-            tokenId.toString(),
-            '","description":"Tradable claim on GRAI revenue share for a depositor locker.","image":"data:image/svg+xml;base64,',
-            Base64.encode(bytes(_svg(s))),
-            '","attributes":[{"trait_type":"Locker","value":"',
-            locker.toHexString(),
-            '"},{"trait_type":"Affiliate","value":"',
-            affiliate.toHexString(),
-            '"},{"trait_type":"Background","value":',
-            ((s >> 4) % 8).toString(),
-            '},{"trait_type":"Body","value":',
-            ((s >> 8) % 8).toString(),
-            '},{"trait_type":"Highlight","value":',
-            ((s >> 12) % 8).toString(),
-            '},{"trait_type":"Accent","value":',
-            ((s >> 16) % 8).toString(),
-            '}]}'
-        );
-    }
-
-    function _rgb(bytes memory t, uint256 i) private pure returns (uint256) {
-        unchecked {
-            i *= 3;
-            return (uint256(uint8(t[i])) << 16) | (uint256(uint8(t[i + 1])) << 8) | uint8(t[i + 2]);
-        }
-    }
-
-    function _svg(uint256 s) private pure returns (string memory out) {
-        uint256 bg = _rgb(BG, (s >> 4) % 8);
-        uint256 body = _rgb(BODY, (s >> 8) % 8);
-        uint256 hi = _rgb(HI, (s >> 12) % 8);
-        uint256 acc = _rgb(ACC, (s >> 16) % 8);
-
-        out = string.concat(
-            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'>",
-            _r(0, 0, 16, 16, bg)
-        );
-
-        uint256 bit;
-        for (uint256 y; y < 16;) {
-            uint256 x;
-            while (x < 16) {
-                uint256 byteIndex = bit >> 2;
-                uint256 shift = 6 - ((bit & 3) << 1);
-                uint256 c = (uint8(MASK[byteIndex]) >> shift) & 3;
-                unchecked {
-                    ++bit;
-                }
-                if (c == 0) {
-                    unchecked {
-                        ++x;
-                    }
-                    continue;
-                }
-                uint256 x0 = x;
-                unchecked {
-                    ++x;
-                }
-                while (x < 16) {
-                    uint256 bi2 = bit >> 2;
-                    uint256 sh2 = 6 - ((bit & 3) << 1);
-                    uint256 c2 = (uint8(MASK[bi2]) >> sh2) & 3;
-                    if (c2 != c) break;
-                    unchecked {
-                        ++bit;
-                        ++x;
-                    }
-                }
-                uint256 color = c == 1 ? body : (c == 3 ? acc : hi);
-                out = string.concat(out, _r(x0, y, x - x0, 1, color));
-            }
-            unchecked {
-                ++y;
-            }
-        }
-        out = string.concat(out, "</svg>");
-    }
-
-    function _u(uint256 v) private pure returns (string memory) {
-        unchecked {
-            if (v < 10) {
-                bytes memory one = new bytes(1);
-                one[0] = DIGITS[v];
-                return string(one);
-            }
-            bytes memory two = new bytes(2);
-            two[0] = DIGITS[v / 10];
-            two[1] = DIGITS[v % 10];
-            return string(two);
-        }
-    }
-
-    function _r(uint256 x, uint256 y, uint256 w, uint256 h, uint256 color) private pure returns (string memory) {
-        return string.concat(
-            "<rect x='",
-            _u(x),
-            "' y='",
-            _u(y),
-            "' width='",
-            _u(w),
-            "' height='",
-            _u(h),
-            "' fill='",
-            _hex(color),
-            "'/>"
-        );
-    }
-
-    function _hex(uint256 rgb) private pure returns (string memory) {
-        bytes16 H = "0123456789abcdef";
-        bytes memory o = new bytes(7);
-        o[0] = "#";
-        unchecked {
-            for (uint256 i; i < 6; ++i) {
-                o[6 - i] = H[rgb & 0xf];
-                rgb >>= 4;
-            }
-        }
-        return string(o);
     }
 }
