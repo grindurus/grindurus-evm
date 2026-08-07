@@ -33,9 +33,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidCuts();
     error InvalidRange(uint256 fromId, uint256 toId);
     error NotDepositor();
-    error TreasuryNotEmpty();
-
-    /// @notice Field selector for `setConfig`. `FULL` packs the whole `Config` slot in `data`.
+    /// @notice Field selector for `setConfig`.
+    /// @dev `DISTRIBUTE_CUTS` is retained for ordinal stability but is a no-op in `setConfig`
+    ///      (yield cuts only via `initialize` / `FULL`). Still blocked while liquidation is open.
     enum ConfigId {
         FULL,
         DISTRIBUTE_CUTS,

@@ -214,8 +214,11 @@ abstract contract GRAIFixture is Test {
 
     /// @dev Test economics often assume 50/30/20; initialize defaults are ~33/33/33.
     function _setYieldSplitFiftyThirtyTwenty() internal {
-        uint256 data = uint256(BUYBACK_CUT_BPS) | (uint256(DIVIDEND_CUT_BPS) << 16) | (uint256(TREASURY_CUT_BPS) << 32);
-        grai.setConfig(IGRAI.ConfigId.DISTRIBUTE_CUTS, data);
+        IGRAI.Config memory cfg = _readConfig();
+        cfg.buybackCutBps = BUYBACK_CUT_BPS;
+        cfg.dividendCutBps = DIVIDEND_CUT_BPS;
+        cfg.treasuryCutBps = TREASURY_CUT_BPS;
+        grai.setConfig(IGRAI.ConfigId.FULL, _packConfig(cfg));
     }
 
     function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {

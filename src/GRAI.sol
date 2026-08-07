@@ -176,24 +176,17 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev `id` selects the field(s); `data` is the packed value(s). `ConfigId.FULL` packs the whole slot.
-    ///      Cut / revenue-share changes require empty `treasury` so claim math cannot diverge from deposited net profit.
+    ///      `DISTRIBUTE_CUTS` is a no-op — yield cuts are set at initialize / via `FULL` only.
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/resettle clocks; freeze both windows for the whole liquidation.
         _requireNotLiquidation();
 
         Config memory cfg = config;
+        // Narrowing is intentional: each ConfigId writes a fixed-width field window.
+        // forge-lint: disable-start(unsafe-typecast)
         if (id == ConfigId.FULL) {
-            _requireTreasuryEmpty();
             cfg = _unpackConfig(data);
-        } else if (id == ConfigId.DISTRIBUTE_CUTS) {
-            _requireTreasuryEmpty();
-            // Narrowing is intentional: each ConfigId writes a fixed-width field window.
-            // forge-lint: disable-start(unsafe-typecast)
-            cfg.buybackCutBps = uint16(data);
-            cfg.dividendCutBps = uint16(data >> 16);
-            cfg.treasuryCutBps = uint16(data >> 32);
         } else if (id == ConfigId.REVENUE_SHARE) {
-            _requireTreasuryEmpty();
             cfg.revenueShareBps = uint16(data);
         } else if (id == ConfigId.CLAIM_TIP) {
             cfg.claimTipBps = uint16(data);
@@ -213,6 +206,7 @@ contract GRAI is
             cfg.unlockPenaltyPeriod = uint32(data);
         }
         // forge-lint: disable-end(unsafe-typecast)
+        // ConfigId.DISTRIBUTE_CUTS: intentionally ignored (cuts via initialize / FULL).
 
         _requireValidConfig(cfg);
         config = cfg;
@@ -342,10 +336,10 @@ contract GRAI is
         uint256 dividendCut = (received * config.dividendCutBps) / BPS;
         uint256 buybackCut = received - treasuryCut - dividendCut;
 
-        if (buybackCut > 0) _place(asset, buybackCut);
-        if (dividendCut > 0) _distribute(asset, dividendCut);
-        if (treasuryCut > 0) _withdraw(address(treasury), asset, treasuryCut);
-        if (refund > 0) _sendEth(msg.sender, refund);
+        _place(asset, buybackCut);
+        _distribute(asset, dividendCut);
+        _withdraw(address(treasury), asset, treasuryCut);
+        _sendEth(msg.sender, refund);
 
         emit Distribute(msg.sender, asset, received, buybackCut, dividendCut, treasuryCut);
     }
@@ -375,7 +369,7 @@ contract GRAI is
         _mint(msg.sender, graiOut);
         try treasury.mint(msg.sender, referrer) {} catch {}
         if (lock_) lock(graiOut);
-        if (refund > 0) _sendEth(msg.sender, refund);
+        _sendEth(msg.sender, refund);
         emit Deposit(msg.sender, graiOut, asset, received, value);
     }
 
@@ -491,15 +485,15 @@ contract GRAI is
         if (claimable == 0) return 0;
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
         positions[locker][asset].claimable -= claimed;
-        assets[asset].totalClaimable -= claimed;
         uint256 tip = (claimed * config.claimTipBps) / BPS;
         uint256 toLocker = claimed - tip;
-        // Allocation key only; economic base = treasury income (see @dev above).
+
         uint256 netProfitShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
         uint256 revenueShare = (claimed * config.revenueShareBps) / config.dividendCutBps;
         try treasury.distribute(asset, locker, netProfitShare, revenueShare) {} catch {}
-        if (toLocker > 0) _withdraw(locker, asset, toLocker);
-        if (tip > 0) _withdraw(msg.sender, asset, tip);
+        _withdraw(locker, asset, toLocker);
+        _withdraw(msg.sender, asset, tip);
+        assets[asset].totalClaimable -= claimed;
         emit Claim(locker, asset, claimed);
     }
 
@@ -673,12 +667,11 @@ contract GRAI is
         uint256 treasuryCut = (cutPool * config.treasuryCutBps) / BPS;
         uint256 dividendCut = (cutPool * config.dividendCutBps) / BPS;
         uint256 buybackCut = cutPool - treasuryCut - dividendCut;
-        if (buybackCut > 0) _place(bribeAsset, buybackCut);
-        if (dividendCut > 0) _distribute(bribeAsset, dividendCut);
-        if (treasuryCut > 0) _withdraw(address(treasury), bribeAsset, treasuryCut);
-
-        if (voterCut > 0) _withdraw(voter, bribeAsset, voterCut);
-        if (refund > 0) _sendEth(briber, refund);
+        _place(bribeAsset, buybackCut);
+        _distribute(bribeAsset, dividendCut);
+        _withdraw(address(treasury), bribeAsset, treasuryCut);
+        _withdraw(voter, bribeAsset, voterCut);
+        _sendEth(briber, refund);
         emit Bribe(briber, voter, bribeAsset, graiAmount, received, totalVoted);
     }
 
@@ -901,19 +894,6 @@ contract GRAI is
         if (address(ITreasury(target).grai()) != address(this)) revert GraiMismatch();
     }
 
-    /// @dev Cut / revenue-share config must not change while net profit is still sitting in `treasury`.
-    function _requireTreasuryEmpty() internal view {
-        address t = address(treasury);
-        if (t.balance != 0) revert TreasuryNotEmpty();
-        uint256 len = assetList.length;
-        for (uint256 i; i < len;) {
-            if (IERC20(assetList[i]).balanceOf(t) != 0) revert TreasuryNotEmpty();
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
     function _requireNotZeroAmount(uint256 amount) internal pure {
         if (amount == 0) revert InvalidAmount();
     }
@@ -996,22 +976,22 @@ contract GRAI is
     ///      every merge (including dust) is intentional: the protocol prefers frequent re-lists at the
     ///      live mint ask over preserving Dutch elapsed across top-ups.
     function _place(address asset, uint256 amount) internal {
+        if (amount == 0) return;
         _requireNotGRAI(asset);
         _requireListed(asset);
 
         DutchAuction storage entry = auctions[asset];
-        uint256 remaining = entry.remaining + amount;
-        (uint256 value, uint256 graiAmount) = previewDeposit(asset, remaining);
+        entry.remaining += amount;
+        (uint256 value, uint256 graiAmount) = previewDeposit(asset, entry.remaining);
         if (value == 0 || graiAmount == 0) return; // dust: don't list, don't revert distribute
 
         entry.asset = asset;
-        entry.remaining = remaining;
-        entry.initial = remaining;
+        entry.initial = entry.remaining;
         entry.maxPayment = graiAmount;
         entry.minPayment = (graiAmount * (BPS - config.bribePremiumBps)) / BPS;
         entry.startTime = uint48(block.timestamp);
         entry.period = config.buybackPeriod;
-        emit AuctionUpdate(asset, remaining, graiAmount, block.timestamp);
+        emit AuctionUpdate(asset, entry.remaining, graiAmount, block.timestamp);
     }
 
     //////////////////// DIVIDENTS ////////////////////
@@ -1143,10 +1123,10 @@ contract GRAI is
             if (msg.value < amount) revert ValueMismatch();
             refund = msg.value - amount;
             if (to != address(this)) _sendEth(to, amount);
-            if (toRefund && refund > 0) _sendEth(msg.sender, refund);
+            if (toRefund) _sendEth(msg.sender, refund);
             paid = amount;
         } else {
-            if (msg.value > 0) _sendEth(beneficiar(), msg.value);
+            _sendEth(beneficiar(), msg.value);
             uint256 before = IERC20(asset).balanceOf(to);
             IERC20(asset).safeTransferFrom(from, to, amount);
             paid = IERC20(asset).balanceOf(to) - before;
@@ -1154,6 +1134,7 @@ contract GRAI is
     }
 
     function _sendEth(address to, uint256 amount) internal {
+        if (amount == 0) return;
         (bool ok,) = payable(to).call{value: amount}("");
         if (!ok) {
             try weth.deposit{value: amount}() {
@@ -1168,9 +1149,9 @@ contract GRAI is
     /// @dev Native ETH is pushed first. If the recipient rejects it (no payable fallback), wrap via
     ///      `weth` and ERC20-transfer so bribes / liquidations / treasury cuts still settle.
     function _withdraw(address to, address asset, uint256 amount) internal {
+        if (amount == 0) return;
         if (asset == address(0)) {
             if (to == address(0)) revert ZeroAddress();
-            _requireNotZeroAmount(amount);
             _sendEth(to, amount);
         } else {
             IERC20(asset).safeTransfer(to, amount);
