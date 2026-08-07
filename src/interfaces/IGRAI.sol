@@ -11,6 +11,7 @@ import {IWETH} from "./IWETH.sol";
 interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error AssetUnknown();
     error AssetBalanceNonZero();
+    error AssetClaimableNonZero();
     error BpsTooHigh();
     error NotPaused();
     error Paused();
@@ -41,11 +42,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         CLAIM_TIP,
         BRIBE_PREMIUM,
         QUORUM,
-        UNLOCK_FEE,
+        UNLOCK_PENALTY,
         BUYBACK_PERIOD,
         LIQUIDATION_PERIOD,
-        REDEEM_PERIOD,
-        UNLOCK_PENALTY_PERIOD
+        REDEEM_PERIOD
     }
 
     struct AssetConfig {
@@ -126,8 +126,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         ///      par pays the full ask to the voter.
         uint16 bribePremiumBps;
         uint16 quorumBps;
-        /// @notice Max unlock fee in bps of unlocked GRAI at `lockedAt` (linearly decays to 0).
-        uint16 unlockFeeBps;
+        /// @notice Flat unlock penalty in bps of unlocked GRAI (every unlock; no time decay).
+        uint16 unlockPenaltyBps;
         /// @notice Buyback Dutch duration from `maxPayment` to `minPayment`.
         /// @dev `minPayment = maxPayment * (BPS - bribePremiumBps) / BPS` (max discount = premium).
         uint32 buybackPeriod;
@@ -137,8 +137,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 liquidationPeriod;
         /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `resettle`.
         uint32 redeemPeriod;
-        /// @notice Unlock penalty decay window from `lockedAt` (`unlockFeeBps` → 0).
-        uint32 unlockPenaltyPeriod;
     }
 
     event AssetUpdate(address indexed asset, bool listed);
@@ -178,11 +176,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 claimTipBps,
             uint16 bribePremiumBps,
             uint16 quorumBps,
-            uint16 unlockFeeBps,
+            uint16 unlockPenaltyBps,
             uint32 buybackPeriod,
             uint32 liquidationPeriod,
-            uint32 redeemPeriod,
-            uint32 unlockPenaltyPeriod
+            uint32 redeemPeriod
         );
 
     function treasury() external view returns (ITreasury);
@@ -248,7 +245,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function totalVoted() external view returns (uint256);
 
-    /// @notice True when voted GRAI is at least `config.quorumBps` of `totalSupply`.
+    /// @notice True when voted GRAI is strictly above `config.quorumBps` of `totalSupply`
+    ///         (`totalVoted * BPS > totalSupply * quorumBps`). Exact equality is not enough.
     function hasQuorum() external view returns (bool);
 
     /// @notice Owner confirmation for non-owner liquidation open. Owner toggles via `liquidate` when no quorum; cleared on open.
@@ -328,17 +326,17 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function vote(uint256 graiAmount) external;
 
     /// @notice Accrue residual dividends and return `graiAmount` from the active lock to the wallet.
-    ///         Early unlock may take a decaying penalty (`unlockFeeBps` → 0 over `unlockPenaltyPeriod` from `lockedAt`);
-    ///         the penalty GRAI is sent to `treasury`.
-    ///         While live fee > 0, partial unlocks below `ceil(BPS / penaltyBps)` revert (blocks fee-floor dust chunks);
-    ///         unlocking the full remaining escrow is always allowed.
+    ///         Takes a flat unlock fee (`unlockPenaltyBps` of `graiAmount`); the penalty GRAI stays on
+    ///         GRAI as orphan/dead for the next `buyback` scavenge (not sent to treasury).
+    ///         While fee > 0, unlocks below `ceil(BPS / unlockPenaltyBps)` revert (including full-escrow dust).
     ///         Yield dividends are claimed separately via `claim` / `claimAll`.
     function unlock(uint256 graiAmount) external;
 
-    /// @notice Preview unlock of `graiAmount` at `timestamp`: `unlockAmount` GRAI returned to wallet and `penalty` to treasury
-    ///         (`penalty` is 0 after `unlockPenaltyPeriod` from `lockedAt`; `unlockAmount = graiAmount - penalty`).
-    ///         While live fee > 0, reverts on partial unlocks below `ceil(BPS / penaltyBps)` (same rule as `unlock`).
-    function previewUnlock(address account, uint256 graiAmount, uint256 timestamp)
+    /// @notice Preview unlock of `graiAmount`: `unlockAmount` GRAI returned to wallet and `penalty` dead
+    ///         on GRAI (`penalty = graiAmount * unlockPenaltyBps / BPS`). Reverts if
+    ///         `graiAmount > escrows[account].locked`, or while fee > 0 if
+    ///         `graiAmount < ceil(BPS / unlockPenaltyBps)` (same rules as `unlock`).
+    function previewUnlock(address account, uint256 graiAmount)
         external
         view
         returns (uint256 unlockAmount, uint256 penalty);

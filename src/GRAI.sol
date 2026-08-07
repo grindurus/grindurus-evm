@@ -131,8 +131,7 @@ contract GRAI is
             claimTipBps: 1_00, // 1%
             quorumBps: 66_67, // 66.67% ~ 2/3
             bribePremiumBps: 2_00, // 2%; also Dutch buyback max discount (floor = BPS − this)
-            unlockFeeBps: 10_00, // 10% at lock time
-            unlockPenaltyPeriod: uint32(24 hours),
+            unlockPenaltyBps: 1_00, // 1% on every unlock
             buybackPeriod: uint32(7 days),
             liquidationPeriod: uint32(24 hours),
             redeemPeriod: uint32(7 days)
@@ -149,13 +148,15 @@ contract GRAI is
     ///      - Listed + unpaused: only `feed.paused` is applied; oracle fields are ignored.
     ///      - Listed + paused + `feedType != NONE`: full oracle replace via `_writeFeed` (may set
     ///        `paused: false` in the same call to go live on the new feed).
-    ///      - Listed + paused + `feedType == NONE`: delist (`_removeAsset`; requires zero balance).
+    ///      - Listed + paused + `feedType == NONE`: delist (`_removeAsset`; requires zero
+    ///        balance and zero `totalClaimable`).
     ///
     ///      To replace an oracle while deposits stay blocked:
     ///        1) `setFeed` with current (or any) feed and `paused: true`;
     ///        2) `setFeed` with the new oracle fields (`feedType` / `source` / `data` / …) and
     ///           `paused: true` or `false` as desired.
-    ///      To delist: pause → drain balance → `setFeed` with `feedType: NONE`.
+    ///      To delist: pause → drain balance → wait until dividends are claimed
+    ///        (`totalClaimable == 0`) → `setFeed` with `feedType: NONE`.
     function setFeed(address asset, Feed calldata feed) public override(IPriceOracleRouter, PriceOracleRouter) onlyOwner {
         Feed storage f = feeds[asset];
         if (f.feedType == FeedType.NONE) {
@@ -192,16 +193,14 @@ contract GRAI is
             cfg.bribePremiumBps = uint16(data);
         } else if (id == ConfigId.QUORUM) {
             cfg.quorumBps = uint16(data);
-        } else if (id == ConfigId.UNLOCK_FEE) {
-            cfg.unlockFeeBps = uint16(data);
+        } else if (id == ConfigId.UNLOCK_PENALTY) {
+            cfg.unlockPenaltyBps = uint16(data);
         } else if (id == ConfigId.BUYBACK_PERIOD) {
             cfg.buybackPeriod = uint32(data);
         } else if (id == ConfigId.LIQUIDATION_PERIOD) {
             cfg.liquidationPeriod = uint32(data);
         } else if (id == ConfigId.REDEEM_PERIOD) {
             cfg.redeemPeriod = uint32(data);
-        } else if (id == ConfigId.UNLOCK_PENALTY_PERIOD) {
-            cfg.unlockPenaltyPeriod = uint32(data);
         }
         // forge-lint: disable-end(unsafe-typecast)
 
@@ -311,10 +310,11 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Quorum intentionally uses the live supply. Deposits add new backing and unvoted GRAI,
-    ///      reducing liquidation support until voters again reach the configured share of supply.
+    /// @dev Quorum intentionally uses the live supply and a strict `>` vs `quorumBps`
+    ///      (exact equality is not enough). Deposits add new backing and unvoted GRAI,
+    ///      reducing liquidation support until voters again exceed the configured share.
     function hasQuorum() public view returns (bool) {
-        return totalVoted * BPS >= totalSupply() * config.quorumBps;
+        return totalVoted * BPS > totalSupply() * config.quorumBps;
     }
 
     //////////////////// DISTRIBUTE ////////////////////
@@ -406,19 +406,18 @@ contract GRAI is
     //////////////////// UNLOCK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Accrues lock dividends, takes decaying unlock penalty (→ `treasury`), clamps excess votes, and
-    ///      returns `graiAmount - penalty` to wallet. Dust partial / fee floor rules live in `previewUnlock`.
-    ///      Yield claims are separate (`claim` / `claimAll`).
+    /// @dev Accrues lock dividends, takes flat unlock fee (`unlockPenaltyBps` of `graiAmount` → dead on GRAI),
+    ///      clamps excess votes, and returns `graiAmount - penalty` to wallet. Dust partial / fee floor
+    ///      rules live in `previewUnlock`. Yield claims are separate (`claim` / `claimAll`).
     function unlock(uint256 graiAmount) public {
         _requireNotLiquidation();
         address account = msg.sender;
         Escrow storage entry = escrows[account];
         _requireNotZeroAmount(graiAmount);
-        if (graiAmount > entry.locked) revert InvalidAmount();
 
         _accrueDividends(account);
 
-        (uint256 unlockAmount, ) = previewUnlock(account, graiAmount, block.timestamp);
+        (uint256 unlockAmount, ) = previewUnlock(account, graiAmount);
 
         totalLocked -= graiAmount;
         entry.locked -= graiAmount;
@@ -431,36 +430,20 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Linear decay of `unlockFeeBps` → 0 over `unlockPenaltyPeriod` since `lockedAt` at `timestamp`.
-    ///      Returns `unlockAmount = graiAmount - penalty` (GRAI returned to wallet) and `penalty` (→ `treasury`).
-    ///      While live `penaltyBps > 0`, partial unlocks below `ceil(BPS / penaltyBps)` revert (`InvalidAmount`);
-    ///      full-escrow exit is always allowed.
-    function previewUnlock(address account, uint256 graiAmount, uint256 timestamp)
-        public
-        view
-        returns (uint256 unlockAmount, uint256 penalty)
-    {
-        if (config.unlockFeeBps == 0 || config.unlockPenaltyPeriod == 0 || graiAmount == 0) {
-            unlockAmount = graiAmount;
-            penalty = 0;
-        } else {
-            uint256 lockedAt = escrows[account].lockedAt;
-            uint256 elapsed = timestamp > lockedAt ? timestamp - lockedAt : 0;
-            if (elapsed >= config.unlockPenaltyPeriod) {
-                unlockAmount = graiAmount;
-                penalty = 0;
-            } else {
-                uint256 penaltyBps =
-                    (uint256(config.unlockFeeBps) * (config.unlockPenaltyPeriod - elapsed)) / config.unlockPenaltyPeriod;
-                if (penaltyBps > 0) {
-                    uint256 minUnlock = (uint256(BPS) + penaltyBps - 1) / penaltyBps;
-                    // Partial dust unlocks floor fee to 0; full exit of a sub-min bag is allowed.
-                    if (graiAmount < minUnlock && graiAmount < escrows[account].locked) revert InvalidAmount();
-                }
-                penalty = (graiAmount * penaltyBps) / BPS;
-                unlockAmount = graiAmount - penalty;
-            }
-        }
+    /// @dev Flat unlock penalty: `penalty = graiAmount * unlockPenaltyBps / BPS`. Reverts if
+    ///      `graiAmount > escrows[account].locked`, or while fee > 0 if
+    ///      `graiAmount < ceil(BPS / unlockPenaltyBps)` (including full-escrow dust).
+    ///      Penalty stays on GRAI as dead inventory.
+    function previewUnlock(
+        address account,
+        uint256 graiAmount
+    ) public view returns (uint256 unlockAmount, uint256 penalty) {
+        uint256 feeBps = config.unlockPenaltyBps;
+        uint256 graiDust = (BPS + feeBps - 1) / feeBps;
+        if (graiAmount > escrows[account].locked) revert InvalidAmount();
+        if (graiAmount < graiDust) revert InvalidAmount();
+        penalty = (graiAmount * feeBps) / BPS;
+        unlockAmount = graiAmount - penalty;
     }
 
     //////////////////// CLAIM ////////////////////
@@ -505,7 +488,8 @@ contract GRAI is
         _requireNotGRAI(asset);
         Position storage pos = positions[locker][asset];
         uint256 accumulated = (_unvoted(locker) * assets[asset].accShare) / PRECISION;
-        uint256 pending = pos.claimable + accumulated - pos.debt;
+        uint256 pending = pos.claimable;
+        if (accumulated >= pos.debt) pending += accumulated - pos.debt;
         if (amount == type(uint256).max || amount >= pending) return pending;
         return amount;
     }
@@ -544,7 +528,7 @@ contract GRAI is
     ///      Full-lot ask decays to `(BPS - bribePremiumBps)` of mint (not free clearance unless
     ///      premium is `BPS`). Orphan GRAI (`balanceOf(this) - totalLocked`) is credited to the buyer
     ///      then `lock`+`vote`d with the Dutch payment.
-    function buyback(address asset, uint256 amount) public {
+    function buyback(address asset, uint256 amount) public nonReentrant {
         _requireNotLiquidation();
         address buyer = msg.sender;
 
@@ -632,7 +616,7 @@ contract GRAI is
     ///      Premium: voter gets book + half premium, remaining premium → cuts. Discount: half of
     ///      full gap stays in the ask (briber saving), other half → cuts; voter keeps the rest of
     ///      `received`. Par: all to voter.
-    function bribe(address voter, uint256 graiAmount) public payable {
+    function bribe(address voter, uint256 graiAmount) public payable nonReentrant {
         _requireNotLiquidation();
         address briber = msg.sender;
         // Snapshot ask before escrow reserve changes `totalVoted` (drives dynamic premium).
@@ -718,7 +702,7 @@ contract GRAI is
     /// @dev 2-of-2 with vote quorum. Owner: toggle `confirmed` when no quorum; with
     ///      quorum, this call is consent and opens. Non-owner: open when `confirmed &&
     ///      hasQuorum()`, else revert.
-    function liquidate() public {
+    function liquidate() public nonReentrant {
         _requireNotLiquidation();
         if (msg.sender == owner()) {
             if (!hasQuorum()) {
@@ -840,7 +824,7 @@ contract GRAI is
     ///      liquidation (underwater reopen is allowed). Dividend inventory in
     ///      `assets[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
     ///      shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
-    function resettle() public {
+    function resettle() public nonReentrant {
         _requireLiquidation();
         if (liquidationAt == 0) revert LiquidationClosed();
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
@@ -906,8 +890,8 @@ contract GRAI is
         if (cfg.revenueShareBps > cfg.treasuryCutBps) revert BpsTooHigh();
         if (cfg.claimTipBps > 20_00) revert BpsTooHigh(); // max 20%
         if (2 * cfg.bribePremiumBps > BPS) revert BpsTooHigh();
-        if (cfg.quorumBps > BPS) revert BpsTooHigh();
-        if (cfg.unlockFeeBps > BPS) revert BpsTooHigh();
+        if (cfg.quorumBps >= BPS) revert BpsTooHigh();
+        if (cfg.unlockPenaltyBps > BPS) revert BpsTooHigh();
         if (cfg.quorumBps == 0) revert UnexpectedValue();
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) revert InvalidCuts();
@@ -1003,7 +987,8 @@ contract GRAI is
     function _accrueDividend(address account, address asset) internal {
         Position storage pos = positions[account][asset];
         uint256 accumulated = (_unvoted(account) * assets[asset].accShare) / PRECISION;
-        pos.claimable += accumulated - pos.debt;
+        // Relist reseeds `accShare` to 0 while stale `debt` may remain; saturate instead of underflow.
+        if (accumulated >= pos.debt) pos.claimable += accumulated - pos.debt;
         pos.debt = accumulated;
     }
 
@@ -1033,6 +1018,7 @@ contract GRAI is
         if (index >= assetList.length || assetList[index] != asset) revert AssetUnknown();
         if (!feeds[asset].paused) revert NotPaused();
         if (_balance(asset) > 0) revert AssetBalanceNonZero();
+        if (assets[asset].totalClaimable > 0) revert AssetClaimableNonZero();
 
         uint256 lastIndex = assetList.length - 1;
         if (index != lastIndex) {

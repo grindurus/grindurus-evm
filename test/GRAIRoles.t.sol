@@ -146,7 +146,7 @@ contract GRAIRolesTest is Test {
             ownerMultisig,
             ownerSigner,
             address(grai),
-            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.UNLOCK_FEE, uint256(1_000)))
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.UNLOCK_PENALTY, uint256(1_000)))
         );
         _exec(
             ownerMultisig,
@@ -166,12 +166,6 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.REDEEM_PERIOD, uint256(uint32(3 days))))
         );
-        _exec(
-            ownerMultisig,
-            ownerSigner,
-            address(grai),
-            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.UNLOCK_PENALTY_PERIOD, uint256(uint32(24 hours))))
-        );
 
         (
             uint16 buybackCutBps,
@@ -181,11 +175,10 @@ contract GRAIRolesTest is Test {
             uint16 claimTipBps,
             uint16 bribePremiumBps,
             uint16 quorum,
-            uint16 unlockFeeBps,
+            uint16 unlockPenaltyBps,
             uint32 buybackPeriod,
             uint32 liquidationPeriod,
-            uint32 redeemPeriod,
-            uint32 unlockPenaltyPeriod
+            uint32 redeemPeriod
         ) = grai.config();
         // Yield cuts stay at initialize defaults.
         assertEq(buybackCutBps, 3_333);
@@ -195,11 +188,10 @@ contract GRAIRolesTest is Test {
         assertEq(claimTipBps, 100);
         assertEq(bribePremiumBps, 300);
         assertEq(quorum, 5_000);
-        assertEq(unlockFeeBps, 1_000);
+        assertEq(unlockPenaltyBps, 1_000);
         assertEq(buybackPeriod, 180 days);
         assertEq(liquidationPeriod, 12 hours);
         assertEq(redeemPeriod, 3 days);
-        assertEq(unlockPenaltyPeriod, 24 hours);
     }
 
     function test_OwnerCanPatchClaimTipBps() public {
@@ -209,7 +201,7 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
         );
-        (,,,, uint16 claimTipBps,,,,,,,) = grai.config();
+        (,,,, uint16 claimTipBps,,,,,,) = grai.config();
         assertEq(claimTipBps, 50);
     }
 

@@ -138,7 +138,7 @@ abstract contract GRAIFixture is Test {
         );
     }
 
-    /// @dev Clearing a feed (FeedType.NONE) delists the asset (must be paused with zero balance).
+    /// @dev Clearing a feed (FeedType.NONE) delists the asset (paused, zero balance, zero totalClaimable).
     function _clearFeed(address asset) internal {
         grai.setFeed(
             asset,
@@ -204,11 +204,10 @@ abstract contract GRAIFixture is Test {
             cfg.claimTipBps,
             cfg.bribePremiumBps,
             cfg.quorumBps,
-            cfg.unlockFeeBps,
+            cfg.unlockPenaltyBps,
             cfg.buybackPeriod,
             cfg.liquidationPeriod,
-            cfg.redeemPeriod,
-            cfg.unlockPenaltyPeriod
+            cfg.redeemPeriod
         ) = grai.config();
     }
 
@@ -232,9 +231,8 @@ abstract contract GRAIFixture is Test {
     function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
         data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
             | (uint256(cfg.revenueShareBps) << 48) | (uint256(cfg.claimTipBps) << 64) | (uint256(cfg.bribePremiumBps) << 80)
-            | (uint256(cfg.quorumBps) << 96) | (uint256(cfg.unlockFeeBps) << 112) | (uint256(cfg.buybackPeriod) << 128)
-            | (uint256(cfg.liquidationPeriod) << 160) | (uint256(cfg.redeemPeriod) << 192)
-            | (uint256(cfg.unlockPenaltyPeriod) << 224);
+            | (uint256(cfg.quorumBps) << 96) | (uint256(cfg.unlockPenaltyBps) << 112) | (uint256(cfg.buybackPeriod) << 128)
+            | (uint256(cfg.liquidationPeriod) << 160) | (uint256(cfg.redeemPeriod) << 192);
     }
 
     /// @dev Buy from the open auction for `asset` as `buyer`, paying GRAI.
