@@ -8,7 +8,6 @@ interface ITreasury {
     error ZeroAddress();
     error NotGrai();
     error NotGraiOwner();
-    error EthTransferFailed();
     error AlreadyBound();
     error BpsTooHigh();
     error InvalidShares();
@@ -58,8 +57,8 @@ interface ITreasury {
     function mint(address locker, address referrer) external returns (uint256 tokenId);
 
     /// @notice Pay claim-time treasury split from inventory.
-    /// @dev No-op if balance < `netProfitShare`. Otherwise pays exact referrer shares (`paidRevenue`)
-    ///      and `netProfitShare - paidRevenue` → `beneficiar`.
+    /// @dev No-op if balance < `netProfitShare`. Soft-fail per recipient; unpaid shares roll into
+    ///      `beneficiar` (`netProfitShare - paid`).
     function distribute(address asset, address locker, uint256 netProfitShare, uint256 revenueShare)
         external;
 

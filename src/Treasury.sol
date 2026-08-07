@@ -2,7 +2,6 @@
 pragma solidity ^0.8.30;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {ERC2981Upgradeable} from "@openzeppelin/contracts-upgradeable/token/common/ERC2981Upgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -11,6 +10,7 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 import {IGRAI} from "./interfaces/IGRAI.sol";
 import {ITreasury} from "./interfaces/ITreasury.sol";
+import {IWETH} from "./interfaces/IWETH.sol";
 
 /// @title Treasury
 /// @notice Protocol fee sink, sticky referrer NFTs, and claim-time split between affiliates and `beneficiar`.
@@ -18,8 +18,6 @@ import {ITreasury} from "./interfaces/ITreasury.sol";
 ///      from `revenueShareInfo`, unpaid levels + protocol slice → `beneficiar`.
 ///      UUPS; `mint`/`distribute` = only GRAI; upgrades = `GRAI.owner()`. Interact via ERC1967Proxy only.
 contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable, UUPSUpgradeable {
-    using SafeERC20 for IERC20;
-
     uint16 public constant BPS = 100_00; // 100%
 
     /// @notice Linked GRAI that may call `mint` / `distribute`; upgrades authorized by its `owner`.
@@ -95,10 +93,10 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     receive() external payable {}
 
     /// @inheritdoc ITreasury
-    /// @dev No-op if balance < `netProfitShare` so claim is not bricked and partial affiliate pays never happen.
+    /// @dev No-op if balance < `netProfitShare` so claim is not bricked and partial affiliate pays
+    ///      never happen. Soft-fail per recipient via `_tryWithdraw` (no self-call); unpaid → `beneficiar`.
     function distribute(address asset, address locker, uint256 netProfitShare, uint256 revenueShare) public {
         _onlyGrai();
-        if (netProfitShare == 0) return;
         uint256 bal = asset == address(0) ? address(this).balance : IERC20(asset).balanceOf(address(this));
         if (bal < netProfitShare) return;
 
@@ -109,9 +107,8 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         for (uint256 i; i < len;) {
             address ref = referrers[i];
             uint256 share = shares[i];
-            if (share != 0 && ref != address(0)) {
+            if (_tryWithdraw(ref, asset, share)) {
                 revenueShare += share;
-                _withdraw(asset, ref, share);
                 emit Distribute(asset, ref, share);
             }
             unchecked {
@@ -120,8 +117,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         }
 
         uint256 toBeneficiar = netProfitShare - revenueShare;
-        if (beneficiar != address(0) && toBeneficiar > 0) {
-            _withdraw(asset, beneficiar, toBeneficiar);
+        if (_tryWithdraw(beneficiar, asset, toBeneficiar)) {
             emit Distribute(asset, beneficiar, toBeneficiar);
         }
     }
@@ -199,12 +195,39 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         return super.supportsInterface(interfaceId);
     }
 
-    function _withdraw(address asset, address to, uint256 amount) internal {
-        if (asset == address(0)) {
-            (bool ok,) = payable(to).call{value: amount}("");
-            if (!ok) revert EthTransferFailed();
-        } else {
-            IERC20(asset).safeTransfer(to, amount);
+    /// @dev Soft-fail payout (no self-call). ETH → native, else WETH wrap; ERC20 via low-level
+    ///      transfer matching SafeERC20 optional-return rules.
+    function _tryWithdraw(address to, address asset, uint256 amount) internal returns (bool) {
+        if (amount == 0) return true;
+        if (to == address(0)) return false;
+        if (asset == address(0)) return _trySendEth(to, amount);
+        return _trySafeTransfer(asset, to, amount);
+    }
+
+    /// @dev Same success predicate as OZ `SafeERC20._callOptionalReturnBool` for `transfer`.
+    function _trySafeTransfer(address token, address to, uint256 amount) internal returns (bool) {
+        (bool success, bytes memory ret) = token.call(abi.encodeCall(IERC20.transfer, (to, amount)));
+        if (!success) return false;
+        if (ret.length == 0) return token.code.length > 0;
+        if (ret.length == 32) return abi.decode(ret, (bool));
+        return false;
+    }
+
+    function _trySendEth(address to, uint256 amount) internal returns (bool) {
+        (bool ok,) = payable(to).call{value: amount}("");
+        if (ok) return true;
+
+        IWETH weth = grai.weth();
+        try weth.deposit{value: amount}() {
+            if (_trySafeTransfer(address(weth), to, amount)) return true;
+            // Unwrap so a failed WETH delivery leaves ETH on Treasury for the beneficiar pass.
+            try weth.withdraw(amount) {
+                return false;
+            } catch {
+                return false;
+            }
+        } catch {
+            return false;
         }
     }
 
