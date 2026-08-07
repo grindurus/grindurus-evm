@@ -1,6 +1,6 @@
 # GRAI Tokenomics — Protocol Overview
 
-Report derived from on-chain logic in `[GRAI.sol](../src/GRAI.sol)` and `[Grinders.sol](../src/Grinders.sol)` (EVM implementation, July 2026). Integration happy path: `[test/GRAILifecycle.t.sol](../test/GRAILifecycle.t.sol)`.
+Report derived from on-chain logic in `[GRAI.sol](../src/GRAI.sol)`, `[Treasury.sol](../src/Treasury.sol)`, and `[Grinders.sol](../src/Grinders.sol)` (EVM implementation, July 2026). Integration happy path: `[test/GRAILifecycle.t.sol](../test/GRAILifecycle.t.sol)`. Affiliate / claim-time split: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`.
 
 ---
 
@@ -41,7 +41,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 | -------- | ----------------------- | -------------------------------------------------------------- |
 | Buyback  | `buybackCutBps` 33.33%  | Dutch lot via `_place` (sold for GRAI via `buyback`)           |
 | Dividend | `dividendCutBps` 33.34% | Unvoted lockers via `totalPositions[asset].accShare` → `claim` |
-| Treasury | `treasuryCutBps` 33.33% | `treasury`                                                     |
+| Treasury | `treasuryCutBps` 33.33% | `treasury` (affiliates paid later on `claim`; see §10)             |
 
 
 If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is too small to move the index, the dividend cut is **merged into the auction** instead.
@@ -65,7 +65,8 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 | **GRAI**               | Share token, oracles, auctions, lock/vote/bribe/liquidation, dividends                                |
 | **Grinders**           | NFT registry, reserve custody, allocation, liquidation sweeps                                         |
 | **Custodian**          | Per-NFT wallet; `distribute()` yield → GRAI                                                           |
-| **Treasury**           | Treasury cuts from yield / bribe carve-outs                                                           |
+| **Treasury**           | Yield / bribe fee sink; sticky referrer NFTs; claim-time affiliate + `beneficiar` split               |
+| **Affiliate**          | Owns a depositor’s Treasury NFT; earns L1/L2 share of claim-time `revenueShare`                       |
 | **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; liquidation consent via `confirmed` / `liquidate` |
 
 
@@ -477,7 +478,7 @@ claimable   += (amount - voted) * accShare / 1e18 - debt
 - Fully voted escrow (`amount == voted`) earns **none** on new cuts.
 - New lockers sync debt to the **current** index → they do **not** receive past cuts.
 - `vote` accrues then shrinks the eligible base and resyncs debt.
-- Claim: `claim` / `claimAll` / previews — **allowed while liquidation is open** (pays only the reserved slice; does not touch the redeem basket).
+- Claim: `claim` / `claimAll` / previews — **allowed while liquidation is open** (pays only the reserved slice; does not touch the redeem basket). On claim, GRAI also asks Treasury to pay affiliates / `beneficiar` (see §10).
 - Reserved `totalClaimable` is excluded from redeem / resettle sweeps (`_redeemable = bal − totalClaimable`) and remains claimable during liquidation and after restart.
 
 Example: Alice locks 100, votes 40 → eligible 60. Bob locks 100 unvoted → eligible 100. Total eligible 160. A 30 USDC dividend cut pays Alice **11.25**, Bob **18.75**.
@@ -746,7 +747,113 @@ Permissionless after `liquidationPeriod + redeemPeriod`:
 
 
 
-## 10. Grinders layer
+## 10. Treasury and affiliates
+
+`[Treasury.sol](../src/Treasury.sol)` is the fee sink for `treasuryCutBps` (yield / bribe carve-outs) and the **sticky referrer NFT** layer. Affiliates do **not** cut the locker’s dividend payout — they are paid from Treasury inventory when the locker `claim`s.
+
+### 10.1 Binding (deposit → NFT)
+
+On first successful `deposit`, GRAI calls `treasury.mint(locker, referrer)` (try/catch — a missing treasury does not brick deposits):
+
+- `tokenId = uint256(uint160(locker))` — one NFT per depositor, forever.
+- NFT is minted to `referrer` (or to `locker` if `referrer == address(0)`).
+- Sticky: remints revert `AlreadyBound`; transferring the NFT changes who receives future affiliate share.
+- ERC-2981 royalty receiver is the **locker** (secondary sales of the claim NFT).
+
+```
+referrerOf(locker) = ownerOf(tokenId(locker))
+```
+
+### 10.2 Claim-time split
+
+When yield lands, the full treasury cut is pushed to Treasury immediately. Affiliates are paid later, on `claim`, sized off the **claimed dividend**:
+
+```
+netProfitShare = claimed * treasuryCutBps / dividendCutBps   // full treasury slice attributed to this claim
+revenueShare   = claimed * revenueShareBps / dividendCutBps   // affiliate pool (≤ treasury slice)
+```
+
+#### Derivation
+
+Fix one `distribute` of yield `Y` (same cuts apply to bribe-premium carve-outs). By definition:
+
+```
+T = Y · treasuryCutBps  / BPS     // sent to Treasury now
+D = Y · dividendCutBps  / BPS     // reserved for unvoted lockers
+R = Y · revenueShareBps / BPS     // affiliate budget (config: R ≤ T)
+```
+
+Eliminate `Y` and `BPS`:
+
+```
+T / D = treasuryCutBps  / dividendCutBps
+R / D = revenueShareBps / dividendCutBps
+```
+
+so `T = D · treasuryCutBps / dividendCutBps` and `R = D · revenueShareBps / dividendCutBps`.
+
+A claim of size `claimed` is a share of that dividend pool. Under linear attribution (each unit of claimed dividend “carries” the same treasury / affiliate budget that funded it):
+
+```
+claimed / D = netProfitShare / T = revenueShare / R
+```
+
+Solve for the claim-time amounts:
+
+```
+netProfitShare = claimed · (T / D) = claimed · treasuryCutBps  / dividendCutBps
+revenueShare   = claimed · (R / D) = claimed · revenueShareBps / dividendCutBps
+```
+
+**Conservation (full claims).** If lockers eventually claim the entire dividend cut (`Σ claimed = D`):
+
+```
+Σ netProfitShare = D · T / D = T
+Σ revenueShare   = D · R / D = R
+```
+
+so claim-time withdrawals exactly exhaust the treasury income and the affiliate budget from that yield — no leftover identity gap (integer dust aside). Partial claims scale both sides by `claimed / D`; unpaid levels inside `revenueShare` stay with `beneficiar` via `netProfitShare − paid`.
+
+**Why divide by `dividendCutBps`, not `BPS`.** `claimed` is denominated in the **dividend** slice, not in raw yield. Multiplying by `treasuryCutBps / BPS` would understate treasury attribution by `dividendCutBps / BPS` (e.g. with 20% treasury / 30% dividend, that would pay `0.2 · claimed` instead of `(20/30) · claimed`).
+
+`treasury.distribute(asset, locker, netProfitShare, revenueShare)` then:
+
+1. No-op if Treasury balance `< netProfitShare` (no partial affiliate pays).
+2. Walks `revenueShareInfo(locker, revenueShare)` up to `revenueShareBps.length` levels (default **L1 80% / L2 20%**).
+3. Stops on empty / self / cycle (`ref == 0 || ref == locker || ref == cur`).
+4. Pays each present level; unpaid levels + remainder of `netProfitShare` → `beneficiar`.
+
+Default GRAI `revenueShareBps = 3_33` (~3.33% of yield → affiliates).
+
+### 10.3 Affiliate examples
+
+Illustrative cuts **50 / 30 / 20** (buyback / dividend / treasury), `revenueShareBps = 1000` (10% of yield), Treasury L1/L2 **80 / 20**. Yield **100 USDC** → dividend **30**, treasury inventory **20**. Sole locker claims all **30**:
+
+```
+netProfitShare = 30 * 2000 / 3000 = 20
+revenueShare   = 30 * 1000 / 3000 = 10
+```
+
+
+| Case | Chain | L1 | L2 | Beneficiar | Notes |
+| ---- | ----- | -- | -- | ---------- | ----- |
+| No referrer | — | 0 | 0 | **20** | Self-mint / unbound → empty `revenueShareInfo` |
+| L1 only | Alice → Bob | **8** | 0 | **12** | Unpaid L2 (2) stays with protocol |
+| L1 + L2 | Alice → Bob → Carol | **8** | **2** | **10** | Full affiliate pool paid |
+| Cycle | Alice → Bob → Alice | **8** | 0 | **12** | Walk stops at L1 |
+| Half claim (15) | Alice → Bob → Carol | **4** | **1** | **5** | Pro-rata; rest of inventory waits |
+| `bal < netProfit` | any | 0 | 0 | 0 | Distribute no-op; claim tip/locker still pay |
+
+
+Locker still receives `claimed − tip` in full; tip (`claimTipBps`, default 1%) goes to `msg.sender`.
+
+Tests: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`.
+
+---
+
+
+
+## 11. Grinders layer
 
 Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
@@ -765,7 +872,7 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
 
 
-## 11. Protocol configuration (defaults)
+## 12. Protocol configuration (defaults)
 
 
 | Parameter             | Default         | Meaning                                                              |
@@ -773,6 +880,8 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 | `buybackCutBps`       | 33_33 (~33.33%) | Yield / bribe premium → Dutch lot                                    |
 | `dividendCutBps`      | 33_34 (~33.34%) | → unvoted-locker dividends (or auction if none)                      |
 | `treasuryCutBps`      | 33_33 (~33.33%) | → treasury                                                           |
+| `revenueShareBps`     | 3_33 (~3.33%)   | Of yield → affiliates on claim (≤ `treasuryCutBps`)                  |
+| `claimTipBps`         | 1_00 (1%)       | Slice of claimed dividend to `msg.sender`                            |
 | `bribePremiumBps`     | 2_00 (2%)       | Bribe ask slope / Dutch buyback max discount                         |
 | `quorumBps`           | 66_67 (66.67%)  | Voted / supply to open liquidation                                   |
 | `unlockFeeBps`        | 10_00 (10%)     | Unlock fee at `lockedAt` (stays on GRAI as dead)                     |
@@ -784,11 +893,15 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
 Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is open**.
 
+`buybackCutBps` / `dividendCutBps` / `treasuryCutBps` are set only at `initialize` and cannot be changed via `setConfig`. Tip, quorum, unlock fee, periods, and `REVENUE_SHARE` remain mutable via their dedicated ids.
+
+Treasury defaults: L1/L2 `revenueShareBps = [8000, 2000]`, ERC-2981 `royaltyBps = 500`.
+
 ---
 
 
 
-## 12. Access control
+## 13. Access control
 
 
 | Role                     | GRAI                                                                                                                                                                        |
@@ -798,29 +911,32 @@ Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is o
 
 Grinders: `Ownable` for custodians / allocation / upgrades.
 
+Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` / UUPS = `GRAI.owner()`.
+
 ---
 
 
 
-## 13. Economic incentives
+## 14. Economic incentives
 
 
 | Participant               | Incentive                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------- |
 | **Depositor**             | Book-priced GRAI                                                                   |
 | **Unvoted locker**        | Asset dividends from yield / bribe premium                                         |
+| **Affiliate**             | Tradable L1/L2 claim on `revenueShare` when the bound locker claims                |
 | **Voter**                 | Path toward liquidation quorum; forgoes dividends on voted GRAI; exit via bribe/unlock |
 | **Buyback buyer**         | Assets at Dutch discount; payment locked+voted; may scavenge unlock-fee dead GRAI  |
 | **Briber**                | Acquire full voted GRAI for exact ask; ask/premium dynamic vs half-quorum          |
 | **Grinders / custodians** | Trade allocated capital; `distribute` to protocol                                  |
-| **Treasury**              | Yield / bribe-premium cut only (unlock fees stay on GRAI as dead)                  |
+| **Treasury / beneficiar** | Yield / bribe-premium cut; unpaid affiliate levels + protocol slice on claim       |
 
 
 ---
 
 
 
-## 14. Key invariants
+## 15. Key invariants
 
 1. **Book** — `totalValue` moves on deposit, redeem burn, resettle NAV — not on yield/`buyback`.
 2. **Dividends = unvoted lock** — index uses `totalLocked − totalVoted`; account base is `amount − voted`.
@@ -836,12 +952,14 @@ Grinders: `Ownable` for custodians / allocation / upgrades.
 12. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
 13. **Unlock fee → dead GRAI** — penalty is not sent to treasury; next `buyback` may scavenge `balanceOf(this) − totalLocked` (locked+voted with the Dutch payment).
 14. `buyback` **scavenges dead** before fill — orphan GRAI on the contract is credited to the buyer then lock+voted with `graiIn`.
+15. **Affiliates ≠ locker cut** — claim tip / locker payout are independent of Treasury; affiliates pay from Treasury inventory sized by `revenueShareBps`.
+16. **Treasury distribute is all-or-nothing** — `bal < netProfitShare` → no affiliate / beneficiar transfer for that claim.
 
 ---
 
 
 
-## 15. Instruction reference
+## 16. Instruction reference
 
 
 
@@ -860,6 +978,18 @@ Grinders: `Ownable` for custodians / allocation / upgrades.
 | `liquidate`                | Owner / anyone            | 2-of-2: owner toggles `confirmed` or opens with quorum; non-owner opens iff `confirmed && hasQuorum()` |
 | `resettle`                 | Anyone                    | Closes cycle; fund restarts                    |
 | `setConfig`                | Owner                     | Blocked while open                             |
+
+
+
+
+### Treasury
+
+
+| Function                                      | Caller       | When                          |
+| --------------------------------------------- | ------------ | ----------------------------- |
+| `mint(locker, referrer)`                      | GRAI         | First deposit bind            |
+| `distribute(asset, locker, net, revenue)`     | GRAI         | On `claim` (try/catch)        |
+| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner | Anytime                       |
 
 
 
