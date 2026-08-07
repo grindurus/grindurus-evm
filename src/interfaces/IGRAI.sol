@@ -34,11 +34,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidRange(uint256 fromId, uint256 toId);
     error NotDepositor();
     /// @notice Field selector for `setConfig`.
-    /// @dev `DISTRIBUTE_CUTS` is retained for ordinal stability but is a no-op in `setConfig`
-    ///      (yield cuts only via `initialize` / `FULL`). Still blocked while liquidation is open.
+    /// @dev Yield cuts (`buybackCutBps` / `dividendCutBps` / `treasuryCutBps`) are fixed at
+    ///      `initialize` and cannot be changed via `setConfig`. Still blocked while liquidation is open.
     enum ConfigId {
-        FULL,
-        DISTRIBUTE_CUTS,
         REVENUE_SHARE,
         CLAIM_TIP,
         BRIBE_PREMIUM,

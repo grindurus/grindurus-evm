@@ -118,25 +118,59 @@ contract GRAIRolesTest is Test {
     }
 
     function test_OwnerCanSetConfig() public {
-        IGRAI.Config memory cfg = IGRAI.Config({
-            buybackCutBps: 5_000,
-            dividendCutBps: 3_000,
-            treasuryCutBps: 2_000,
-            revenueShareBps: 500,
-            claimTipBps: 100,
-            bribePremiumBps: 300,
-            quorumBps: 5_000,
-            unlockFeeBps: 1_000,
-            buybackPeriod: uint32(180 days),
-            liquidationPeriod: uint32(12 hours),
-            redeemPeriod: uint32(3 days),
-            unlockPenaltyPeriod: uint32(24 hours)
-        });
         _exec(
             ownerMultisig,
             ownerSigner,
             address(grai),
-            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.FULL, _packConfig(cfg)))
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(100)))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.REVENUE_SHARE, uint256(500)))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.BRIBE_PREMIUM, uint256(300)))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.QUORUM, uint256(5_000)))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.UNLOCK_FEE, uint256(1_000)))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.BUYBACK_PERIOD, uint256(uint32(180 days))))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.LIQUIDATION_PERIOD, uint256(uint32(12 hours))))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.REDEEM_PERIOD, uint256(uint32(3 days))))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.UNLOCK_PENALTY_PERIOD, uint256(uint32(24 hours))))
         );
 
         (
@@ -153,9 +187,10 @@ contract GRAIRolesTest is Test {
             uint32 redeemPeriod,
             uint32 unlockPenaltyPeriod
         ) = grai.config();
-        assertEq(buybackCutBps, 5_000);
-        assertEq(dividendCutBps, 3_000);
-        assertEq(treasuryCutBps, 2_000);
+        // Yield cuts stay at initialize defaults.
+        assertEq(buybackCutBps, 3_333);
+        assertEq(dividendCutBps, 3_334);
+        assertEq(treasuryCutBps, 3_333);
         assertEq(revenueShareBps, 500);
         assertEq(claimTipBps, 100);
         assertEq(bribePremiumBps, 300);
@@ -312,14 +347,6 @@ contract GRAIRolesTest is Test {
         fresh = Grinders(
             payable(address(new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (DEPLOYER, graiAddr)))))
         );
-    }
-
-    function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
-        data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
-            | (uint256(cfg.revenueShareBps) << 48) | (uint256(cfg.claimTipBps) << 64) | (uint256(cfg.bribePremiumBps) << 80)
-            | (uint256(cfg.quorumBps) << 96) | (uint256(cfg.unlockFeeBps) << 112) | (uint256(cfg.buybackPeriod) << 128)
-            | (uint256(cfg.liquidationPeriod) << 160) | (uint256(cfg.redeemPeriod) << 192)
-            | (uint256(cfg.unlockPenaltyPeriod) << 224);
     }
 
     function _exec(MockMultisig multisig, address signer, address target, bytes memory data) internal {

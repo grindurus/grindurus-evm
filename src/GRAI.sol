@@ -175,8 +175,8 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev `id` selects the field(s); `data` is the packed value(s). `ConfigId.FULL` packs the whole slot.
-    ///      `DISTRIBUTE_CUTS` is a no-op — yield cuts are set at initialize / via `FULL` only.
+    /// @dev `id` selects the field; `data` is the packed value. Yield cuts are immutable after
+    ///      `initialize` — only tip, quorum, unlock, periods, and `revenueShareBps` are patchable.
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/resettle clocks; freeze both windows for the whole liquidation.
         _requireNotLiquidation();
@@ -184,9 +184,7 @@ contract GRAI is
         Config memory cfg = config;
         // Narrowing is intentional: each ConfigId writes a fixed-width field window.
         // forge-lint: disable-start(unsafe-typecast)
-        if (id == ConfigId.FULL) {
-            cfg = _unpackConfig(data);
-        } else if (id == ConfigId.REVENUE_SHARE) {
+        if (id == ConfigId.REVENUE_SHARE) {
             cfg.revenueShareBps = uint16(data);
         } else if (id == ConfigId.CLAIM_TIP) {
             cfg.claimTipBps = uint16(data);
@@ -206,7 +204,6 @@ contract GRAI is
             cfg.unlockPenaltyPeriod = uint32(data);
         }
         // forge-lint: disable-end(unsafe-typecast)
-        // ConfigId.DISTRIBUTE_CUTS: intentionally ignored (cuts via initialize / FULL).
 
         _requireValidConfig(cfg);
         config = cfg;
@@ -323,7 +320,7 @@ contract GRAI is
     //////////////////// DISTRIBUTE ////////////////////
 
     /// @notice Pull yield and split per `config` auction / dividend / treasury cuts.
-    function distribute(address asset, uint256 yieldAmount) public payable {
+    function distribute(address asset, uint256 yieldAmount) public payable nonReentrant {
         _requireNotLiquidation();
         _requireNotGRAI(asset);
         _requireListed(asset);
@@ -352,7 +349,7 @@ contract GRAI is
         uint256 amount,
         bool lock_,
         address referrer
-    ) public payable returns (uint256 graiOut, uint256 value) {
+    ) public payable nonReentrant returns (uint256 graiOut, uint256 value) {
         _requireNotLiquidation();
         _requireNotGRAI(asset);
         _requireListed(asset);
@@ -469,6 +466,10 @@ contract GRAI is
     //////////////////// CLAIM ////////////////////
 
     /// @inheritdoc IGRAI
+    function claim(address locker, address asset, uint256 amount) public nonReentrant returns (uint256 claimed) {
+        return _claim(locker, asset, amount);
+    }
+
     /// @dev `type(uint256).max` claims the full accrued balance; otherwise claims `min(amount, claimable)`.
     ///      Pays tip to `msg.sender`, remainder to `locker` (locker claim is not cut for affiliates).
     ///
@@ -478,13 +479,14 @@ contract GRAI is
     ///      `treasury.distribute` pays referrers from `revenueShareInfo`, remainder of `netProfitShare`
     ///      → `Treasury.beneficiar`. Wrapped in
     ///      try/catch so a missing/reverting treasury does not block locker/tip payouts.
-    function claim(address locker, address asset, uint256 amount) public returns (uint256 claimed) {
+    function _claim(address locker, address asset, uint256 amount) internal returns (uint256 claimed) {
         _requireNotGRAI(asset);
         _accrueDividend(locker, asset);
         uint256 claimable = positions[locker][asset].claimable;
         if (claimable == 0) return 0;
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
         positions[locker][asset].claimable -= claimed;
+        assets[asset].totalClaimable -= claimed;
         uint256 tip = (claimed * config.claimTipBps) / BPS;
         uint256 toLocker = claimed - tip;
 
@@ -493,7 +495,6 @@ contract GRAI is
         try treasury.distribute(asset, locker, netProfitShare, revenueShare) {} catch {}
         _withdraw(locker, asset, toLocker);
         _withdraw(msg.sender, asset, tip);
-        assets[asset].totalClaimable -= claimed;
         emit Claim(locker, asset, claimed);
     }
 
@@ -513,10 +514,10 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Pays every listed-asset dividend for `locker`.
-    function claimAll(address locker) public {
+    function claimAll(address locker) public nonReentrant {
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
-            claim(locker, assetList[i], type(uint256).max);
+            _claim(locker, assetList[i], type(uint256).max);
             unchecked { ++i; }
         }
     }
@@ -907,29 +908,11 @@ contract GRAI is
         if (2 * cfg.bribePremiumBps > BPS) revert BpsTooHigh();
         if (cfg.quorumBps > BPS) revert BpsTooHigh();
         if (cfg.unlockFeeBps > BPS) revert BpsTooHigh();
+        if (cfg.quorumBps == 0) revert UnexpectedValue();
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) revert InvalidCuts();
         if (cfg.buybackPeriod < 7 days) revert BuybackPeriodTooShort();
         if (cfg.liquidationPeriod == 0 || cfg.redeemPeriod == 0) revert PeriodZero();
-    }
-
-    /// @dev Packing matches Solidity's single-slot `Config` layout (low bits first).
-    function _unpackConfig(uint256 data) internal pure returns (Config memory cfg) {
-        // Each field is a fixed bit window of `data`; high bits outside that window are discarded.
-        // forge-lint: disable-start(unsafe-typecast)
-        cfg.buybackCutBps = uint16(data);
-        cfg.dividendCutBps = uint16(data >> 16);
-        cfg.treasuryCutBps = uint16(data >> 32);
-        cfg.revenueShareBps = uint16(data >> 48);
-        cfg.claimTipBps = uint16(data >> 64);
-        cfg.bribePremiumBps = uint16(data >> 80);
-        cfg.quorumBps = uint16(data >> 96);
-        cfg.unlockFeeBps = uint16(data >> 112);
-        cfg.buybackPeriod = uint32(data >> 128);
-        cfg.liquidationPeriod = uint32(data >> 160);
-        cfg.redeemPeriod = uint32(data >> 192);
-        cfg.unlockPenaltyPeriod = uint32(data >> 224);
-        // forge-lint: disable-end(unsafe-typecast)
     }
 
     /// @notice Contract balance of `asset` (`address(0)` = native ETH).
@@ -981,16 +964,16 @@ contract GRAI is
         _requireListed(asset);
 
         DutchAuction storage entry = auctions[asset];
-        entry.remaining += amount;
-        (uint256 value, uint256 graiAmount) = previewDeposit(asset, entry.remaining);
-        if (value == 0 || graiAmount == 0) return; // dust: don't list, don't revert distribute
-
         entry.asset = asset;
+        entry.remaining += amount;
         entry.initial = entry.remaining;
-        entry.maxPayment = graiAmount;
-        entry.minPayment = (graiAmount * (BPS - config.bribePremiumBps)) / BPS;
         entry.startTime = uint48(block.timestamp);
         entry.period = config.buybackPeriod;
+
+        (, uint256 graiAmount) = previewDeposit(asset, entry.remaining);
+
+        entry.maxPayment = graiAmount;
+        entry.minPayment = (graiAmount * (BPS - config.bribePremiumBps)) / BPS;
         emit AuctionUpdate(asset, entry.remaining, graiAmount, block.timestamp);
     }
 
@@ -1116,8 +1099,7 @@ contract GRAI is
     /// @dev Pulls `amount` from `from` to `to` and returns tokens actually credited (FoT-safe for ERC20)
     ///      plus any ETH excess (`refund`). ETH is funded by `msg.value`; when `toRefund` is true the
     ///      excess is sent to `msg.sender`, otherwise the caller must send `refund` later.
-    ///      A rejected ETH payment or refund is redirected to `treasury`.
-    ///      Stray `msg.value` on an ERC20 path is forwarded to `treasury` (not parked on GRAI).
+    ///      Stray `msg.value` on an ERC20 path is forwarded to `beneficiar()`.
     function _pay(address from, address to, address asset, uint256 amount, bool toRefund) internal returns (uint256 paid, uint256 refund) {
         if (asset == address(0)) {
             if (msg.value < amount) revert ValueMismatch();
@@ -1126,7 +1108,7 @@ contract GRAI is
             if (toRefund) _sendEth(msg.sender, refund);
             paid = amount;
         } else {
-            _sendEth(beneficiar(), msg.value);
+            if (msg.value > 0) _sendEth(beneficiar(), msg.value);
             uint256 before = IERC20(asset).balanceOf(to);
             IERC20(asset).safeTransferFrom(from, to, amount);
             paid = IERC20(asset).balanceOf(to) - before;

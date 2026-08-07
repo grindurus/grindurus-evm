@@ -137,19 +137,6 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(address(treasury).balance, 0);
     }
 
-    function test_DistributeCuts_NoOp() public {
-        IGRAI.Config memory before_ = _readConfig();
-        vm.prank(admin);
-        grai.setConfig(
-            IGRAI.ConfigId.DISTRIBUTE_CUTS,
-            uint256(BUYBACK_CUT_BPS) | (uint256(DIVIDEND_CUT_BPS) << 16) | (uint256(TREASURY_CUT_BPS) << 32)
-        );
-        IGRAI.Config memory after_ = _readConfig();
-        assertEq(after_.buybackCutBps, before_.buybackCutBps);
-        assertEq(after_.dividendCutBps, before_.dividendCutBps);
-        assertEq(after_.treasuryCutBps, before_.treasuryCutBps);
-    }
-
     function test_Distribute_L1AndL2() public {
         _mintAff(alice, bob);
         _mintAff(bob, carol);

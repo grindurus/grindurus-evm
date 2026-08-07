@@ -213,12 +213,20 @@ abstract contract GRAIFixture is Test {
     }
 
     /// @dev Test economics often assume 50/30/20; initialize defaults are ~33/33/33.
+    ///      Yield cuts are immutable via `setConfig` — poke the packed config word for tests only.
     function _setYieldSplitFiftyThirtyTwenty() internal {
         IGRAI.Config memory cfg = _readConfig();
         cfg.buybackCutBps = BUYBACK_CUT_BPS;
         cfg.dividendCutBps = DIVIDEND_CUT_BPS;
         cfg.treasuryCutBps = TREASURY_CUT_BPS;
-        grai.setConfig(IGRAI.ConfigId.FULL, _packConfig(cfg));
+        _writeConfig(cfg);
+    }
+
+    /// @dev Packed `config` is one storage word (current OZ layout). Update if inheritance changes.
+    uint256 private constant _CONFIG_SLOT = 17;
+
+    function _writeConfig(IGRAI.Config memory cfg) internal {
+        vm.store(address(grai), bytes32(_CONFIG_SLOT), bytes32(_packConfig(cfg)));
     }
 
     function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
