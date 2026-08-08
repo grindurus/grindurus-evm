@@ -44,7 +44,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 | Treasury | `treasuryCutBps` 33.33% | `treasury` (affiliates paid later on `claim`; see §10)             |
 
 
-If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is too small to move the index, the dividend cut is **merged into the auction** instead.
+If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is too small to move the index, the dividend cut is **merged into the auction** instead. When the index moves, `totalClaimable` reserves only the index-payable amount (`indexIncrease * eligible / PRECISION`); any remainder is also merged into the auction.
 
 **`buyback`:** buyer pays **GRAI** (`graiIn`), receives the listed asset; any orphan/dead GRAI on the contract (`balanceOf(this) − totalLocked`) is credited to the buyer first, then `lock(graiIn + dead)` + `vote(graiIn + dead)` so the payment (and scavenged dead) is escrowed and voted on the buyer (exit via `bribe` or `unlock` + timelock penalty).
 
@@ -437,8 +437,8 @@ Cancelled Dutch inventory at `liquidate` enters the redeem basket by design (sti
 
 - **Book** = `totalValue / totalSupply`.
 - **Liquidation basket** = pro-rata of `_redeemable` on GRAI after sweeps (excludes `totalClaimable`).
-  Share denominator is `_redeemSupply` = `totalSupply − (balanceOf(this) − totalLocked)` so unlock-penalty /
-  donated orphan GRAI does not dilute redeemers while buyback scavenge is blocked.
+  Share denominator is `totalSupply`. Orphan/dead GRAI still on the contract dilutes redeemers and
+  leaves a residual book slice (live unlock-fee orphans are sent to the opener / `msg.sender` when liquidation opens).
 - New deposits dilute quorum until voters re-commit.
 - After `resettle`, `totalValue` marks to leftover basket NAV only when that raises mint price (`totalNAV >= totalValue`); otherwise book `totalValue` is kept and liquidation still clears (underwater reopen allowed).
 
@@ -581,7 +581,7 @@ adjBps  = 0                                              if voteBps == halfBps
         = −bribePremiumBps * (voteBps - halfBps) / span  if voteBps > halfBps
         // no clamp: past quorum |adj| can exceed bribePremiumBps (may hit BPS → fullAsk = 0)
 
-book         = bribeAssetAmount(graiAmount * totalValue / supply)
+book         = settlementAmount(graiAmount * totalValue / supply)
 fullAsk      = book * (BPS + adjBps) / BPS               // premium leg
            // or adj >= BPS ? 0 : book * (BPS - |adj|) / BPS   // discount leg
 premium      = adjBps > 0 ? fullAsk - book : 0           // scarce votes → favor voting
@@ -701,18 +701,18 @@ Same entrypoint `liquidate()` for everyone:
 | **Owner**, quorum met | This call **is** consent → open immediately (`confirmed` not required). |
 | **Non-owner** | Open only if `confirmed && hasQuorum()`; else `LiquidationNotConfirmed` / `LiquidationQuorumNotMet`. |
 
-Then: cancel auctions into basket; `liquidationAt = now`. Deposits (and other live paths) are blocked by the liquidation flag — per-asset `paused` is **not** rewritten.
+Then: cancel auctions into basket; send orphan/dead GRAI (`balanceOf(this) − totalLocked`, e.g. unlock fees) to the opener (`msg.sender`) as a normal holder; sweep **all** Grinders custodians + idle listed balances onto GRAI; `liquidationAt = now`. Deposits (and other live paths) are blocked by the liquidation flag — per-asset `paused` is **not** rewritten.
 
 While liquidation is open, `setConfig` **is fully blocked** (`LiquidationOpen`) so live `liquidationPeriod` / `redeemPeriod` clocks cannot be rewritten mid-cycle. Zero windows are rejected even when closed (`PeriodZero`).
 
 ### 9.2 Consolidation (`liquidationPeriod`, default 24h)
 
-`redeem` blocked (`LiquidationDelay`). Keepers run `Grinders.liquidate` sweeps → balances on GRAI. Deposit / buyback / bribe / lock / unlock / vote blocked while liquidation is open. `claim` **/** `claimAll` **stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
+`redeem` blocked (`LiquidationDelay`). Custodian + idle inventory is already pulled onto GRAI at open; keepers may still call `Grinders.liquidate` for any late balances. Deposit / buyback / bribe / lock / unlock / vote blocked while liquidation is open. `claim` **/** `claimAll` **stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
 
 ### 9.3 Redeem
 
 After delay: snapshot `previewRedeem` (frozen vector); burn wallet then escrow; `totalValue` book burn; pay that vector.
-Pro-rata denominator is `_redeemSupply` (`totalSupply` minus orphan/dead on GRAI), matching asset payouts and the book cut.
+Pro-rata denominator is `totalSupply` (orphan still on GRAI dilutes redeemers; live orphans are flushed to the opener at open).
 `nonReentrant` — nested redeem via ETH/ERC777 callbacks must not skim later assets. Clamp vote before dividend debt sync when reducing escrow.
 
 **Example** (Alice redeems after consolidation):
@@ -978,7 +978,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `claim` / `claimAll`       | Anyone                    | Allowed (claims ≠ redeem basket)               |
 | `bribe`                    | Anyone                    | Blocked                                        |
 | `redeem`                   | Holder                    | Only when open (after delay); `nonReentrant`   |
-| `liquidate`                | Owner / anyone            | 2-of-2: owner toggles `confirmed` or opens with quorum; non-owner opens iff `confirmed && hasQuorum()` |
+| `liquidate`                | Owner / anyone            | 2-of-2 open; on open cancel auctions + send orphan GRAI to opener |
 | `resettle`                 | Anyone                    | Closes cycle; fund restarts                    |
 | `setConfig`                | Owner                     | Blocked while open                             |
 
