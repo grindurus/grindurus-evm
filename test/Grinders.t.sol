@@ -64,12 +64,7 @@ contract GrindersTest is GRAIFixture {
         vm.prank(admin);
         grai.liquidate();
 
-        assertEq(usdc.balanceOf(address(grinders)), 100e6);
-        assertEq(weth.balanceOf(address(grinders)), 2e18);
-
-        vm.prank(bob);
-        grinders.liquidate(0, 0);
-
+        // GRAI.liquidate sweeps Grinders idle + all custodians onto GRAI.
         assertEq(usdc.balanceOf(address(grinders)), 0);
         assertEq(weth.balanceOf(address(grinders)), 0);
         assertEq(usdc.balanceOf(address(grai)), 100e6);

@@ -162,11 +162,20 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     }
 
     /// @notice Liquidation pull of ETH / base / quote to Grinders (only Grinders).
-    function liquidate() public virtual returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut) {
+    /// @dev Also returns `baseAsset` / `quoteAsset` so Grinders need not re-read them.
+    function liquidate() public virtual returns (
+        address baseAssetOut,
+        address quoteAssetOut,
+        uint256 baseOut,
+        uint256 quoteOut,
+        uint256 ethOut
+    ) {
         _onlyGrinders();
+        baseAssetOut = baseAsset;
+        quoteAssetOut = quoteAsset;
         ethOut = _withdraw(address(grinders), address(0), balance(address(0)));
-        baseOut = _withdraw(address(grinders), baseAsset, balance(baseAsset));
-        quoteOut = _withdraw(address(grinders), quoteAsset, balance(quoteAsset));
+        baseOut = _withdraw(address(grinders), baseAssetOut, balance(baseAssetOut));
+        quoteOut = _withdraw(address(grinders), quoteAssetOut, balance(quoteAssetOut));
         emit Liquidate(ethOut, baseOut, quoteOut);
     }
 

@@ -308,47 +308,56 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     /// @inheritdoc IGrinders
     /// @dev Permissionless while `grai.liquidation()` is open. Pages custodians by registered id,
     ///      pulls eth/base/quote into this contract, then forwards those amounts to GRAI as idle
-    ///      liquidation inventory for `liquidate`. Return amounts are trusted: only registered
-    ///      custodian wallets are iterated, under the Grinders NFT custody model.
+    ///      liquidation inventory for `liquidate`. Per-custodian `try/catch` keeps earlier pulls if one
+    ///      sleeve reverts. Return amounts are trusted: only registered custodian wallets are
+    ///      iterated, under the Grinders NFT custody model.
     function liquidate(uint256 fromId, uint256 toId) public {
         _requireLiquidation();
+        address grai_ = address(grai);
         if (fromId >= toId) {
             fromId = type(uint256).max;
             toId = type(uint256).max;
             IGRAI.DutchAuction[] memory assets;
-            try grai.getAssets() returns (IGRAI.DutchAuction[] memory list) {
+            try IGRAI(grai_).getAssets() returns (IGRAI.DutchAuction[] memory list) {
                 assets = list;
             } catch {
                 return;
             }
             uint256 len = assets.length;
-            for (uint256 i; i < len; ++i) {
+            for (uint256 i; i < len;) {
                 address asset = assets[i].asset;
-                _liquidate(asset, balance(asset));
+                _liquidate(grai_, asset, balance(asset));
+                unchecked { ++i; }
             }
         } else {
             uint256 n = totalSupply();
             if (toId > n) toId = n;
-            for (uint256 i = fromId; i < toId; ++i) {
+            for (uint256 i = fromId; i < toId;) {
                 address custodian = custodians[i];
-                if (custodian == address(0)) continue;
-                ICustodian c = ICustodian(payable(custodian));
-                (uint256 ethOut, uint256 baseOut, uint256 quoteOut) = c.liquidate();
-                _liquidate(address(0), ethOut);
-                _liquidate(c.baseAsset(), baseOut);
-                _liquidate(c.quoteAsset(), quoteOut);
+                if (custodian == address(0)) {
+                    unchecked { ++i; }
+                    continue;
+                }
+                try ICustodian(payable(custodian)).liquidate() returns (
+                    address base, address quote, uint256 baseOut, uint256 quoteOut, uint256 ethOut
+                ) {
+                    _liquidate(grai_, address(0), ethOut);
+                    _liquidate(grai_, base, baseOut);
+                    _liquidate(grai_, quote, quoteOut);
+                } catch {}
+                unchecked { ++i; }
             }
         }
         emit Liquidate(fromId, toId);
     }
 
-    function _liquidate(address asset, uint256 amount) private {
+    function _liquidate(address grai_, address asset, uint256 amount) private {
         if (amount == 0) return;
         if (asset == address(0)) {
-            (bool ok,) = address(grai).call{value: amount}("");
+            (bool ok,) = grai_.call{value: amount}("");
             require(ok, "eth transfer failed");
         } else {
-            IERC20(asset).safeTransfer(address(grai), amount);
+            IERC20(asset).safeTransfer(grai_, amount);
         }
     }
 

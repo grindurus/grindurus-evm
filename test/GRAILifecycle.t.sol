@@ -117,19 +117,20 @@ contract GRAILifecycleTest is GRAIFixture {
         assertTrue(grai.liquidation());
         assertEq(uint256(grai.liquidationAt()), block.timestamp);
 
-        // ── 6. Consolidation: sweep Grinders idle → GRAI, then redeem window ──
+        // ── 6. Redeem window (basket already swept onto GRAI at liquidate open) ──
         vm.warp(block.timestamp + uint256(cfg.liquidationPeriod));
 
-        vm.prank(bob);
-        grinders.liquidate(0, 0);
-        assertEq(usdc.balanceOf(address(grinders)), 0, "idle usdc swept");
-        assertEq(address(grinders).balance, 0, "idle eth swept");
+        assertEq(usdc.balanceOf(address(grinders)), 0, "idle usdc swept at open");
+        assertEq(address(grinders).balance, 0, "idle eth swept at open");
         assertEq(address(grai).balance, ETH_TOTAL, "eth basket on grai");
         (,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
         assertEq(auctionRemaining, 0, "auctions cleared at liquidate");
-        // Deposits + Dutch buyback cut; ±1 wei sticky dividend reserve dust.
+        // Deposits + fixture custodian USDC + Dutch buyback cut; ±1 wei sticky dividend dust.
         uint256 buybackCut = YIELD_USDC - treasuryCut - dividendCut;
-        assertApproxEqAbs(usdc.balanceOf(address(grai)), USDC_TOTAL + buybackCut, 1, "usdc basket");
+        uint256 custodianUsdc = 1_000e6; // GRAIFixture mints this onto the test custodian
+        assertApproxEqAbs(
+            usdc.balanceOf(address(grai)), USDC_TOTAL + custodianUsdc + buybackCut, 1, "usdc basket"
+        );
 
         // ── 7. Everyone redeems full escrow ──
         uint256 aliceUsdcRedeemBefore = usdc.balanceOf(alice);

@@ -33,5 +33,7 @@ interface ICustodian {
     function setAssets(address baseAsset_, address quoteAsset_) external;
     function deallocate(address asset, uint256 amount) external;
     function distribute(address asset, uint256 yieldAmount) external;
-    function liquidate() external returns (uint256 ethOut, uint256 baseOut, uint256 quoteOut);
+    function liquidate()
+        external
+        returns (address baseAsset, address quoteAsset, uint256 baseOut, uint256 quoteOut, uint256 ethOut);
 }

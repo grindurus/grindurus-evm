@@ -79,6 +79,11 @@ contract GRAIRolesTest is Test {
         assertEq(grai.pendingOwner(), address(0));
     }
 
+    function test_OwnerCannotRenounceOwnership() public {
+        vm.expectRevert(IGRAI.OwnershipRenounceDisabled.selector);
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.renounceOwnership, ()));
+    }
+
     function test_DeployerCannotCallOwnerFunctions() public {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, DEPLOYER));
         vm.prank(DEPLOYER);
