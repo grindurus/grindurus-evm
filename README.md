@@ -11,7 +11,7 @@ cuts (initialize defaults **≈33.33% / 33.34% / 33.33%**): auction → Dutch lo
 GRAI via **`buyback`** (payment is `lock`+`vote`d on the buyer — **not** a GRAI vote-reward
 index); dividend → unvoted lockers via `claim` / `claimAll`; treasury → `treasury`.
 
-Full mechanics: [`docs/TOKENOMICS.md`](docs/TOKENOMICS.md). Grinders / custodians / yield path: [`docs/GRINDERS.md`](docs/GRINDERS.md).
+Full mechanics: [`docs/GRAI.md`](docs/GRAI.md). Grinders / custodians / yield path: [`docs/GRINDERS.md`](docs/GRINDERS.md).
 
 ## Model
 
@@ -33,7 +33,7 @@ buyback(asset)                [permissionless]
    buyer pays GRAI ask; receives listed asset; graiIn+dead → lock+vote on buyer
                       ↓
 unlock(amount)                [locker]
-   decaying unlock fee stays on GRAI as orphan/dead; net GRAI to wallet
+   flat unlock fee stays on GRAI as orphan/dead; net GRAI to wallet
                       ↓
 bribe(voter)               [permissionless]
    dynamic ask vs half-quorum (premium / par / discount) in bribeAsset (non-FoT);
@@ -112,7 +112,8 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   dividend cut is merged into the auction instead. Every `lock` (including buyback / vote shortfall)
   resets `lockedAt` on the whole escrow
 - **redeem during open liquidation only** — after `liquidationPeriod`, burns wallet and/or locked
-  GRAI for a pro-rata share of `_redeemable` balances on GRAI (excludes dividend reserves). Grinders
+  GRAI for a pro-rata share of `_redeemable` balances on GRAI (excludes dividend reserves; share
+  denominator excludes orphan/dead GRAI on the contract). Grinders
   sweeps return custodian assets to GRAI. After `liquidationPeriod + redeemPeriod`, `resettle`
   sends leftover redeemable balances to Grinders; with remaining supply, marks `totalValue = totalNAV`
   only when that **raises** mint price (`totalNAV >= totalValue`), otherwise keeps book TV
@@ -127,10 +128,10 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   pays Dutch GRAI ask for the listed asset; `lock(graiIn + dead)` + `vote(graiIn + dead)`. Reverts
   unless both `graiIn > 0` and `amountOut > 0` (no free / zero fills). Exit payment later via `bribe`
   or `unlock`
-- **unlock:** `unlock(graiAmount)` — decaying fee (`unlockFeeBps` → 0 over `unlockPenaltyPeriod` from
-  `lockedAt`, defaults 10% / 24h) **stays on GRAI as dead** (not sent to treasury); net returns to
-  the wallet (`previewUnlock` → `(unlockAmount, penalty)`). While live fee > 0, partial unlocks below
-  `ceil(BPS / penaltyBps)` revert; full-escrow exit is always allowed. Yield claims are separate
+- **unlock:** `unlock(graiAmount)` — flat penalty (`unlockPenaltyBps`, default **1%**) **stays on GRAI as dead**
+  (not sent to treasury); net returns to the wallet (`previewUnlock` → `(unlockAmount, penalty)`).
+  While penalty > 0, any unlock below `ceil(BPS / unlockPenaltyBps)` reverts (including full-escrow dust).
+  Yield claims are separate
 - **bribe:** `previewBribe` prices a dynamic ask in `bribeAsset` vs half-quorum
   (`quorumBps / 2`) with slope `bribePremiumBps`: `|adj| = bribePremiumBps` at 0 votes and at
   quorum, par at half; above quorum discount `adj` may exceed `bribePremiumBps`. Premium regime:
@@ -449,7 +450,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 
 ## Related
 
-- Tokenomics: [`docs/TOKENOMICS.md`](docs/TOKENOMICS.md)
+- Tokenomics: [`docs/GRAI.md`](docs/GRAI.md)
 - Grinders / custodians: [`docs/GRINDERS.md`](docs/GRINDERS.md)
 - Bribe ask chart: [`docs/bribe-amount-vs-voted.svg`](docs/bribe-amount-vs-voted.svg)
 - Solana port: [`../grindurus-solana/`](../grindurus-solana/)
