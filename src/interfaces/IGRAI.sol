@@ -10,8 +10,7 @@ import {IWETH} from "./IWETH.sol";
 
 interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error AssetUnknown();
-    error AssetBalanceNonZero();
-    error AssetClaimableNonZero();
+    error AssetNotEmpty();
     error BpsTooHigh();
     error NotPaused();
     error Paused();
@@ -22,15 +21,12 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error EthTransferFailed();
     error GraiMismatch();
     error ValueMismatch();
-    error UnexpectedValue();
-    error LiquidationQuorumNotMet();
-    error LiquidationNotConfirmed();
+    error LiquidationNotReady();
     error LiquidationOpen();
     error LiquidationClosed();
     error LiquidationDelay();
     error RedeemPeriodActive();
-    error BuybackPeriodTooShort();
-    error PeriodZero();
+    error InvalidPeriod();
     error InvalidCuts();
     error InvalidRange(uint256 fromId, uint256 toId);
     error NotDepositor();
@@ -312,14 +308,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function distribute(address asset, uint256 yieldAmount) external payable;
 
     /// @notice Pro-rata asset amounts paid for burning wallet-held and/or locked GRAI.
-    ///         Denominator excludes orphan/dead GRAI on GRAI (`balanceOf(this) − totalLocked`).
+    ///         Denominator is `totalSupply` (orphan/dead GRAI on this contract dilutes redeemers).
     function previewRedeem(address holder, uint256 graiAmount)
         external
         view
         returns (address[] memory assetOuts, uint256[] memory amounts);
 
     /// @notice Burn wallet-held and/or locked GRAI for a pro-rata share of the liquidation basket
-    ///         (same orphan-excluding denominator as `previewRedeem`).
+    ///         (same `totalSupply` denominator as `previewRedeem`).
     function redeem(uint256 graiAmount) external;
 
     /// @notice Escrow wallet GRAI for dividend eligibility (optional if only voting — `vote` auto-locks).

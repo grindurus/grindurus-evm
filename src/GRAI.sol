@@ -253,7 +253,7 @@ contract GRAI is
     /// @inheritdoc IGRAI
     function beneficiar() public view returns (address) {
         try treasury.beneficiar() returns (address beneficiar_) {
-            return beneficiar_;
+            return beneficiar_ == address(0) ? address(treasury) : beneficiar_;
         } catch {
             return address(treasury);
         }
@@ -719,8 +719,7 @@ contract GRAI is
                 return;
             }
         } else {
-            if (!confirmed) revert LiquidationNotConfirmed();
-            if (!hasQuorum()) revert LiquidationQuorumNotMet();
+            if (!confirmed || !hasQuorum()) revert LiquidationNotReady();
         }
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
@@ -735,8 +734,8 @@ contract GRAI is
         liquidationAt = uint48(block.timestamp);
 
         // Unlock fees / stray GRAI on this contract are not escrow — send to beneficiar as a
-        // normal holder so they can redeem (or hold) rather than dilute `_redeemSupply` / leave
-        // ghost supply after a full redeem + `resettle` bootstrap.
+        // normal holder so they can redeem (or hold) rather than leave ghost supply after a
+        // full redeem + `resettle` bootstrap.
         uint256 bal = balanceOf(address(this));
         if (bal > totalLocked) {
             address to = beneficiar();
@@ -756,7 +755,8 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Pays the frozen `previewRedeem` vector after burns/`totalValue` cut (both use
-    ///      `_redeemSupply` = totalSupply − orphan). `nonReentrant` is required: without it, an
+    ///      `totalSupply`). Orphan GRAI on this contract dilutes redeemers and keeps a residual
+    ///      book slice until scavenged or burned. `nonReentrant` is required: without it, an
     ///      ETH/ERC777 callback mid-loop can nest `redeem` and skim later assets above that
     ///      snapshot (and over-claim the callback asset itself).
     function redeem(uint256 graiAmount) public nonReentrant {
@@ -764,7 +764,7 @@ contract GRAI is
         _requireLiquidation();
 
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
-        uint256 supply = _redeemSupply();
+        uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (totalValue * graiAmount) / supply : 0;
         _requireNotZeroAmount(value);
 
@@ -807,7 +807,7 @@ contract GRAI is
         ///      `totalValue` while `previewRedeem` returns zero assets, forfeiting backing to
         ///      later claimants.
         if (block.timestamp < liquidationAt + config.liquidationPeriod) revert LiquidationDelay();
-        uint256 supply = _redeemSupply();
+        uint256 supply = totalSupply();
         if (supply == 0) revert InvalidAmount();
         Escrow storage entry = escrows[holder];
         uint256 holderAmount = balanceOf(holder) + entry.locked;
@@ -919,11 +919,11 @@ contract GRAI is
         if (2 * cfg.bribePremiumBps > BPS) revert BpsTooHigh();
         if (cfg.quorumBps >= BPS) revert BpsTooHigh();
         if (cfg.unlockPenaltyBps > 10_00) revert BpsTooHigh();
-        if (cfg.quorumBps < 2) revert UnexpectedValue();
+        if (cfg.quorumBps < 2) revert BpsTooHigh();
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.buybackCutBps) + cfg.dividendCutBps + cfg.treasuryCutBps != BPS) revert InvalidCuts();
-        if (cfg.buybackPeriod < 7 days) revert BuybackPeriodTooShort();
-        if (cfg.liquidationPeriod == 0 || cfg.redeemPeriod == 0) revert PeriodZero();
+        if (cfg.buybackPeriod < 7 days) revert InvalidPeriod();
+        if (cfg.liquidationPeriod == 0 || cfg.redeemPeriod == 0) revert InvalidPeriod();
     }
 
     /// @notice Contract balance of `asset` (`address(0)` = native ETH).
@@ -943,15 +943,6 @@ contract GRAI is
         uint256 bal = _balance(asset);
         uint256 reserved = assets[asset].totalClaimable;
         return bal > reserved ? bal - reserved : 0;
-    }
-
-    /// @dev Share denominator for liquidation redeem: `totalSupply` minus orphan/dead GRAI on this
-    ///      contract (`balanceOf(this) - totalLocked`). Orphans cannot redeem while buyback is blocked.
-    function _redeemSupply() internal view returns (uint256) {
-        uint256 supply = totalSupply();
-        uint256 bal = balanceOf(address(this));
-        uint256 orphan = bal > totalLocked ? bal - totalLocked : 0;
-        return supply > orphan ? supply - orphan : 0;
     }
 
     /// @notice Linear Dutch amount: decays `maxAmount` → `minAmount` over `duration`; `elapsed` past
@@ -1062,8 +1053,7 @@ contract GRAI is
         uint256 index = assets[asset].id;
         if (index >= assetList.length || assetList[index] != asset) revert AssetUnknown();
         if (!feeds[asset].paused) revert NotPaused();
-        if (_balance(asset) > 0) revert AssetBalanceNonZero();
-        if (assets[asset].totalClaimable > 0) revert AssetClaimableNonZero();
+        if (_balance(asset) > 0 || assets[asset].totalClaimable > 0) revert AssetNotEmpty();
 
         uint256 lastIndex = assetList.length - 1;
         if (index != lastIndex) {
