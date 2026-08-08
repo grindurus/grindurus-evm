@@ -143,6 +143,12 @@ contract GRAI is
         return OwnableUpgradeable.owner();
     }
 
+    /// @dev Disabled: 2-of-2 liquidation needs a live owner to toggle `confirmed` / open with quorum.
+    ///      Transfer via Ownable2Step instead.
+    function renounceOwnership() public view override onlyOwner {
+        revert OwnershipRenounceDisabled();
+    }
+
     /// @dev Owner feed waterfall on `feeds[asset]`:
     ///      - Not listed (`feedType == NONE`): writes `feed` and appends to `assetList` (list).
     ///      - Listed + unpaused: only `feed.paused` is applied; oracle fields are ignored.
@@ -168,6 +174,7 @@ contract GRAI is
             f.paused = feed.paused;
         } else if (feed.feedType == FeedType.NONE) {
             // remove (delist)
+            _requireNotLiquidation();
             _removeAsset(asset);
         } else {
             // replace oracle
@@ -225,7 +232,7 @@ contract GRAI is
     }
 
     function setTreasury(address treasury_) external onlyOwner {
-        _requireNotGRAI(treasury_);
+        _requireNotLiquidation();
         _requireGraiMatch(treasury_);
         treasury = ITreasury(treasury_);
     }
@@ -701,7 +708,9 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev 2-of-2 with vote quorum. Owner: toggle `confirmed` when no quorum; with
     ///      quorum, this call is consent and opens. Non-owner: open when `confirmed &&
-    ///      hasQuorum()`, else revert.
+    ///      hasQuorum()`, else revert. On open: cancel auctions, send orphan/dead GRAI
+    ///      (`balanceOf(this) − totalLocked`) to `beneficiar`, then sweep all Grinders
+    ///      custodians + idle listed balances onto GRAI so redeem is not empty-basket.
     function liquidate() public nonReentrant {
         _requireNotLiquidation();
         if (msg.sender == owner()) {
@@ -724,6 +733,22 @@ contract GRAI is
         }
         liquidation = true;
         liquidationAt = uint48(block.timestamp);
+
+        // Unlock fees / stray GRAI on this contract are not escrow — send to beneficiar as a
+        // normal holder so they can redeem (or hold) rather than dilute `_redeemSupply` / leave
+        // ghost supply after a full redeem + `resettle` bootstrap.
+        uint256 bal = balanceOf(address(this));
+        if (bal > totalLocked) {
+            address to = beneficiar();
+            if (to == address(0)) to = address(treasury);
+            _transfer(address(this), to, bal - totalLocked);
+        }
+
+        // Pull custodian inventories + Grinders idle into GRAI (needs `liquidation == true`).
+        // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
+        try grinders.liquidate(0, type(uint256).max) {} catch {}
+        try grinders.liquidate(0, 0) {} catch {}
+
         emit Liquidate(liquidation);
     }
 
@@ -974,17 +999,26 @@ contract GRAI is
 
     //////////////////// DIVIDENTS ////////////////////
 
+    /// @dev Accrue yield to unvoted locks via `accShare`. Index dust — tokens that cannot be paid
+    ///      out of this bump (`amount - indexIncrease * eligible / PRECISION`) — goes to `_place`
+    ///      instead of ghosting in `totalClaimable` (which would also block delist).
     function _distribute(address asset, uint256 amount) internal {
         if (amount == 0) return;
         uint256 eligible = totalLocked - totalVoted;
         uint256 indexIncrease = eligible > 0 ? (amount * PRECISION) / eligible : 0;
+        // No eligible locks, or cut too small to move the index → full cut to auction.
         if (indexIncrease == 0) {
             _place(asset, amount);
-        } else {
-            AssetConfig storage div = assets[asset];
-            div.accShare += indexIncrease;
-            div.totalClaimable += amount;
+            return;
         }
+
+        // Max this index bump can ever pay (one holder of all `eligible`); per-locker floors
+        // may leave a wei-level gap vs this, which is acceptable dust.
+        uint256 reserved = (indexIncrease * eligible) / PRECISION;
+        AssetConfig storage div = assets[asset];
+        div.accShare += indexIncrease;
+        div.totalClaimable += reserved;
+        if (amount > reserved) _place(asset, amount - reserved);
     }
 
     function _accrueDividends(address account) internal {
@@ -1028,6 +1062,7 @@ contract GRAI is
         uint256 index = assets[asset].id;
         if (index >= assetList.length || assetList[index] != asset) revert AssetUnknown();
         if (!feeds[asset].paused) revert NotPaused();
+        if (_balance(asset) > 0) revert AssetBalanceNonZero();
         if (assets[asset].totalClaimable > 0) revert AssetClaimableNonZero();
 
         uint256 lastIndex = assetList.length - 1;

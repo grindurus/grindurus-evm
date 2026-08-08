@@ -34,6 +34,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidCuts();
     error InvalidRange(uint256 fromId, uint256 toId);
     error NotDepositor();
+    /// @notice `renounceOwnership` is disabled — owner is required for 2-of-2 liquidation consent.
+    error OwnershipRenounceDisabled();
     /// @notice Field selector for `setConfig`.
     /// @dev Yield cuts (`buybackCutBps` / `dividendCutBps` / `treasuryCutBps`) are fixed at
     ///      `initialize` and cannot be changed via `setConfig`. Still blocked while liquidation is open.
@@ -267,6 +269,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function setGrinders(address grinders_) external;
 
+    /// @notice Retarget the fee sink. Reverts while liquidation is open.
     function setTreasury(address treasury_) external;
 
     function bribeAsset() external view returns (address);
@@ -384,6 +387,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Liquidation 2-of-2: owner toggles `confirmed` if no quorum, else opens;
     ///         anyone else opens when `confirmed && hasQuorum()`, otherwise reverts.
+    ///         On open: orphan/dead GRAI → `beneficiar`; sweep all Grinders custodians + idle
+    ///         listed balances onto GRAI.
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
