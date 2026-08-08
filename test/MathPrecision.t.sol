@@ -16,7 +16,7 @@ contract MathPrecisionProbe is GRAIFixture {
     /// Auction payment scales linearly with fill size at t=0.
     function test_AuctionPaymentProRataAtStart() public {
         vm.startPrank(admin);
-        grai.setBribeAsset(address(usdc));
+        grai.setSettlementAsset(address(usdc));
         _setAssetPause(address(weth), false);
         vm.stopPrank();
 
@@ -34,6 +34,51 @@ contract MathPrecisionProbe is GRAIFixture {
         assertEq(pay1, 500e6);
         assertEq(pay2, 1500e6);
         assertEq(pay1 + pay2, 2000e6);
+    }
+
+    /// Near-floor chunks must ceil-pay so sum(chunk graiIn) >= full-lot ask (no floor underpay).
+    function test_BuybackChunksCeilPayNearFloor() public {
+        vm.startPrank(admin);
+        grai.setSettlementAsset(address(usdc));
+        _setAssetPause(address(weth), false);
+        vm.stopPrank();
+
+        // 1 WETH yield → buyback cut listed at mint ask ~2000e6 * cutBps (nonzero ask).
+        deal(address(weth), alice, 1e18);
+        vm.startPrank(alice);
+        weth.approve(address(grai), 1e18);
+        grai.distribute(address(weth), 1e18);
+        vm.stopPrank();
+
+        (, uint48 startTime, uint32 period, uint256 remaining, uint256 initial,, uint256 minPayment) =
+            grai.auctions(address(weth));
+        assertGt(remaining, 0);
+        assertEq(remaining, initial);
+        assertGt(minPayment, 0, "nonzero Dutch floor");
+
+        vm.warp(uint256(startTime) + uint256(period));
+        (uint256 fullPay, uint256 fullOut) = grai.previewBuyback(address(weth), type(uint256).max, block.timestamp);
+        assertEq(fullOut, remaining);
+        assertEq(fullPay, minPayment);
+
+        uint256 ask = fullPay;
+        // 2-wei chunks: floor(ask*2/initial)=0 near realistic 18-decimal lots; ceil pays 1.
+        uint256 chunk = 2;
+        uint256 perChunk = (ask * chunk + initial - 1) / initial;
+        (uint256 payChunk,) = grai.previewBuyback(address(weth), chunk, block.timestamp);
+        assertEq(payChunk, perChunk, "preview uses ceil");
+        assertGt(perChunk, 0);
+
+        uint256 nFull = initial / chunk;
+        uint256 rem = initial % chunk;
+        uint256 sum = perChunk * nFull;
+        if (rem > 0) sum += (ask * rem + initial - 1) / initial;
+        assertGe(sum, ask, "chunked ceil total >= full-lot ask");
+
+        uint256 floorPer = (ask * chunk) / initial;
+        uint256 floorSum = floorPer * nFull;
+        if (rem > 0) floorSum += (ask * rem) / initial;
+        assertLt(floorSum, ask, "sanity: floor path would underpay");
     }
 
     /// Deposit works again after an asset is drained, delisted and re-listed.

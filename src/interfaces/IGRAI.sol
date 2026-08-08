@@ -157,7 +157,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     event Bribe(
         address indexed briber,
         address indexed voter,
-        address indexed bribeAsset,
+        address indexed settlementAsset,
         uint256 graiAmount,
         uint256 bribeAmount,
         uint256 totalVoted
@@ -268,13 +268,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Retarget the fee sink. Reverts while liquidation is open.
     function setTreasury(address treasury_) external;
 
-    function bribeAsset() external view returns (address);
+    function settlementAsset() external view returns (address);
 
     /// @notice Canonical WETH for ETH→WETH fallback when a native push is rejected.
     function weth() external view returns (IWETH);
 
     /// @notice Set bribe settlement asset (listed feed). Must not be fee-on-transfer.
-    function setBribeAsset(address bribeAsset_) external;
+    function setSettlementAsset(address settlementAsset_) external;
 
     function setConfig(ConfigId id, uint256 data) external;
 
@@ -302,7 +302,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         returns (uint256 graiOut, uint256 depositValue);
 
     /// @notice Fill a Dutch lot: pay GRAI ask, receive `asset`; `graiIn` is locked+voted on the buyer.
-    ///         Reverts if `graiIn == 0` or `amountOut == 0` (no free / zero fills).
+    ///         Reverts if `graiIn == 0` or `amountOut == 0` (no free fills). Partial fills
+    ///         ceil-pay the pro-rata Dutch ask so chunked underpay cannot clear below ask.
     function buyback(address asset, uint256 amount) external;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
@@ -365,7 +366,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         Same tip split as `claim` per asset.
     function claimAll(address locker) external;
 
-    /// @notice Preview bribe ask in `bribeAsset`: `bribeAmount`, plus absolute `premium` or `discount`
+    /// @notice Preview bribe ask in `settlementAsset`: `bribeAmount`, plus absolute `premium` or `discount`
     ///         vs book (one is always 0). `premium > 0` ⇒ scarce votes (favor voting); `discount > 0`
     ///         ⇒ excess votes (favor bribing). Discount is half the full book−ask gap; ask = book − discount.
     function previewBribe(address voter, uint256 graiAmount)
@@ -375,7 +376,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Anyone may buy out `voter`'s vote for `previewBribe`. Ask is book scaled by a dynamic
     ///         adj vs half-quorum (premium / par / discount; slope `bribePremiumBps`, uncapped above
-    ///         quorum on the discount leg). `bribeAsset` must not be fee-on-transfer: payment must
+    ///         quorum on the discount leg). `settlementAsset` must not be fee-on-transfer: payment must
     ///         credit exactly `bribeAmount`; briber receives the full escrowed `graiAmount`.
     ///         Premium: voter gets book + half the premium, rest → cuts. Discount: ask is book −
     ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
@@ -383,7 +384,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Liquidation 2-of-2: owner toggles `confirmed` if no quorum, else opens;
     ///         anyone else opens when `confirmed && hasQuorum()`, otherwise reverts.
-    ///         On open: orphan/dead GRAI → `beneficiar`; sweep all Grinders custodians + idle
+    ///         On open: orphan/dead GRAI → `msg.sender`; sweep all Grinders custodians + idle
     ///         listed balances onto GRAI.
     function liquidate() external;
 

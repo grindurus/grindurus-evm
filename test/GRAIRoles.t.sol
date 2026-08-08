@@ -79,6 +79,21 @@ contract GRAIRolesTest is Test {
         assertEq(grai.pendingOwner(), address(0));
     }
 
+    function test_AcceptOwnershipClearsConfirmed() public {
+        // Owner toggles confirmed while quorum is unmet (no votes).
+        assertFalse(grai.hasQuorum());
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.liquidate, ()));
+        assertTrue(grai.confirmed());
+
+        address next = makeAddr("nextOwner");
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.transferOwnership, (next)));
+        vm.prank(next);
+        grai.acceptOwnership();
+
+        assertEq(grai.owner(), next);
+        assertFalse(grai.confirmed(), "prior owner consent must not survive handoff");
+    }
+
     function test_OwnerCannotRenounceOwnership() public {
         vm.expectRevert(IGRAI.OwnershipRenounceDisabled.selector);
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.renounceOwnership, ()));
@@ -220,11 +235,11 @@ contract GRAIRolesTest is Test {
 
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setTreasury, (nextTreasury)));
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setGrinders, (address(grinders))));
-        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setBribeAsset, (address(0))));
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setSettlementAsset, (address(0))));
 
         assertEq(address(grai.treasury()), nextTreasury);
         assertEq(address(grai.grinders()), address(grinders));
-        assertEq(grai.bribeAsset(), address(0));
+        assertEq(grai.settlementAsset(), address(0));
     }
 
     function test_NonOwnerCannotSetFeed() public {

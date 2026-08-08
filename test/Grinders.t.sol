@@ -28,7 +28,7 @@ contract GrindersTest is GRAIFixture {
     function _registerTestCustodian() internal override {}
 
     function test_DistributePaysProtocolProfitToOwner() public {
-        _setBribeAsset(address(usdc));
+        _setSettlementAsset(address(usdc));
         vm.startPrank(admin);
         _setYieldSplitFiftyThirtyTwenty();
         address custodyWallet = grinders.mint(cowKind, grinder, address(usdc), address(weth));

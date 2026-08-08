@@ -190,9 +190,9 @@ abstract contract GRAIFixture is Test {
         });
     }
 
-    function _setBribeAsset(address asset) internal {
+    function _setSettlementAsset(address asset) internal {
         vm.prank(admin);
-        grai.setBribeAsset(asset);
+        grai.setSettlementAsset(asset);
     }
 
     function _readConfig() internal view returns (IGRAI.Config memory cfg) {

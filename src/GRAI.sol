@@ -90,8 +90,8 @@ contract GRAI is
     /// @notice Asset used for bribe payments.
     /// @dev If zero address, native ETH; otherwise an ERC20. Must not be fee-on-transfer:
     ///      `bribe` requires exact `_pay` credit (`received == bribeAmount`) and releases the full
-    ///      escrowed GRAI. Owner must only set a non-FoT listed feed asset via `setBribeAsset`.
-    address public bribeAsset;
+    ///      escrowed GRAI. Owner must only set a non-FoT listed feed asset via `setSettlementAsset`.
+    address public settlementAsset;
 
     /// @notice Owner confirmation for non-owner open (2-of-2). Owner toggles via `liquidate` when no quorum;
     ///         cleared on open. Owner with quorum opens without needing this flag.
@@ -147,6 +147,12 @@ contract GRAI is
     ///      Transfer via Ownable2Step instead.
     function renounceOwnership() public view override onlyOwner {
         revert OwnershipRenounceDisabled();
+    }
+
+    /// @dev Clear prior owner’s liquidation consent — `confirmed` must not survive handoff.
+    function acceptOwnership() public override {
+        super.acceptOwnership();
+        confirmed = false;
     }
 
     /// @dev Owner feed waterfall on `feeds[asset]`:
@@ -238,12 +244,12 @@ contract GRAI is
     }
 
     /// @notice Set the asset used for bribe payments.
-    /// @dev Requires a price feed. Must not be fee-on-transfer (see `bribeAsset` / `bribe`).
+    /// @dev Requires a price feed. Must not be fee-on-transfer (see `settlementAsset` / `bribe`).
     ///      Auctions price in GRAI, so open lots / locks do not block the switch.
-    function setBribeAsset(address bribeAsset_) external onlyOwner {
-        _requireNotGRAI(bribeAsset_);
-        _requireListed(bribeAsset_);
-        bribeAsset = bribeAsset_;
+    function setSettlementAsset(address settlementAsset_) external onlyOwner {
+        _requireNotGRAI(settlementAsset_);
+        _requireListed(settlementAsset_);
+        settlementAsset = settlementAsset_;
     }
 
     receive() external payable {}
@@ -531,7 +537,8 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Buyer pays GRAI (Dutch ask) and receives the listed asset; `graiIn` is escrowed and voted
     ///      toward liquidation on the buyer (refund via `bribe` or `unlock` with unlock penalty).
-    ///      Requires `graiIn > 0` and `amountOut > 0` (no free / zero fills — blocks chunked floor-drain).
+    ///      Requires `graiIn > 0` and `amountOut > 0` (no free fills). Partial fills use ceil
+    ///      division against the frozen full-lot ask so chunked underpay cannot clear below ask.
     ///      Full-lot ask decays to `(BPS - bribePremiumBps)` of mint (not free clearance unless
     ///      premium is `BPS`). Orphan GRAI (`balanceOf(this) - totalLocked`) is credited to the buyer
     ///      then `lock`+`vote`d with the Dutch payment.
@@ -567,7 +574,8 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Dutch GRAI ask: `maxPayment` → `minPayment` over `entry.period` (snapshotted from
-    ///      `config.buybackPeriod` at `_place`), scaled by buy size. Caps to auction remaining.
+    ///      `config.buybackPeriod` at `_place`), scaled by buy size with ceil so partial fills
+    ///      cannot underpay the pro-rata ask. Caps to auction remaining.
     function previewBuyback(
         address asset,
         uint256 amount,
@@ -583,7 +591,8 @@ contract GRAI is
         amountOut = amount;
         uint256 elapsed = timestamp > entry.startTime ? timestamp - entry.startTime : 0;
         uint256 ask = _dutchAmount(entry.maxPayment, entry.minPayment, elapsed, entry.period);
-        graiIn = entry.initial > 0 ? (ask * amountOut) / entry.initial : 0;
+        // Ceil(ask * amountOut / initial): protocol-favoring vs chunked floor underpay.
+        graiIn = entry.initial > 0 ? (ask * amountOut + entry.initial - 1) / entry.initial : 0;
     }
 
     //////////////////// VOTE ////////////////////
@@ -614,12 +623,12 @@ contract GRAI is
     //////////////////// BRIBE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Briber buys out voted GRAI for dynamic `previewBribe` in `bribeAsset` (non-FoT only).
+    /// @dev Briber buys out voted GRAI for dynamic `previewBribe` in `settlementAsset` (non-FoT only).
     ///      Premium leg: ask = book × (BPS + adj) / BPS. Discount leg: fullAsk = book × (BPS − adj) /
     ///      BPS (0 if `adj ≥ BPS`), then ask = book − (book − fullAsk) / 2. `adj` is linear in
     ///      distance from half-quorum with slope `bribePremiumBps` per half-quorum of vote-share —
     ///      equals `bribePremiumBps` at 0 votes and at quorum, and may exceed it above quorum.
-    ///      Requires exact `_pay` credit (`received == bribeAmount`); FoT `bribeAsset` reverts.
+    ///      Requires exact `_pay` credit (`received == bribeAmount`); FoT `settlementAsset` reverts.
     ///      Premium: voter gets book + half premium, remaining premium → cuts. Discount: half of
     ///      full gap stays in the ask (briber saving), other half → cuts; voter keeps the rest of
     ///      `received`. Par: all to voter.
@@ -641,7 +650,7 @@ contract GRAI is
         totalLocked -= graiAmount;
         _syncDividendDebts(voter);
         _transfer(address(this), briber, graiAmount);
-        (uint256 received, uint256 refund) = _pay(briber, address(this), bribeAsset, bribeAmount, false);
+        (uint256 received, uint256 refund) = _pay(briber, address(this), settlementAsset, bribeAmount, false);
 
         if (received != bribeAmount) revert InvalidAmount();
         if (entry.voted == 0) _removeAccount(voter, true);
@@ -659,16 +668,16 @@ contract GRAI is
         uint256 treasuryCut = (cutPool * config.treasuryCutBps) / BPS;
         uint256 dividendCut = (cutPool * config.dividendCutBps) / BPS;
         uint256 buybackCut = cutPool - treasuryCut - dividendCut;
-        _place(bribeAsset, buybackCut);
-        _distribute(bribeAsset, dividendCut);
-        _withdraw(address(treasury), bribeAsset, treasuryCut);
-        _withdraw(voter, bribeAsset, voterCut);
+        _place(settlementAsset, buybackCut);
+        _distribute(settlementAsset, dividendCut);
+        _withdraw(address(treasury), settlementAsset, treasuryCut);
+        _withdraw(voter, settlementAsset, voterCut);
         _sendEth(briber, refund);
-        emit Bribe(briber, voter, bribeAsset, graiAmount, received, totalVoted);
+        emit Bribe(briber, voter, settlementAsset, graiAmount, received, totalVoted);
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Returns ask plus absolute premium/discount in `bribeAsset` (mutually exclusive; both 0 at
+    /// @dev Returns ask plus absolute premium/discount in `settlementAsset` (mutually exclusive; both 0 at
     ///      par). `premium > 0` ⇒ scarce votes (vote incentive); `discount > 0` ⇒ excess votes (bribe
     ///      incentive). `adj = bribePremiumBps * |voteBps − halfBps| / halfBps` (span floors to 1 if
     ///      half is 0): `bribePremiumBps` is the slope scale — `|adj| = bribePremiumBps` at 0 votes and
@@ -676,14 +685,14 @@ contract GRAI is
     ///      Discount regime: ask applies only half the book−fullAsk gap (`discount = gap / 2`,
     ///      `bribeAmount = book - discount`); the other half is carved to cuts in `bribe`.
     function previewBribe(address voter, uint256 graiAmount) public view returns (uint256 bribeAmount, uint256 premium, uint256 discount) {
-        _requireListed(bribeAsset);
+        _requireListed(settlementAsset);
         _requireNotZeroAmount(graiAmount);
         Escrow storage entry = escrows[voter];
         if (graiAmount > entry.voted) revert InvalidAmount();
 
         uint256 supply = totalSupply();
         uint256 value = supply > 0 ? (graiAmount * totalValue) / supply : 0;
-        uint256 book = _bribeAssetAmount(value);
+        uint256 book = _settlementAmount(value);
 
         uint256 halfBps = uint256(config.quorumBps) / 2;
         uint256 voteBps = supply > 0 ? (totalVoted * BPS) / supply : 0;
@@ -709,11 +718,12 @@ contract GRAI is
     /// @dev 2-of-2 with vote quorum. Owner: toggle `confirmed` when no quorum; with
     ///      quorum, this call is consent and opens. Non-owner: open when `confirmed &&
     ///      hasQuorum()`, else revert. On open: cancel auctions, send orphan/dead GRAI
-    ///      (`balanceOf(this) − totalLocked`) to `beneficiar`, then sweep all Grinders
+    ///      (`balanceOf(this) − totalLocked`) to `msg.sender`, then sweep all Grinders
     ///      custodians + idle listed balances onto GRAI so redeem is not empty-basket.
     function liquidate() public nonReentrant {
         _requireNotLiquidation();
-        if (msg.sender == owner()) {
+        address liquidator = msg.sender;
+        if (liquidator == owner()) {
             if (!hasQuorum()) {
                 confirmed = !confirmed;
                 return;
@@ -733,15 +743,11 @@ contract GRAI is
         liquidation = true;
         liquidationAt = uint48(block.timestamp);
 
-        // Unlock fees / stray GRAI on this contract are not escrow — send to beneficiar as a
-        // normal holder so they can redeem (or hold) rather than leave ghost supply after a
-        // full redeem + `resettle` bootstrap.
+        // Unlock fees / stray GRAI on this contract are not escrow — send to the opener
+        // (`msg.sender`) as a normal holder so they can redeem (or hold) rather than leave
+        // ghost supply on Treasury / dilute after a full redeem + `resettle` bootstrap.
         uint256 bal = balanceOf(address(this));
-        if (bal > totalLocked) {
-            address to = beneficiar();
-            if (to == address(0)) to = address(treasury);
-            _transfer(address(this), to, bal - totalLocked);
-        }
+        if (bal > totalLocked) _transfer(address(this), liquidator, bal - totalLocked);
 
         // Pull custodian inventories + Grinders idle into GRAI (needs `liquidation == true`).
         // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
@@ -957,11 +963,11 @@ contract GRAI is
         return maxAmount - ((maxAmount - minAmount) * elapsed) / duration;
     }
 
-    /// @notice Convert a USD amount (`USD_DECIMALS`) into `bribeAsset` base units via oracle.
-    function _bribeAssetAmount(uint256 usdAmount) internal view returns (uint256) {
-        (uint256 price, uint8 pdec) = getPrice(bribeAsset);
-        uint8 adec = bribeAsset == address(0) ? 18 : IERC20Metadata(bribeAsset).decimals();
-        return (usdAmount * (10 ** adec) * (10 ** pdec)) / (price * (10 ** USD_DECIMALS));
+    /// @notice Convert a USD amount (`USD_DECIMALS`) into `settlementAsset` base units via oracle.
+    function _settlementAmount(uint256 usdAmount) internal view returns (uint256) {
+        (uint256 price, uint8 pdec) = getPrice(settlementAsset);
+        uint8 adec = settlementAsset == address(0) ? 18 : IERC20Metadata(settlementAsset).decimals();
+        return (usdAmount * (10 ** (adec + pdec))) / (price * (10 ** USD_DECIMALS));
     }
 
     /// @dev Merge `amount` into the asset auction and restart the Dutch clock. Payment is always the
