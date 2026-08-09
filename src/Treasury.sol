@@ -96,12 +96,12 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     receive() external payable {}
 
     /// @inheritdoc ITreasury
-    /// @dev No-op if balance < `netProfitShare` so claim is not bricked and partial affiliate pays
+    /// @dev No-op if balance < `grossProfitShare` so claim is not bricked and partial affiliate pays
     ///      never happen. Soft-fail per recipient via `_tryWithdraw` (no self-call); unpaid → `beneficiar`.
-    function distribute(address asset, address locker, uint256 netProfitShare, uint256 revenueShare) public {
+    function distribute(address asset, address locker, uint256 grossProfitShare, uint256 revenueShare) public {
         _onlyGrai();
         uint256 bal = asset == address(0) ? address(this).balance : IERC20(asset).balanceOf(address(this));
-        if (bal < netProfitShare) return;
+        if (bal < grossProfitShare) return;
 
         (address[] memory referrers, uint256[] memory shares) = revenueShareInfo(locker, revenueShare);
 
@@ -119,9 +119,9 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
             }
         }
 
-        uint256 toBeneficiar = netProfitShare - revenueShare;
-        if (_tryWithdraw(beneficiar, asset, toBeneficiar)) {
-            emit Distribute(asset, beneficiar, toBeneficiar);
+        uint256 netProfitShare = grossProfitShare - revenueShare;
+        if (_tryWithdraw(beneficiar, asset, netProfitShare)) {
+            emit Distribute(asset, beneficiar, netProfitShare);
         }
     }
 

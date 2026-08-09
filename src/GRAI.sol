@@ -124,8 +124,8 @@ contract GRAI is
         grinders = IGrinders(admin_);
         treasury = ITreasury(admin_);
         config = Config({
-            buybackCutBps: 33_33, // 33.33%
-            dividendCutBps: 33_34, // 33.34%
+            buybackCutBps: 33_34, // 33.34%
+            dividendCutBps: 33_33, // 33.33%
             treasuryCutBps: 33_33, // 33.33%
             revenueShareBps: 3_33, // 3.33% of yield from treasury income → affiliates on claim
             claimTipBps: 1_00, // 1%
@@ -136,6 +136,7 @@ contract GRAI is
             liquidationPeriod: uint32(24 hours),
             redeemPeriod: uint32(7 days)
         });
+        _requireValidConfig(config);
     }
 
     /// @inheritdoc OwnableUpgradeable
@@ -470,9 +471,9 @@ contract GRAI is
     ///      Pays tip to `msg.sender`, remainder to `locker` (locker claim is not cut for affiliates).
     ///
     ///      Claim-time treasury income (allocation key = `claimed` share of the dividend slice):
-    ///      `netProfitShare = claimed * treasuryCutBps / dividendCutBps` (full treasury / net-profit slice),
-    ///      `revenueShare   = claimed * revenueShareBps / dividendCutBps` (≤ that slice → affiliates).
-    ///      `treasury.distribute` pays referrers from `revenueShareInfo`, remainder of `netProfitShare`
+    ///      `grossProfitShare  = claimed * treasuryCutBps / dividendCutBps` (full treasury slice),
+    ///      `revenueShare = claimed * revenueShareBps / dividendCutBps` (≤ that slice → affiliates).
+    ///      `treasury.distribute` pays referrers from `revenueShareInfo`, remainder (`netProfitShare`)
     ///      → `Treasury.beneficiar`. Wrapped in
     ///      try/catch so a missing/reverting treasury does not block locker/tip payouts.
     function _claim(address locker, address asset, uint256 amount) internal returns (uint256 claimed) {
@@ -486,9 +487,9 @@ contract GRAI is
         uint256 tip = (claimed * config.claimTipBps) / BPS;
         uint256 toLocker = claimed - tip;
 
-        uint256 netProfitShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
+        uint256 grossProfitShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
         uint256 revenueShare = (claimed * config.revenueShareBps) / config.dividendCutBps;
-        try treasury.distribute(asset, locker, netProfitShare, revenueShare) {} catch {}
+        try treasury.distribute(asset, locker, grossProfitShare, revenueShare) {} catch {}
         _withdraw(locker, asset, toLocker);
         _withdraw(msg.sender, asset, tip);
         emit Claim(locker, asset, claimed);

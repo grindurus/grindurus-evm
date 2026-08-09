@@ -110,8 +110,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 treasuryCutBps;
         /// @notice Slice of treasury yield income paid to referrers on `claim` (bps of yield, ≤ `treasuryCutBps`).
         /// @dev On claim: `revenueShare = claimed * revenueShareBps / dividendCutBps` → referrers;
-        ///      `netProfitShare - allocated` → `Treasury.beneficiar`
-        ///      (`netProfitShare = claimed * treasuryCutBps / dividendCutBps`).
+        ///      `grossProfitShare - allocated` → `Treasury.beneficiar` as `netProfitShare`
+        ///      (`grossProfitShare = claimed * treasuryCutBps / dividendCutBps`).
         uint16 revenueShareBps;
         /// @notice Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
         uint16 claimTipBps;
@@ -356,8 +356,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Claim yield dividends for `asset` accrued to `locker`'s active lock; pays tip to
     ///         `msg.sender`, remainder to `locker`. Claim-time treasury income is split via
-    ///         `treasury.distribute(asset, locker, netProfitShare, revenueShare)` resolves
-    ///         sticky referrers and pays them; remainder of net profit → `beneficiar`.
+    ///         `treasury.distribute(asset, locker, grossProfitShare, revenueShare)` resolves
+    ///         sticky referrers and pays them; remainder (`netProfitShare`) → `beneficiar`.
     ///         `type(uint256).max` claims the full accrued
     ///         balance; otherwise `min(amount, claimable)`.
     function claim(address locker, address asset, uint256 amount) external returns (uint256 claimed);

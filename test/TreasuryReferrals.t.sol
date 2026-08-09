@@ -17,7 +17,7 @@ contract TreasuryReferralsTest is GRAIFixture {
     uint16 constant REVENUE_SHARE_BPS = 1_000; // 10% of yield → affiliate pool on claim
     uint256 constant YIELD = 100e6;
     uint256 constant DIVIDEND = 30e6; // 30% of YIELD
-    uint256 constant NET_PROFIT = 20e6; // 20% of YIELD (full claim)
+    uint256 constant GROSS_PROFIT_SHARE = 20e6; // 20% of YIELD (full claim)
     uint256 constant REVENUE = 10e6; // claimed * 1000 / 3000 on full DIVIDEND claim
     uint256 constant L1_FULL = 8e6; // 80% of REVENUE
     uint256 constant L2_FULL = 2e6; // 20% of REVENUE
@@ -98,78 +98,78 @@ contract TreasuryReferralsTest is GRAIFixture {
     ////////////////////////////// distribute (unit) //////////////////////////////
 
     function test_Distribute_NoReferrer_AllToBeneficiar() public {
-        usdc.mint(address(treasury), NET_PROFIT);
+        usdc.mint(address(treasury), GROSS_PROFIT_SHARE);
         vm.prank(address(grai));
-        treasury.distribute(address(usdc), alice, NET_PROFIT, REVENUE);
+        treasury.distribute(address(usdc), alice, GROSS_PROFIT_SHARE, REVENUE);
 
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
     function test_Distribute_L1Only_UnpaidL2ToBeneficiar() public {
         _mintAff(alice, bob);
-        usdc.mint(address(treasury), NET_PROFIT);
+        usdc.mint(address(treasury), GROSS_PROFIT_SHARE);
         uint256 bobBefore = usdc.balanceOf(bob);
         uint256 carolBefore = usdc.balanceOf(carol);
 
         vm.prank(address(grai));
-        treasury.distribute(address(usdc), alice, NET_PROFIT, REVENUE);
+        treasury.distribute(address(usdc), alice, GROSS_PROFIT_SHARE, REVENUE);
 
         assertEq(usdc.balanceOf(bob) - bobBefore, L1_FULL);
         assertEq(usdc.balanceOf(carol) - carolBefore, 0);
         // unpaid L2 (2e6) + protocol slice (10e6) = 12e6
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT - L1_FULL);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE - L1_FULL);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
     function test_Distribute_RejectingReferrer_GetsWeth() public {
         RejectEth rejector = new RejectEth();
         _mintAff(alice, address(rejector));
-        vm.deal(address(treasury), NET_PROFIT);
+        vm.deal(address(treasury), GROSS_PROFIT_SHARE);
 
         vm.prank(address(grai));
-        treasury.distribute(address(0), alice, NET_PROFIT, REVENUE);
+        treasury.distribute(address(0), alice, GROSS_PROFIT_SHARE, REVENUE);
 
         // L1 ETH push rejected → WETH wrap; unpaid protocol slice → beneficiar
         assertEq(address(rejector).balance, 0);
         assertEq(weth.balanceOf(address(rejector)), L1_FULL);
-        assertEq(beneficiar.balance, NET_PROFIT - L1_FULL);
+        assertEq(beneficiar.balance, GROSS_PROFIT_SHARE - L1_FULL);
         assertEq(address(treasury).balance, 0);
     }
 
     function test_Distribute_L1AndL2() public {
         _mintAff(alice, bob);
         _mintAff(bob, carol);
-        usdc.mint(address(treasury), NET_PROFIT);
+        usdc.mint(address(treasury), GROSS_PROFIT_SHARE);
         uint256 bobBefore = usdc.balanceOf(bob);
         uint256 carolBefore = usdc.balanceOf(carol);
 
         vm.prank(address(grai));
-        treasury.distribute(address(usdc), alice, NET_PROFIT, REVENUE);
+        treasury.distribute(address(usdc), alice, GROSS_PROFIT_SHARE, REVENUE);
 
         assertEq(usdc.balanceOf(bob) - bobBefore, L1_FULL);
         assertEq(usdc.balanceOf(carol) - carolBefore, L2_FULL);
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT - L1_FULL - L2_FULL);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE - L1_FULL - L2_FULL);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
     function test_Distribute_InsufficientBalance_NoOp() public {
         _mintAff(alice, bob);
-        usdc.mint(address(treasury), NET_PROFIT - 1);
+        usdc.mint(address(treasury), GROSS_PROFIT_SHARE - 1);
         uint256 bobBefore = usdc.balanceOf(bob);
 
         vm.prank(address(grai));
-        treasury.distribute(address(usdc), alice, NET_PROFIT, REVENUE);
+        treasury.distribute(address(usdc), alice, GROSS_PROFIT_SHARE, REVENUE);
 
         assertEq(usdc.balanceOf(bob), bobBefore);
         assertEq(usdc.balanceOf(beneficiar), 0);
-        assertEq(usdc.balanceOf(address(treasury)), NET_PROFIT - 1);
+        assertEq(usdc.balanceOf(address(treasury)), GROSS_PROFIT_SHARE - 1);
     }
 
     function test_Distribute_HalfAmounts() public {
         _mintAff(alice, bob);
         _mintAff(bob, carol);
-        uint256 net = NET_PROFIT / 2; // 10e6
+        uint256 net = GROSS_PROFIT_SHARE / 2; // 10e6
         uint256 rev = REVENUE / 2; // 5e6
         usdc.mint(address(treasury), net);
         uint256 bobBefore = usdc.balanceOf(bob);
@@ -195,7 +195,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(claimed, DIVIDEND);
 
         assertEq(usdc.balanceOf(bob), bobBefore);
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
@@ -208,7 +208,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         _claimMax(alice);
 
         assertEq(usdc.balanceOf(bob) - bobBefore, L1_FULL);
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT - L1_FULL);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE - L1_FULL);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
@@ -226,7 +226,7 @@ contract TreasuryReferralsTest is GRAIFixture {
 
         assertEq(usdc.balanceOf(bob) - bobBefore, L1_FULL);
         assertEq(usdc.balanceOf(carol) - carolBefore, L2_FULL);
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT - L1_FULL - L2_FULL);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE - L1_FULL - L2_FULL);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
@@ -245,13 +245,13 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(usdc.balanceOf(bob) - bobBefore, 4e6);
         assertEq(usdc.balanceOf(carol) - carolBefore, 1e6);
         assertEq(usdc.balanceOf(beneficiar), 5e6);
-        assertEq(usdc.balanceOf(address(treasury)), NET_PROFIT / 2);
+        assertEq(usdc.balanceOf(address(treasury)), GROSS_PROFIT_SHARE / 2);
 
         _claimMax(alice);
 
         assertEq(usdc.balanceOf(bob) - bobBefore, L1_FULL);
         assertEq(usdc.balanceOf(carol) - carolBefore, L2_FULL);
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT - L1_FULL - L2_FULL);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE - L1_FULL - L2_FULL);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
@@ -262,7 +262,7 @@ contract TreasuryReferralsTest is GRAIFixture {
 
         _claimMax(alice);
 
-        assertEq(usdc.balanceOf(beneficiar), NET_PROFIT);
+        assertEq(usdc.balanceOf(beneficiar), GROSS_PROFIT_SHARE);
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 

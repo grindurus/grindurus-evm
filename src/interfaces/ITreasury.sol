@@ -57,9 +57,9 @@ interface ITreasury {
     function mint(address locker, address referrer) external returns (uint256 tokenId);
 
     /// @notice Pay claim-time treasury split from inventory.
-    /// @dev No-op if balance < `netProfitShare`. Soft-fail per recipient; unpaid shares roll into
-    ///      `beneficiar` (`netProfitShare - paid`).
-    function distribute(address asset, address locker, uint256 netProfitShare, uint256 revenueShare)
+    /// @dev No-op if balance < `grossProfitShare`. Soft-fail per recipient; unpaid shares roll into
+    ///      `beneficiar` as `netProfitShare` (`grossProfitShare - paid`).
+    function distribute(address asset, address locker, uint256 grossProfitShare, uint256 revenueShare)
         external;
 
     /// @notice Collection metadata (ERC-1046).
