@@ -8,9 +8,9 @@ import {ITreasury} from "../src/interfaces/ITreasury.sol";
 /// @dev Poach + Treasury tree accounting.
 ///
 /// Canonical tree used across scenarios (unless noted):
-///   Alice deposits 100, ref=0     → NFT(Alice)∈Alice
-///   Bob   deposits  40, ref=Alice → NFT(Bob)∈Alice
-///   Carol deposits  25, ref=Bob   → NFT(Carol)∈Bob
+///   Alice deposits 100, ref=0     → referrer=Alice, NFT∈Alice
+///   Bob   deposits  40, ref=Alice → referrer=Alice, NFT∈Bob
+///   Carol deposits  25, ref=Bob   → referrer=Bob,   NFT∈Carol
 ///
 /// referralBooks after setup:
 ///   Alice: value=100, l1=40, l2=25
@@ -19,6 +19,7 @@ import {ITreasury} from "../src/interfaces/ITreasury.sol";
 ///
 /// poach ask = value + l1Value (not l2Value):
 ///   Alice=140, Bob=65, Carol=25
+/// Poach rewrites sticky referrer only; cashflow NFT ownership is unchanged.
 contract TreasuryPoachTest is GRAIFixture {
     address carol = makeAddr("carol");
     address dias = makeAddr("dias");
@@ -60,7 +61,7 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(treasury.referrerOf(alice), alice);
         _assertNode(alice, 100e6, 0, 0);
 
-        (uint256 price, address seller) = grai.previewPoach(alice, dias);
+        (uint256 price, address seller) = treasury.poachOf(alice, dias);
         assertEq(seller, alice);
         assertEq(price, 100e6); // value + l1Value = 100 + 0
 
@@ -85,9 +86,9 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(treasury.referrerOf(bob), alice);
         assertEq(treasury.referrerOf(carol), bob);
 
-        (uint256 pAlice,) = grai.previewPoach(alice, dias);
-        (uint256 pBob,) = grai.previewPoach(bob, dias);
-        (uint256 pCarol,) = grai.previewPoach(carol, dias);
+        (uint256 pAlice,) = treasury.poachOf(alice, dias);
+        (uint256 pBob,) = treasury.poachOf(bob, dias);
+        (uint256 pCarol,) = treasury.poachOf(carol, dias);
         assertEq(pAlice, 140e6);
         assertEq(pBob, 65e6);
         assertEq(pCarol, 25e6);
@@ -99,7 +100,7 @@ contract TreasuryPoachTest is GRAIFixture {
 
         assertEq(treasury.referrerOf(alice), alice);
         _assertNode(alice, 150e6, 0, 0);
-        (uint256 price,) = grai.previewPoach(alice, bob);
+        (uint256 price,) = treasury.poachOf(alice, bob);
         assertEq(price, 150e6);
     }
 
@@ -107,8 +108,8 @@ contract TreasuryPoachTest is GRAIFixture {
         _seedTree();
         _fundAndPoach(dias, 140e6, alice);
 
-        // New bob deposit while dias owns alice: dias is L2 on bob
-        _deposit(bob, 10e6, alice); // sticky bob→alice NFT owner still alice... wait bob's NFT owned by alice
+        // New bob deposit while dias is sticky referrer of alice: dias is L2 on bob
+        _deposit(bob, 10e6, alice); // sticky bob→alice
         // Bob already bound to alice; deposit accrues bob.value and alice.l1 / dias.l2
         _assertNode(bob, 50e6, 25e6, 0);
         _assertNode(alice, 100e6, 50e6, 25e6); // l1 += 10
@@ -122,7 +123,7 @@ contract TreasuryPoachTest is GRAIFixture {
         uint256 aliceId = uint256(uint160(alice));
 
         _deposit(dias, 140e6, address(0));
-        (uint256 price, address seller) = grai.previewPoach(alice, dias);
+        (uint256 price, address seller) = treasury.poachOf(alice, dias);
         assertEq(price, 140e6);
         assertEq(seller, alice);
 
@@ -131,17 +132,19 @@ contract TreasuryPoachTest is GRAIFixture {
         vm.prank(dias);
         grai.poach(alice);
 
-        assertEq(treasury.ownerOf(aliceId), dias);
         assertEq(treasury.referrerOf(alice), dias);
+        assertEq(treasury.ownerOf(aliceId), alice, "poach does not move cashflow NFT");
         assertEq(grai.balanceOf(alice), aliceGraiBefore + price);
         assertEq(grai.balanceOf(dias), diasGraiBefore - price);
 
-        // Alice keeps downline book (still owns bob); dias gains alice.value/l1 as l1/l2
+        // Alice keeps downline book (still referrer of bob); dias gains alice.value/l1 as l1/l2
         _assertNode(alice, 100e6, 40e6, 25e6);
         _assertNode(dias, 140e6, 100e6, 40e6);
-        // Downline NFTs untouched
-        assertEq(treasury.ownerOf(uint256(uint160(bob))), alice);
-        assertEq(treasury.ownerOf(uint256(uint160(carol))), bob);
+        // Downline cashflow NFTs untouched; sticky refs untouched except alice
+        assertEq(treasury.ownerOf(uint256(uint160(bob))), bob);
+        assertEq(treasury.ownerOf(uint256(uint160(carol))), carol);
+        assertEq(treasury.referrerOf(bob), alice);
+        assertEq(treasury.referrerOf(carol), bob);
     }
 
     ////////////////////////////// poach non-self //////////////////////////////
@@ -150,7 +153,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _seedTree();
 
         _deposit(paul, 65e6, address(0));
-        (uint256 price, address seller) = grai.previewPoach(bob, paul);
+        (uint256 price, address seller) = treasury.poachOf(bob, paul);
         assertEq(price, 65e6);
         assertEq(seller, alice);
 
@@ -160,11 +163,12 @@ contract TreasuryPoachTest is GRAIFixture {
 
         assertEq(treasury.referrerOf(bob), paul);
         assertEq(grai.balanceOf(alice), aliceGraiBefore + price);
-        assertEq(treasury.ownerOf(uint256(uint160(carol))), bob);
+        assertEq(treasury.ownerOf(uint256(uint160(bob))), bob, "poach does not move cashflow NFT");
+        assertEq(treasury.ownerOf(uint256(uint160(carol))), carol);
 
         _assertNode(alice, 100e6, 0, 0); // lost bob volume
         _assertNode(paul, 65e6, 40e6, 25e6); // gained bob.value / bob.l1
-        (uint256 priceAlice,) = grai.previewPoach(alice, paul);
+        (uint256 priceAlice,) = treasury.poachOf(alice, paul);
         assertEq(priceAlice, 100e6);
     }
 
@@ -172,13 +176,13 @@ contract TreasuryPoachTest is GRAIFixture {
         _seedTree();
         // Eve self-root, then Paul deposits under Eve, then Paul poaches Bob from Alice
         _deposit(eve, 1e6, address(0));
-        _deposit(paul, 65e6, eve); // NFT(Paul)∈Eve → referrerOf(paul)=eve
+        _deposit(paul, 65e6, eve); // referrerOf(paul)=eve
 
         vm.prank(paul);
         grai.poach(bob);
 
         // Eve is new L2 on bob claims → +bob.value on eve.l2
-        (, , uint256 eveL2) = treasury.referralBooks(eve);
+        (,, uint256 eveL2,) = treasury.referralBooks(eve);
         assertEq(eveL2, 40e6);
         _assertNode(paul, 65e6, 40e6, 25e6);
         _assertNode(alice, 100e6, 0, 0);
@@ -192,7 +196,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _fundAndPoach(dias, 140e6, alice);
         _assertNode(dias, 140e6, 100e6, 40e6);
         _assertNode(alice, 100e6, 40e6, 25e6);
-        (uint256 priceAlice,) = grai.previewPoach(alice, eve);
+        (uint256 priceAlice,) = treasury.poachOf(alice, eve);
         assertEq(priceAlice, 140e6);
 
         _fundAndPoach(eve, 65e6, bob);
@@ -202,7 +206,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _assertNode(dias, 140e6, 100e6, 0);
         _assertNode(eve, 65e6, 40e6, 25e6);
 
-        (priceAlice,) = grai.previewPoach(alice, eve);
+        (priceAlice,) = treasury.poachOf(alice, eve);
         assertEq(priceAlice, 100e6);
 
         // Resale alice from dias → eve
@@ -216,9 +220,8 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(grai.balanceOf(dias), diasGraiBefore + 100e6);
         // eve gains alice.value as l1; dias loses that l1 credit (dias was non-self seller)
         _assertNode(dias, 140e6, 0, 0);
-        (, uint256 eveL1,) = treasury.referralBooks(eve);
-        // eve already had 40 from bob + 100 from alice self-ish wait: alice seller is dias ≠ alice
-        // so eve.l1 += alice.value (100), eve.l2 += alice.l1 (0)
+        (, uint256 eveL1,,) = treasury.referralBooks(eve);
+        // eve already had 40 from bob + 100 from alice
         // prior eve.l1=40, eve.l2=25 → after: l1=140, l2=25
         assertEq(eveL1, 140e6);
     }
@@ -227,7 +230,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _seedTree();
         _deposit(paul, 25e6, address(0));
 
-        (uint256 price, address seller) = grai.previewPoach(carol, paul);
+        (uint256 price, address seller) = treasury.poachOf(carol, paul);
         assertEq(price, 25e6);
         assertEq(seller, bob);
 
@@ -254,7 +257,7 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(refs[0], dias);
         assertEq(shares[0], 8_000);
 
-        // Bob: L1=alice (still owns bob), L2=dias
+        // Bob: L1=alice (still sticky referrer of bob), L2=dias — payees are cashflow owners
         (refs, shares) = treasury.revenueShareInfo(bob, 10_000);
         assertEq(refs.length, 2);
         assertEq(refs[0], alice);
@@ -310,6 +313,12 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.previewPoach(alice, bob);
     }
 
+    function test_Poach_Reverts_InsufficientBalance() public {
+        _seedTree();
+        vm.expectRevert(IGRAI.InvalidAmount.selector);
+        grai.previewPoach(alice, dias); // dias has 0 GRAI, ask = 140
+    }
+
     function test_Poach_Reverts_AlreadyOwner() public {
         _deposit(alice, 100e6, address(0));
         vm.expectRevert(ITreasury.AlreadyBound.selector);
@@ -317,8 +326,31 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.poach(alice);
     }
 
+    function test_Poach_Reverts_DownlineCreatesReferralLoop() public {
+        _seedTree();
+        // Bob under Alice; becoming Alice's referrer would cycle Alice ↔ Bob.
+        _deposit(dias, 300e6, address(0));
+        vm.prank(dias);
+        grai.transfer(bob, 300e6);
+        vm.expectRevert(ITreasury.ReferralLoop.selector);
+        vm.prank(bob);
+        grai.poach(alice);
+    }
+
+    function test_Poach_Reverts_DeeperDownlineCreatesReferralLoop() public {
+        _seedTree();
+        // Carol → Bob → Alice; poach(Alice) by Carol → cycle
+        _deposit(dias, 300e6, address(0));
+        vm.prank(dias);
+        grai.transfer(carol, 300e6);
+        vm.expectRevert(ITreasury.ReferralLoop.selector);
+        vm.prank(carol);
+        grai.poach(alice);
+    }
+
     function test_PoachOf_MatchesPreviewPoach() public {
         _seedTree();
+        _deposit(paul, 65e6, address(0));
         (uint256 p1, address r1) = grai.previewPoach(bob, paul);
         (uint256 p2, address r2) = treasury.poachOf(bob, paul);
         assertEq(p1, p2);
@@ -409,7 +441,7 @@ contract TreasuryPoachTest is GRAIFixture {
     }
 
     function _assertNode(address who, uint256 value, uint256 l1, uint256 l2) internal view {
-        (uint256 v, uint256 a, uint256 b) = treasury.referralBooks(who);
+        (uint256 v, uint256 a, uint256 b,) = treasury.referralBooks(who);
         assertEq(v, value, "value");
         assertEq(a, l1, "l1Value");
         assertEq(b, l2, "l2Value");

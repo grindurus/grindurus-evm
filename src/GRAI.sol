@@ -243,11 +243,7 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     function beneficiar() public view returns (address) {
-        try treasury.beneficiar() returns (address beneficiar_) {
-            return beneficiar_ == address(0) ? address(treasury) : beneficiar_;
-        } catch {
-            return address(treasury);
-        }
+        return treasury.beneficiar();
     }
 
     /// @inheritdoc IGRAI
@@ -361,7 +357,7 @@ contract GRAI is
 
         totalValue += value;
         _mint(msg.sender, graiOut);
-        try treasury.mint(msg.sender, referrer, value) {} catch {}
+        treasury.mint(msg.sender, referrer, value);
         if (lock_) lock(graiOut);
         _sendEth(msg.sender, refund);
         emit Deposit(msg.sender, graiOut, asset, received, value);
@@ -378,19 +374,21 @@ contract GRAI is
     }
 
     //////////////////// POACH ////////////////////
-    
+
     /// @inheritdoc IGRAI
-    /// @dev Any bound slot; `poacher` ≠ current owner. Price = `value + l1Value` in GRAI.
+    /// @dev Any bound slot; `poacher` ≠ current sticky referrer. Price = `value + l1Value` in GRAI.
+    ///      Reverts `InvalidAmount` if `price == 0` or `poacher` cannot pay.
     function previewPoach(address locker, address poacher) public view returns (uint256 price, address referrer) {
-        return treasury.poachOf(locker, poacher);
+        (price, referrer) = treasury.poachOf(locker, poacher);
+        if (price == 0 || price > balanceOf(poacher)) revert InvalidAmount();
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Pays `previewPoach` GRAI to the current NFT owner, then `treasury.rebind`.
-    function poach(address locker) public {
+    /// @dev Pays `previewPoach` GRAI to the current sticky referrer, then `treasury.rebind` (tree only).
+    function poach(address locker) public nonReentrant {
         address poacher = msg.sender;
         (uint256 price, address referrer) = previewPoach(locker, poacher);
-        if (price > 0) _transfer(poacher, referrer, price);
+        _transfer(poacher, referrer, price);
         treasury.rebind(locker, poacher);
         emit Poach(poacher, locker, price);
     }
@@ -490,7 +488,7 @@ contract GRAI is
 
         uint256 grossProfitShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
         uint256 revenueShare = (claimed * config.revenueShareBps) / config.dividendCutBps;
-        try treasury.distribute(asset, locker, grossProfitShare, revenueShare) {} catch {}
+        treasury.distribute(asset, locker, grossProfitShare, revenueShare);
         _withdraw(locker, asset, toLocker);
         _withdraw(msg.sender, asset, tip);
         emit Claim(locker, asset, claimed);
@@ -722,6 +720,27 @@ contract GRAI is
     ///      hasQuorum()`, else revert. On open: cancel auctions, send orphan/dead GRAI
     ///      (`balanceOf(this) − totalLocked`) to `msg.sender`, then sweep all Grinders
     ///      custodians + idle listed balances onto GRAI so redeem is not empty-basket.
+    ///
+    ///      Risk model (intentional — do not split confirm/open). Owner intent resolves against
+    ///      live `hasQuorum()` at inclusion; vote/bribe/deposit/unlock may flip the branch
+    ///      between sign and mine. Keep one `liquidate()` so insurance / cover pricing uses:
+    ///        - Risk: confirm tx mined after quorum crossed → accidental open (+ cancel auctions,
+    ///          start `liquidationPeriod`, dead-GRAI scoop to opener)
+    ///          → Probability(risk): P(quorum flips false→true before inclusion)
+    ///        - Risk: open tx mined after quorum lost → silent `confirmed` toggle, no liquidation
+    ///          → Probability(risk): P(quorum flips true→false before inclusion)
+    ///        - Risk: owner meant to clear `confirmed` (toggle off) while still below quorum, but
+    ///          quorum arrives first → opens instead of disarming
+    ///          → Probability(risk): P(disarm intent ∩ quorum crossed before inclusion)
+    ///        - Risk: after a failed open (toggle armed `confirmed=true` with no quorum), a later
+    ///          non-owner open succeeds once quorum returns — opener chosen by mempool race
+    ///          → Probability(risk): P(confirmed latched ∩ quorum restored ∩ non-owner wins open)
+    ///        - Risk: near-quorum deposit dilutes vote share / bribe|unlock cuts votes and flips
+    ///          the owner branch without a dedicated “vote attack”
+    ///          → Probability(risk): P(|support − quorum| small enough for one tx to cross)
+    ///        - Risk: accidental or raced open awards `balanceOf(this)−totalLocked` dead GRAI to
+    ///          `msg.sender` (insurance/cover residual / unlock-fee inventory)
+    ///          → Probability(risk): P(open path executes) × share of dead GRAI in supply
     function liquidate() public nonReentrant {
         _requireNotLiquidation();
         address liquidator = msg.sender;

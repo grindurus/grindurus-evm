@@ -388,13 +388,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         can restart.
     function resettle() external;
 
-    /// @notice GRAI cost to poach the referrer NFT for `locker`: `referralBooks.value + l1Value`.
-    ///         Reverts if unbound or `poacher` already owns the slot.
-    /// @return price GRAI due to the current NFT owner.
-    /// @return referrer Current NFT owner.
+    /// @notice GRAI cost to poach the sticky referrer link for `locker`: `value + l1Value`.
+    ///         Reverts if unbound, `poacher` is already the referrer, `price == 0`, or balance `< price`.
+    /// @return price GRAI due to the current sticky referrer.
+    /// @return referrer Current sticky upline (receives payment).
     function previewPoach(address locker, address poacher) external view returns (uint256 price, address referrer);
 
-    /// @notice Poach the referrer NFT for `locker`. Pays `previewPoach` GRAI to the current owner,
-    ///         then rebinds the NFT to `msg.sender` via Treasury.
+    /// @notice Poach the sticky referrer link for `locker`. Pays `previewPoach` GRAI to the current
+    ///         referrer, then `treasury.rebind` (tree only — cashflow NFT ownership unchanged).
     function poach(address locker) external;
 }
