@@ -65,8 +65,9 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 | **GRAI**               | Share token, oracles, auctions, lock/vote/bribe/liquidation, dividends                                |
 | **Grinders**           | NFT registry, reserve custody, allocation, liquidation sweeps                                         |
 | **Custodian**          | Per-NFT wallet; `distribute()` yield → GRAI                                                           |
-| **Treasury**           | Yield / bribe fee sink; sticky referrer NFTs; claim-time affiliate + `beneficiar` split               |
-| **Affiliate**          | Owns a depositor’s Treasury NFT; earns L1/L2 share of claim-time `revenueShare`                       |
+| **Treasury**           | Yield / bribe fee sink; sticky referrer **tree** + cashflow NFTs; claim-time affiliate + `beneficiar` split |
+| **Affiliate (upline)** | Sticky `referrer` link on a locker (moved by `poach`); tree position for L1/L2 books                        |
+| **Cashflow owner**     | `ownerOf` of a locker NFT; receives that node’s slice of claim-time `revenueShare` (OTC-transferable)     |
 | **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; liquidation consent via `confirmed` / `liquidate` |
 
 
@@ -755,27 +756,38 @@ Permissionless after `liquidationPeriod + redeemPeriod`:
 
 ## 10. Treasury and affiliates
 
-`[Treasury.sol](../src/Treasury.sol)` is the fee sink for `treasuryCutBps` (yield / bribe carve-outs) and the **sticky referrer NFT** layer. Affiliates do **not** cut the locker’s dividend payout — they are paid from Treasury inventory when the locker `claim`s.
+`[Treasury.sol](../src/Treasury.sol)` is the fee sink for `treasuryCutBps` (yield / bribe carve-outs) and the referral layer. Affiliates do **not** cut the locker’s dividend payout — they are paid from Treasury inventory when the locker `claim`s.
 
-### 10.1 Binding (deposit → NFT)
+Three layers are kept separate:
+
+| Layer | Source of truth | Changed by |
+| ----- | --------------- | ---------- |
+| **Slot** | `tokenId = uint256(uint160(locker))` | First `mint` (permanent locker id) |
+| **Tree (upline)** | `referralBooks[locker].referrer` (= `referrerOf`) | First `mint` (sticky); later only `rebind` / `poach` |
+| **Cashflow** | `ownerOf(tokenId)` | OTC `transfer` / `safeTransferFrom` |
+
+```
+referrerOf(locker)            = referralBooks[locker].referrer   // sticky upline locker
+ownerOf(uint160(locker))      = who receives that node’s claim pay
+referralBooks[locker].value   = Σ deposit book value credited to locker
+referralBooks[node].l1Value   = Σ deposits for which node is L1 in the tree
+referralBooks[node].l2Value   = Σ deposits for which node is L2 in the tree
+```
+
+### 10.1 Binding (deposit → tree + cashflow NFT)
 
 On every successful `deposit`, GRAI calls `treasury.mint(locker, referrer, value)` (try/catch — a missing treasury does not brick deposits):
 
-- `tokenId = uint256(uint160(locker))` — one NFT per depositor, forever.
-- First call mints the NFT to `referrer` (or to `locker` if `referrer == address(0)`).
-- Sticky: later deposits keep the original NFT owner; `referrer` is ignored after bind. Transferring the NFT changes who receives future affiliate share.
-- Each call credits deposit book `value` into `referralBooks[locker].value` and up to two upline levels into `l1Value` / `l2Value` (same stop rules as `revenueShareInfo`).
-- Bound locker NFTs may be purchased via `GRAI.poach` — see **§11**.
-- ERC-2981 royalty receiver is the **locker** (secondary sales of the claim NFT).
-
-```
-referrerOf(locker)        = ownerOf(tokenId(locker))
-referralBooks[locker].value   = Σ deposit book value credited to locker
-referralBooks[node].l1Value   = Σ deposits for which node is L1
-referralBooks[node].l2Value   = Σ deposits for which node is L2
-```
-
-
+- `tokenId = uint256(uint160(locker))` — one NFT per depositor address, forever.
+- **First bind** (when `referrerOf(locker) == 0`):
+  - Sticky-sets `referrer` to the deposit arg, or to `locker` if `referrer == address(0)` (self-root).
+  - If that link would cycle (§10.4), **falls back to self-root** (`referrer = locker`) instead of reverting — so a bad referrer does not skip book credit under GRAI’s `try/catch` mint.
+  - Mints the cashflow NFT **to `locker`** (locker starts owning their own claim rights).
+  - If upline ≠ locker and has no NFT yet, mints a **stub** cashflow NFT to the upline **without** setting the upline’s `referrer` (so the upline can still sticky-bind on their own first deposit).
+- **Later deposits**: sticky `referrer` is ignored; only volumes accrue.
+- Each call with `value > 0` credits `referralBooks[locker].value` and walks up to two upline levels into `l1Value` / `l2Value` (same stop rules as `revenueShareInfo`).
+- Tree position may be purchased via `GRAI.poach` — see **§11**. Cashflow rights trade via ordinary ERC-721 transfer — see **§10.5**.
+- ERC-2981 royalty receiver is the **locker** (secondary sales of the cashflow NFT).
 
 ### 10.2 Claim-time split
 
@@ -785,8 +797,6 @@ When yield lands, the full treasury cut is pushed to Treasury immediately. Affil
 grossProfitShare  = claimed * treasuryCutBps / dividendCutBps   // full treasury slice attributed to this claim
 revenueShare = claimed * revenueShareBps / dividendCutBps   // affiliate pool (≤ treasury slice)
 ```
-
-
 
 #### Derivation
 
@@ -834,9 +844,12 @@ so claim-time withdrawals exactly exhaust the treasury income and the affiliate 
 `treasury.distribute(asset, locker, grossProfitShare, revenueShare)` then:
 
 1. No-op if Treasury balance `< grossProfitShare` (no partial affiliate pays).
-2. Walks `revenueShareInfo(locker, revenueShare)` up to `revenueShareBps.length` levels (default **L1 80% / L2 20%**).
-3. Stops on empty / self / cycle (`ref == 0 || ref == locker || ref == cur`).
-4. Pays each present level; unpaid levels + remainder → `beneficiar` as `netProfitShare = grossProfitShare − paid`.
+2. Builds payees via `revenueShareInfo(locker, revenueShare)` (default **L1 80% / L2 20%**).
+3. **Walk** follows sticky `referrerOf` links; **payee** at each level is `ownerOf(uint160(uplineLocker))`.
+4. Stops on empty / back-to-claimer / self-loop (`ref == 0 || ref == locker || ref == cur`), or missing cashflow NFT.
+5. Pays each present level; unpaid levels + remainder → `beneficiar` as `netProfitShare = grossProfitShare − paid`.
+
+The same `ownerOf` address may appear twice (e.g. one wallet OTC-owns both L1 and L2 cashflow NFTs) — both level shares are paid to that address.
 
 Default GRAI `revenueShareBps = 3_33` (~3.33% of yield → affiliates).
 
@@ -849,43 +862,66 @@ grossProfitShare  = 30 * 2000 / 3000 = 20
 revenueShare = 30 * 1000 / 3000 = 10
 ```
 
+Assume each upline still owns their own cashflow NFT (`ownerOf(node) == node`):
 
-| Case                     | Chain               | L1    | L2    | Beneficiar (`netProfitShare`) | Notes                                          |
-| ------------------------ | ------------------- | ----- | ----- | ----------------------------- | ---------------------------------------------- |
-| No referrer              | —                   | 0     | 0     | **20**                        | Self-mint / unbound → empty `revenueShareInfo` |
-| L1 only                  | Alice → Bob         | **8** | 0     | **12**                        | Unpaid L2 (2) stays with protocol              |
-| L1 + L2                  | Alice → Bob → Carol | **8** | **2** | **10**                        | Full affiliate pool paid                       |
-| Cycle                    | Alice → Bob → Alice | **8** | 0     | **12**                        | Walk stops at L1                               |
-| Half claim (15)          | Alice → Bob → Carol | **4** | **1** | **5**                         | Pro-rata; rest of inventory waits              |
-| `bal < grossProfitShare` | any                 | 0     | 0     | 0                             | Distribute no-op; claim tip/locker still pay   |
+
+| Case                     | Tree (referrer)     | L1 payee | L2 payee | Beneficiar (`netProfitShare`) | Notes                                        |
+| ------------------------ | ------------------- | -------- | -------- | ----------------------------- | -------------------------------------------- |
+| No referrer / self-root  | Alice → Alice       | 0        | 0        | **20**                        | Empty `revenueShareInfo`                     |
+| L1 only                  | Alice → Bob         | **Bob 8**| 0        | **12**                        | Unpaid L2 (2) stays with protocol            |
+| L1 + L2                  | Alice → Bob → Carol | **Bob 8**| **Carol 2** | **10**                     | Full affiliate pool paid                     |
+| OTC moved L1 NFT         | Alice → Bob         | **Eve 8**| 0        | **12**                        | Tree still Bob; `ownerOf(Bob) = Eve`         |
+| Half claim (15)          | Alice → Bob → Carol | **4**    | **1**    | **5**                         | Pro-rata; rest of inventory waits            |
+| `bal < grossProfitShare` | any                 | 0        | 0        | 0                             | Distribute no-op; claim tip/locker still pay |
 
 
 Locker still receives `claimed − tip` in full; tip (`claimTipBps`, default 1%) goes to `msg.sender`.
 
-Tests: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`, `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`.
+### 10.4 No referral loops
+
+`rebind` / `poach` revert `ReferralLoop` if setting `locker.referrer = to` would cycle:
+
+- Walk from `to` along sticky referrers; revert if the path hits `locker` or returns to `to`.
+- Self-root (`to == locker`) is allowed.
+- Consequence: a **downline cannot poach an upline**.
+
+First `mint` **does not revert** on a looping referrer: it sticky-binds **self-root** instead, so deposit still credits books (GRAI’s `try treasury.mint` must not swallow the whole mint).
+
+`revenueShareInfo` / mint volume walks still stop on `ref == 0 || ref == locker || self-loop` as a safety cap.
+
+### 10.5 OTC cashflow transfer
+
+Ordinary ERC-721 `transferFrom` / `safeTransferFrom` moves **only** `ownerOf(tokenId)`:
+
+- Does **not** change `referrerOf` or L1/L2 books.
+- Does **not** brick later `poach` (tree and volumes stay consistent).
+- Next claim that walks through that locker node pays the **new** NFT owner.
+
+Poach and OTC are therefore two markets: tree seat vs cashflow receipt.
+
+Tests: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`, `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`, `[test/boundary/TreasuryOtcPoachBrick.t.sol](../test/boundary/TreasuryOtcPoachBrick.t.sol)`.
 
 ---
 
 
 
-## 11. Poach (buy ownership of Affiliates NFT)
+## 11. Poach (buy the sticky referrer link)
 
-Anyone may buy a bound locker’s sticky referrer NFT for **GRAI**, paying the current owner. This is how vacant self-slots and already-assigned affiliate seats change hands without an OTC ERC-721 deal.
+Anyone may buy a bound locker’s **sticky upline seat** for **GRAI**, paying the current `referrerOf(locker)`. This rewrites the referral tree; it does **not** move the cashflow NFT.
 
 ### 11.1 Interface
 
 ```
-previewPoach(locker, poacher) → (price, referrer)   // view; reverts if unbound or poacher already owns
+previewPoach(locker, poacher) → (price, referrer)   // view; reverts if unbound or poacher already referrer
 poach(locker)                                       // msg.sender = poacher
 ```
 
 Flow:
 
-1. `price, referrer = treasury.poachOf(locker, poacher)`
-2. If `price > 0`: transfer `price` GRAI from poacher → `referrer` (current NFT owner)
-3. `treasury.rebind(locker, poacher)` — NFT transfer + L1/L2 book shift
-
-
+1. `price, referrer = treasury.poachOf(locker, poacher)` — `referrer` is sticky upline, not `ownerOf`.
+2. If `price > 0`: transfer `price` GRAI from poacher → `referrer`.
+3. `treasury.rebind(locker, poacher)` — set `locker.referrer = poacher` + L1/L2 book shift (no NFT transfer).
+4. Reverts `ReferralLoop` if the new link would cycle (§10.4).
 
 ### 11.2 Price
 
@@ -895,38 +931,45 @@ price = referralBooks[locker].value + referralBooks[locker].l1Value
 
 - `value` — locker’s own credited deposit book (poacher becomes **L1** on that locker’s future claims)
 - `l1Value` — deposits for which the locker is already L1 / direct recruits (poacher becomes **L2** on those claims)
-- `l2Value` **is not in the ask** — that cashflow stays with whoever is already L2 and is not transferred by buying this NFT
+- `l2Value` **is not in the ask** — deeper tree cashflow is not purchased by this poach
 
-So the ask matches the two claim levels the buyer actually receives under default Treasury L1/L2 depth.
+So the ask matches the two claim levels the buyer’s **tree position** receives under default Treasury L1/L2 depth. Who actually receives the USDC/ETH on claim is still `ownerOf` of each upline node (§10.2).
 
 ### 11.3 `rebind` book shift
 
-On `rebind(locker, to)` with seller `from = ownerOf(locker)`:
+On `rebind(locker, to)` with seller `from = referrerOf(locker)`:
 
 
 | Who                                     | Update                                                 |
 | --------------------------------------- | ------------------------------------------------------ |
+| Sticky link                             | `referralBooks[locker].referrer = to`                  |
 | Buyer `to`                              | `l1Value += locker.value`, `l2Value += locker.l1Value` |
 | Seller `from` (if `from ≠ locker`)      | same amounts subtracted                                |
 | Old L2 `referrerOf(from)` (if distinct) | `l2Value -= locker.value`                              |
 | New L2 `referrerOf(to)` (if distinct)   | `l2Value += locker.value`                              |
+| Cashflow NFT                            | **unchanged**                                          |
 
 
-Self-slot (`from == locker`): seller keeps downline L1/L2 on NFTs they still own; only the buyer (and optionally their upline as new L2) is credited.
+Self-slot (`from == locker`): seller keeps downline L1/L2 on the locker node; only the buyer (and optionally their upline as new L2) is credited.
 
-`referralBooks[locker].value` / `.l1Value` / `.l2Value` on the **locker key** are not zeroed — they still describe that depositor’s node. Affiliate books of wallets move as above so later asks stay consistent.
+`referralBooks[locker].value` / `.l1Value` / `.l2Value` on the **locker key** are not zeroed — they still describe that depositor’s node. Upline books move as above so later asks stay consistent.
 
 ### 11.4 Worked example
 
 Deposits (book ≈ USDC at $1):
 
 
-| Step | Action                                  | Ownership                    |
-| ---- | --------------------------------------- | ---------------------------- |
-| 1    | Alice deposits **100**, `referrer = 0`  | `ownerOf(Alice) = Alice`     |
-| 2    | Bob deposits **40**, `referrer = Alice` | `ownerOf(Bob) = Alice`       |
-| 3    | Carol deposits **25**, `referrer = Bob` | `ownerOf(Carol) = Bob`       |
+| Step | Action                                  | Tree                         | Cashflow NFT        |
+| ---- | --------------------------------------- | ---------------------------- | ------------------- |
+| 1    | Alice deposits **100**, `referrer = 0`  | `referrerOf(Alice) = Alice`  | `ownerOf(Alice) = Alice` |
+| 2    | Bob deposits **40**, `referrer = Alice` | `referrerOf(Bob) = Alice`    | `ownerOf(Bob) = Bob`     |
+| 3    | Carol deposits **25**, `referrer = Bob` | `referrerOf(Carol) = Bob`    | `ownerOf(Carol) = Carol` |
 
+
+```
+Tree:     Alice ←── Bob ←── Carol
+Cashflow: Alice∈Alice, Bob∈Bob, Carol∈Carol
+```
 
 `referralBooks` after setup:
 
@@ -938,22 +981,21 @@ Deposits (book ≈ USDC at $1):
 | Carol | 25      | 0          | 0          | **25**    |
 
 
-Upline on claim (L1 / L2):
+Upline on claim (tree → payee = ownerOf):
 
 ```
 Alice  → (self — no affiliate)
-Bob    → Alice
-Carol  → Bob → Alice
+Bob    → Alice (pay Alice)
+Carol  → Bob (pay Bob) → Alice (pay Alice)
 ```
-
-
 
 #### A. Dias `poach(Alice)` — pays **140** GRAI to Alice
 
 ```
-ownerOf(Alice) → Dias
-ownerOf(Bob)   = Alice   (unchanged)
-ownerOf(Carol) = Bob
+referrerOf(Alice) → Dias
+ownerOf(Alice)    = Alice   (unchanged)
+ownerOf(Bob)      = Bob
+ownerOf(Carol)    = Carol
 ```
 
 Books after:
@@ -965,14 +1007,14 @@ Books after:
 | Dias  | 140 (his deposit to fund the buy) | **+100**  | **+40**   |
 
 
-Claim topology:
+Claim topology (tree / payee if owners unchanged):
 
 
-| Claimer | L1       | L2       |
-| ------- | -------- | -------- |
-| Alice   | **Dias** | —        |
-| Bob     | Alice    | **Dias** |
-| Carol   | Bob      | Alice    |
+| Claimer | L1 tree | L1 payee | L2 tree | L2 payee |
+| ------- | ------- | -------- | ------- | -------- |
+| Alice   | **Dias**| Dias     | —       | —        |
+| Bob     | Alice   | Alice    | **Dias**| Dias     |
+| Carol   | Bob     | Bob      | Alice   | Alice    |
 
 
 Dias paid for Alice+Bob volume (140), not Carol’s 25 — matches L1/L2 reach.
@@ -980,7 +1022,8 @@ Dias paid for Alice+Bob volume (140), not Carol’s 25 — matches L1/L2 reach.
 #### B. Instead, Paul `poach(Bob)` — pays **65** GRAI to Alice
 
 ```
-ownerOf(Bob) → Paul
+referrerOf(Bob) → Paul
+ownerOf(Bob)    = Bob   (unchanged)
 ```
 
 
@@ -1000,19 +1043,31 @@ Claim: Bob → L1 Paul; Carol → L1 Bob, L2 Paul.
   - Alice loses Bob’s L1/L2 book
   - Dias loses L2 book on Bob (`l2Value` 40→**0**); keeps `l1Value = 100` (still L1 on Alice)
   - Ask `poach(Alice)` from Dias → **100**
-3. Eve `poach(Alice)` from Dias (`ask = 100`): pays Dias; Eve becomes L1 on Alice.
+3. Eve `poach(Alice)` from Dias (`ask = 100`): pays Dias; Eve becomes sticky L1 on Alice.
 
+#### D. OTC vs poach
 
+Bob transfers `NFT(Bob)` to Eve (OTC):
+
+```
+referrerOf(Alice) = Alice   // unchanged
+referrerOf(Bob)   = Alice   // unchanged
+ownerOf(Bob)      = Eve     // cashflow only
+```
+
+- Carol’s claim L1 payee becomes **Eve** (still tree node Bob).
+- `poach(Bob)` still pays **Alice** and only rewrites `referrerOf(Bob)`.
 
 ### 11.5 Invariants (poach)
 
 1. Ask = `value + l1Value` of the **locker**, never full deep subtree.
-2. Payment always goes to **current NFT owner**, not necessarily the locker.
-3. Only one NFT moves; downline tokens stay where they are.
+2. Payment always goes to **current sticky referrer**, not necessarily the locker or the cashflow NFT owner.
+3. Poach does **not** move any NFT; OTC does **not** rewrite `referrer` / books.
 4. Later deposits keep accruing to the live upline (`mint` walk uses current `referrerOf`).
-5. `previewPoach(locker, poacher)` / `poachOf` revert if unbound or `poacher` already owns the slot.
+5. `previewPoach` / `poachOf` revert if unbound or `poacher` is already the sticky referrer.
+6. `rebind` / `poach` revert `ReferralLoop` if the new upline link would cycle; first `mint` falls back to self-root instead.
 
-Tests: `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`.
+Tests: `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`, `[test/boundary/TreasuryOtcPoachBrick.t.sol](../test/boundary/TreasuryOtcPoachBrick.t.sol)`.
 
 ---
 
@@ -1118,7 +1173,8 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 14. `buyback` **scavenges dead** before fill — orphan GRAI on the contract is credited to the buyer then lock+voted with `graiIn`.
 15. **Affiliates ≠ locker cut** — claim tip / locker payout are independent of Treasury; affiliates pay from Treasury inventory sized by `revenueShareBps`.
 16. **Treasury distribute is all-or-nothing** — `bal < grossProfitShare` → no affiliate / beneficiar transfer for that claim.
-17. **Poach ask = locker** `value + l1Value` — not `l2Value` / deeper tree; `rebind` shifts affiliate L1/L2 books so later asks stay consistent.
+17. **Poach ask = locker** `value + l1Value` — not `l2Value` / deeper tree; `rebind` shifts sticky referrer + L1/L2 books (not the cashflow NFT); OTC moves `ownerOf` only.
+18. **No referral loops on poach** — `rebind` / `poach` revert `ReferralLoop` if the new upline would cycle; first `mint` self-roots instead. Claim walk still stops on `ref == locker` / self-loop.
 
 ---
 
@@ -1139,7 +1195,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `buyback`                  | Anyone              | Blocked                                                           |
 | `claim` / `claimAll`       | Anyone              | Allowed (claims ≠ redeem basket)                                  |
 | `bribe`                    | Anyone              | Blocked                                                           |
-| `poach` / `previewPoach`   | Anyone              | Allowed (referrer NFT buyout)                                     |
+| `poach` / `previewPoach`   | Anyone              | Allowed (sticky referrer buyout; NFT unchanged)                   |
 | `redeem`                   | Holder              | Only when open (after delay); `nonReentrant`                      |
 | `liquidate`                | Owner / anyone      | 2-of-2 open; on open cancel auctions + send orphan GRAI to opener |
 | `resettle`                 | Anyone              | Closes cycle; fund restarts                                       |
@@ -1153,12 +1209,13 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 
 | Function                                                 | Caller        | When                                     |
 | -------------------------------------------------------- | ------------- | ---------------------------------------- |
-| `mint(locker, referrer, value)`                          | GRAI          | Every deposit (sticky NFT + tree credit) |
-| `getReferralBooks(fromId, toId)`                         | Anyone (view) | Paginate lockers + books (`tokenByIndex`) |
-| `poachOf(locker, account)`                               | Anyone (view) | Poach quote + current owner              |
-| `rebind(locker, to)`                                     | GRAI          | After `poach` (NFT + L1/L2 book shift)   |
-| `distribute(asset, locker, net, revenue)`                | GRAI          | On `claim` (try/catch)                   |
-| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner    | Anytime                                  |
+| `mint(locker, referrer, value)`                          | GRAI          | Every deposit (sticky tree + cashflow NFT to locker) |
+| `getReferralBooks(fromId, toId)`                         | Anyone (view) | Paginate lockers + books (`tokenByIndex`)            |
+| `referrerOf(locker)`                                     | Anyone (view) | Sticky upline (`referralBooks.referrer`)             |
+| `poachOf(locker, account)`                               | Anyone (view) | Poach quote + current sticky referrer                |
+| `rebind(locker, to)`                                     | GRAI          | After `poach` (tree + L1/L2 books; no NFT transfer)  |
+| `distribute(asset, locker, net, revenue)`                | GRAI          | On `claim` (try/catch); payees = `ownerOf` upline    |
+| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner    | Anytime                                              |
 
 
 
