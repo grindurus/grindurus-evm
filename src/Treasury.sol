@@ -93,9 +93,12 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @dev First call sticky-binds `referrer` when unset (or `locker` if zero), mints cashflow NFT
     ///      to `locker` if needed, and ensures the upline has a cashflow NFT. Looping upline falls
     ///      back to self-root (no revert). Upline stubs from `_ensure` do not set `referrer`, so a
-    ///      later `mint` for that address still sticky-binds. Every call with `value > 0` credits
-    ///      `locker.value` and walks up to `revenueShareBps.length` upline levels into `l1Value` /
-    ///      `l2Value` (levels beyond L2 are walked for stop rules only — books only store L1/L2).
+    ///      later `mint` for that address still sticky-binds. On that first bind, any pre-existing
+    ///      `locker.l1Value` (downline accrued while unbound) is credited to `referrer.l2Value` when
+    ///      share depth is ≥ 2 — matching what `rebind` later debits. Every call with `value > 0`
+    ///      credits `locker.value` and walks up to `revenueShareBps.length` upline levels into
+    ///      `l1Value` / `l2Value` (levels beyond L2 are walked for stop rules only — books only
+    ///      store L1/L2).
     function mint(address locker, address referrer, uint256 value) external returns (uint256 tokenId) {
         _onlyGrai();
         if (locker == address(0)) revert ZeroAddress();
@@ -108,7 +111,14 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
             if (_ownerOf(tokenId) == address(0)) {
                 _safeMint(locker, tokenId);
             }
-            if (referrer != locker) _ensure(referrer);
+            if (referrer != locker) {
+                _ensure(referrer);
+                // Stub had L1 recruits before bind — those are now L2 under `referrer`.
+                if (revenueShareBps.length > 1) {
+                    uint256 stubL1 = referralBooks[locker].l1Value;
+                    if (stubL1 > 0) referralBooks[referrer].l2Value += stubL1;
+                }
+            }
             emit Mint(locker, referrer, tokenId);
         }
         if (value == 0) return tokenId;
@@ -132,7 +142,8 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @inheritdoc ITreasury
     /// @dev Rewrites `locker.referrer` to `to` and shifts L1/L2 books. Does **not** move the NFT
     ///      (`ownerOf` stays the cashflow holder). Reverts `ReferralLoop` if the new link would
-    ///      cycle. Called by GRAI after `poach` payment.
+    ///      cycle. Called by GRAI after `poach` payment. L2 book moves only when
+    ///      `revenueShareBps.length > 1` (mint never writes L2 at depth 1).
     function rebind(address locker, address to) public {
         _onlyGrai();
         if (to == address(0)) revert ZeroAddress();
@@ -148,23 +159,28 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         uint256 own = node.value;
         uint256 direct = node.l1Value;
         address newL2 = referrerOf(to);
+        bool shiftL2 = revenueShareBps.length > 1;
 
         // Self-slot: locker was their own referrer — keep downline L1/L2 on the locker node;
         // only credit the new upline (+ its L2).
         if (from != locker) {
             ReferralBook storage seller = referralBooks[from];
             seller.l1Value -= own;
-            seller.l2Value -= direct;
-            address oldL2 = referrerOf(from);
-            if (oldL2 != address(0) && oldL2 != from && oldL2 != locker) {
-                referralBooks[oldL2].l2Value -= own;
+            if (shiftL2) {
+                seller.l2Value -= direct;
+                address oldL2 = referrerOf(from);
+                if (oldL2 != address(0) && oldL2 != from && oldL2 != locker) {
+                    referralBooks[oldL2].l2Value -= own;
+                }
             }
         }
         ReferralBook storage buyer = referralBooks[to];
         buyer.l1Value += own;
-        buyer.l2Value += direct;
-        if (newL2 != address(0) && newL2 != to && newL2 != locker) {
-            referralBooks[newL2].l2Value += own;
+        if (shiftL2) {
+            buyer.l2Value += direct;
+            if (newL2 != address(0) && newL2 != to && newL2 != locker) {
+                referralBooks[newL2].l2Value += own;
+            }
         }
 
         node.referrer = to;
