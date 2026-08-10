@@ -174,8 +174,6 @@ contract GRAILifecycleTest is GRAIFixture {
     ////////////////////////////// HELPERS //////////////////////////////
 
     function _depositUsdc(address user, uint256 amount) internal {
-        vm.prank(admin);
-        grai.setDepositor(user, true);
         vm.startPrank(user);
         usdc.approve(address(grai), amount);
         grai.deposit(address(usdc), amount, false, address(0));
@@ -183,8 +181,6 @@ contract GRAILifecycleTest is GRAIFixture {
     }
 
     function _depositEth(address user, uint256 amount) internal {
-        vm.prank(admin);
-        grai.setDepositor(user, true);
         vm.prank(user);
         grai.deposit{value: amount}(address(0), amount, false, address(0));
     }

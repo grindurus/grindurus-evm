@@ -69,9 +69,6 @@ abstract contract GRAIFixture is Test {
         _setChainlinkFeed(address(weth), address(wethFeed));
         _setAssetPause(address(usdc), false);
         _setAssetPause(address(weth), false);
-        grai.setDepositor(alice, true);
-        grai.setDepositor(bob, true);
-        grai.setDepositor(admin, true);
         _registerTestCustodian();
         vm.stopPrank();
 
@@ -242,8 +239,6 @@ abstract contract GRAIFixture is Test {
     }
 
     function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
-        vm.prank(admin);
-        grai.setDepositor(user, true);
         vm.startPrank(user);
         token.approve(address(grai), amount);
         (graiOut,) = grai.deposit(address(token), amount, false, address(0));

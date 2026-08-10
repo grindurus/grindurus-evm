@@ -63,17 +63,11 @@ contract GRAI is
     /// @notice Accounts with an open liquidation vote; `escrows[locker].voterId` is the index here.
     address[] public voters;
 
-    /// @notice Deposit whitelist: only `true` addresses may call `deposit`.
-    mapping(address depositor => bool) public isDepositor;
-
     /// @notice Per-locker lock + liquidation vote (GRAI held by this contract while locked).
     mapping(address locker => Escrow) public escrows;
 
     /// @notice Per-locker, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
     mapping(address locker => mapping(address asset => Position)) public positions;
-
-    /// @notice Count of addresses with `isDepositor == true`. When `0`, deposit is open (no whitelist).
-    uint256 public totalDepositors;
 
     /// @notice Sum of GRAI escrowed in all active locks (`escrows[locker].locked`).
     uint256 public totalLocked;
@@ -222,16 +216,6 @@ contract GRAI is
         config = cfg;
     }
 
-    /// @notice Grant or revoke permission to call `deposit`.
-    function setDepositor(address depositor, bool isDepositor_) external onlyOwner {
-        if (isDepositor[depositor] == isDepositor_) return;
-        isDepositor[depositor] = isDepositor_;
-        unchecked {
-            if (isDepositor_) ++totalDepositors;
-            else --totalDepositors;
-        }
-    }
-
     function setGrinders(address grinders_) external onlyOwner {
         _requireNotLiquidation();
         _requireGraiMatch(grinders_);
@@ -368,7 +352,6 @@ contract GRAI is
         _requireNotGRAI(asset);
         _requireListed(asset);
         _requireNotZeroAmount(amount);
-        if (totalDepositors > 0 && !isDepositor[msg.sender]) revert NotDepositor();
         if (feeds[asset].paused) revert Paused();
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(grinders), asset, amount, false);
@@ -378,7 +361,7 @@ contract GRAI is
 
         totalValue += value;
         _mint(msg.sender, graiOut);
-        try treasury.mint(msg.sender, referrer) {} catch {}
+        try treasury.mint(msg.sender, referrer, value) {} catch {}
         if (lock_) lock(graiOut);
         _sendEth(msg.sender, refund);
         emit Deposit(msg.sender, graiOut, asset, received, value);
@@ -392,6 +375,24 @@ contract GRAI is
     function previewDeposit(address asset, uint256 amount) public view returns (uint256 value, uint256 graiOut) {
         value = usdValue(asset, amount);
         graiOut = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
+    }
+
+    //////////////////// POACH ////////////////////
+    
+    /// @inheritdoc IGRAI
+    /// @dev Any bound slot; `poacher` ≠ current owner. Price = `value + l1Value` in GRAI.
+    function previewPoach(address locker, address poacher) public view returns (uint256 price, address referrer) {
+        return treasury.poachOf(locker, poacher);
+    }
+
+    /// @inheritdoc IGRAI
+    /// @dev Pays `previewPoach` GRAI to the current NFT owner, then `treasury.rebind`.
+    function poach(address locker) public {
+        address poacher = msg.sender;
+        (uint256 price, address referrer) = previewPoach(locker, poacher);
+        if (price > 0) _transfer(poacher, referrer, price);
+        treasury.rebind(locker, poacher);
+        emit Poach(poacher, locker, price);
     }
 
     //////////////////// LOCK ////////////////////

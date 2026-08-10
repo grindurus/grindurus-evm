@@ -14,16 +14,18 @@ import {IWETH} from "./interfaces/IWETH.sol";
 
 /// @title Treasury
 /// @notice Protocol fee sink, sticky referrer NFTs, and claim-time split between affiliates and `beneficiar`.
-/// @dev Flow: GRAI `deposit` → `mint(locker, referrer)` once; GRAI `claim` → `distribute` pays L1/L2
-///      from `revenueShareInfo`, unpaid levels + protocol slice → `beneficiar`.
-///      UUPS; `mint`/`distribute` = only GRAI; upgrades = `GRAI.owner()`. Interact via ERC1967Proxy only.
+/// @dev Flow: GRAI `deposit` → `mint(locker, referrer, value)` (sticky NFT + tree credit);
+///      GRAI `claim` → `distribute` pays L1/L2 from `revenueShareInfo`, unpaid levels + protocol
+///      slice → `beneficiar`. Any bound locker NFT may be purchased via GRAI `poach` for
+///      `value + l1Value`. UUPS; `mint`/`rebind`/`distribute` = only GRAI;
+///      upgrades = `GRAI.owner()`. Interact via ERC1967Proxy only.
 contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable, UUPSUpgradeable {
     using Strings for uint256;
     using Strings for address;
 
     uint16 public constant BPS = 100_00; // 100%
 
-    /// @notice Linked GRAI that may call `mint` / `distribute`; upgrades authorized by its `owner`.
+    /// @notice Linked GRAI that may call `mint` / `rebind` / `distribute`; upgrades authorized by its `owner`.
     IGRAI public grai;
 
     /// @notice Protocol fee recipient for the non-affiliate slice of claim-time treasury income.
@@ -34,6 +36,9 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
     /// @notice Per-level claim revenue-share weights in bps (`sum == BPS`).
     uint16[] public revenueShareBps;
+
+    /// @notice Deposit book value per locker: own `value`, plus L1/L2 attributed volumes.
+    mapping(address locker => ReferralBook) public referralBooks;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -81,19 +86,75 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         emit RevenueShareUpdate(shares);
     }
 
+    receive() external payable {}
+
     /// @inheritdoc ITreasury
-    function mint(address locker, address referrer) external returns (uint256 tokenId) {
+    /// @dev First call mints sticky NFT to `referrer` (or `locker` if zero). Every call with
+    ///      `value > 0` credits `locker.value` and walks up to two upline levels into `l1Value` /
+    ///      `l2Value` (same stop rules as `revenueShareInfo`: empty / back-to-locker / self-loop).
+    function mint(address locker, address referrer, uint256 value) external returns (uint256 tokenId) {
         _onlyGrai();
         if (locker == address(0)) revert ZeroAddress();
-        if (referrer == address(0)) referrer = locker;
         tokenId = uint256(uint160(locker));
-        if (_ownerOf(tokenId) != address(0)) revert AlreadyBound();
-        _safeMint(referrer, tokenId);
+        if (_ownerOf(tokenId) == address(0)) {
+            if (referrer == address(0)) referrer = locker;
+            _safeMint(referrer, tokenId);
+            emit Mint(locker, referrer, tokenId);
+        }
+        if (value == 0) return tokenId;
 
-        emit Mint(locker, referrer, tokenId);
+        referralBooks[locker].value += value;
+        address cur = locker;
+        for (uint256 level; level < 2;) {
+            address ref = referrerOf(cur);
+            if (ref == address(0) || ref == locker || ref == cur) break;
+            if (level == 0) referralBooks[ref].l1Value += value;
+            else if (level == 1) referralBooks[ref].l2Value += value;
+            unchecked {
+                ++level;
+            }
+            cur = ref;
+        }
     }
 
-    receive() external payable {}
+    /// @inheritdoc ITreasury
+    /// @dev Moves locker NFT from current owner to `to` and shifts L1/L2 book:
+    ///      buyer `l1Value` += `locker.value`, `l2Value` += `locker.l1Value`; non-self seller
+    ///      loses the same; previous L2 (`referrerOf(seller)`) loses `locker.value` on `l2Value`,
+    ///      and the buyer's upline gains it. Called by GRAI after `poach` payment.
+    function rebind(address locker, address to) public {
+        _onlyGrai();
+        if (to == address(0)) revert ZeroAddress();
+        uint256 tokenId = uint256(uint160(locker));
+        address from = _ownerOf(tokenId);
+        if (from == address(0)) revert TokenNonexistent(tokenId);
+        if (to == from) revert AlreadyBound();
+
+        ReferralBook storage node = referralBooks[locker];
+        uint256 own = node.value;
+        uint256 direct = node.l1Value;
+        address newL2 = referrerOf(to);
+
+        // Self-slot: seller keeps downline L1/L2 on NFTs they still own; only credit buyer (+ new L2).
+        if (from != locker) {
+            ReferralBook storage seller = referralBooks[from];
+            seller.l1Value -= own;
+            seller.l2Value -= direct;
+            address oldL2 = referrerOf(from);
+            if (oldL2 != address(0) && oldL2 != from && oldL2 != locker) {
+                referralBooks[oldL2].l2Value -= own;
+            }
+        }
+        ReferralBook storage buyer = referralBooks[to];
+        buyer.l1Value += own;
+        buyer.l2Value += direct;
+        if (newL2 != address(0) && newL2 != to && newL2 != locker) {
+            referralBooks[newL2].l2Value += own;
+        }
+
+        _transfer(from, to, tokenId);
+        emit Rebind(locker, from, to, tokenId);
+    }
 
     /// @inheritdoc ITreasury
     /// @dev No-op if balance < `grossProfitShare` so claim is not bricked and partial affiliate pays
@@ -175,6 +236,36 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     }
 
     /// @inheritdoc ITreasury
+    function poachOf(address locker, address account) public view returns (uint256 price, address referrer) {
+        referrer = referrerOf(locker);
+        if (referrer == address(0)) revert ZeroAddress();
+        if (account == referrer) revert AlreadyBound();
+        ReferralBook memory node = referralBooks[locker];
+        price = node.value + node.l1Value;
+    }
+
+    /// @inheritdoc ITreasury
+    /// @dev Pages `_allTokens` via `tokenByIndex`. Empty page if `fromId >= totalSupply`.
+    function getReferralBooks(uint256 fromId, uint256 toId) public view returns (LockerReferral[] memory list) {
+        if (fromId >= toId) revert InvalidRange(fromId, toId);
+        uint256 n = totalSupply();
+        if (fromId >= n) return list;
+        if (toId > n) toId = n;
+        uint256 len = toId - fromId;
+        list = new LockerReferral[](len);
+        for (uint256 i; i < len;) {
+            uint256 tokenId = tokenByIndex(fromId + i);
+            // tokenId is always uint256(uint160(locker)) from mint
+            // forge-lint: disable-next-line(unsafe-typecast)
+            address locker = address(uint160(tokenId));
+            list[i] = LockerReferral({locker: locker, referrer: ownerOf(tokenId), book: referralBooks[locker]});
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /// @inheritdoc ITreasury
     function tokenURI() public pure returns (string memory) {
         return "https://grindurus.xyz/treasury.json";
     }
@@ -253,8 +344,16 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         if (msg.sender != address(grai)) revert NotGrai();
     }
 
+    /// @dev Prefer `grai.owner()`; if `grai` has no code or the call reverts, treat `address(grai)`
+    ///      as owner (e.g. unwired / non-Ownable stub during setup).
     function _onlyGraiOwner() internal view {
-        if (msg.sender != grai.owner()) revert NotGraiOwner();
+        address owner_ = address(grai);
+        if (owner_.code.length != 0) {
+            try grai.owner() returns (address o) {
+                owner_ = o;
+            } catch {}
+        }
+        if (msg.sender != owner_) revert NotGraiOwner();
     }
 
     function _authorizeUpgrade(address) internal view override {

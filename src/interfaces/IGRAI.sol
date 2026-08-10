@@ -18,6 +18,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error ZeroAddress();
     /// @notice Amount is zero or otherwise out of range (balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
+    /// @notice Referrer NFT poach: caller already owns the slot.
+    error AlreadyBound();
     error EthTransferFailed();
     error GraiMismatch();
     error ValueMismatch();
@@ -29,7 +31,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidPeriod();
     error InvalidCuts();
     error InvalidRange(uint256 fromId, uint256 toId);
-    error NotDepositor();
     /// @notice `renounceOwnership` is disabled — owner is required for 2-of-2 liquidation consent.
     error OwnershipRenounceDisabled();
     /// @notice Field selector for `setConfig`.
@@ -163,6 +164,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 totalVoted
     );
     event Liquidate(bool liquidation);
+    event Poach(address indexed buyer, address indexed locker, uint256 price);
     function config()
         external
         view
@@ -278,15 +280,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function setConfig(ConfigId id, uint256 data) external;
 
-    /// @notice Whether `account` may call `deposit`.
-    function isDepositor(address account) external view returns (bool);
-
-    /// @notice Number of addresses with `isDepositor == true`. When `0`, deposit is open (no whitelist).
-    function totalDepositors() external view returns (uint256);
-
-    /// @notice Owner grants or revokes deposit permission.
-    function setDepositor(address depositor, bool isDepositor_) external;
-
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
     /// @notice Dutch GRAI in and asset out (capped to auction remaining) at `timestamp`.
@@ -295,7 +288,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (uint256 graiIn, uint256 amountOut);
 
-    /// @notice Mint GRAI against deposited `asset`. When `totalDepositors > 0`, caller must be whitelisted (`isDepositor`). If `lock`, escrow the minted `graiOut` for dividends in the same tx. Sticky affiliate bind via `referrer` (once; `address(0)` → self).
+    /// @notice Mint GRAI against deposited `asset`. If `lock`, escrow the minted `graiOut` for
+    ///         dividends in the same tx. Sticky affiliate bind via `referrer` (once; `address(0)` → self).
     function deposit(address asset, uint256 amount, bool lock, address referrer)
         external
         payable
@@ -393,4 +387,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         not restore pre-liquidation pauses); reset `totalValue` to leftover NAV so the fund
     ///         can restart.
     function resettle() external;
+
+    /// @notice GRAI cost to poach the referrer NFT for `locker`: `referralBooks.value + l1Value`.
+    ///         Reverts if unbound or `poacher` already owns the slot.
+    /// @return price GRAI due to the current NFT owner.
+    /// @return referrer Current NFT owner.
+    function previewPoach(address locker, address poacher) external view returns (uint256 price, address referrer);
+
+    /// @notice Poach the referrer NFT for `locker`. Pays `previewPoach` GRAI to the current owner,
+    ///         then rebinds the NFT to `msg.sender` via Treasury.
+    function poach(address locker) external;
 }

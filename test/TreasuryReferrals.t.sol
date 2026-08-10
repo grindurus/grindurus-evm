@@ -30,7 +30,6 @@ contract TreasuryReferralsTest is GRAIFixture {
         _setYieldSplitFiftyThirtyTwenty();
         grai.setConfig(IGRAI.ConfigId.REVENUE_SHARE, REVENUE_SHARE_BPS);
         treasury.setBeneficiar(beneficiar);
-        grai.setDepositor(carol, true);
         vm.stopPrank();
 
         usdc.mint(carol, 1_000e6);
@@ -266,16 +265,179 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
+    ////////////////////////////// poach //////////////////////////////
+
+    function test_Poach_SelfReferrer_TransfersOwnership() public {
+        _depositWithRef(alice, 100e6, address(0)); // self-mint NFT + tree value
+        uint256 tokenId = uint256(uint160(alice));
+        assertEq(treasury.ownerOf(tokenId), alice);
+        (uint256 own, uint256 l1, uint256 l2) = treasury.referralBooks(alice);
+        assertEq(own, 100e6);
+        assertEq(l1, 0);
+        assertEq(l2, 0);
+
+        (uint256 price,) = grai.previewPoach(alice, bob);
+        assertEq(price, 100e6);
+
+        // Fund bob with GRAI via deposit
+        _depositWithRef(bob, 100e6, carol);
+        uint256 aliceGraiBefore = grai.balanceOf(alice);
+        vm.prank(bob);
+        grai.poach(alice);
+
+        assertEq(treasury.ownerOf(tokenId), bob);
+        assertEq(treasury.referrerOf(alice), bob);
+        assertEq(grai.balanceOf(alice), aliceGraiBefore + price);
+        assertEq(grai.balanceOf(bob), 0);
+        // Self-poach: alice keeps her node; bob gains alice.value as l1
+        (uint256 aliceOwn, uint256 aliceL1, uint256 aliceL2) = treasury.referralBooks(alice);
+        assertEq(aliceOwn, 100e6);
+        assertEq(aliceL1, 0);
+        assertEq(aliceL2, 0);
+        (, uint256 bobL1, uint256 bobL2) = treasury.referralBooks(bob);
+        assertEq(bobL1, 100e6);
+        assertEq(bobL2, 0);
+    }
+
+    function test_Poach_NonSelf_PaysCurrentOwner() public {
+        address paul = makeAddr("paul");
+        usdc.mint(paul, 1_000e6);
+
+        _depositWithRef(alice, 100e6, address(0));
+        _depositWithRef(bob, 40e6, alice);
+        _depositWithRef(carol, 25e6, bob);
+
+        uint256 bobId = uint256(uint160(bob));
+        assertEq(treasury.ownerOf(bobId), alice);
+
+        // Paul funds GRAI to cover bob value+l1Value = 40+25
+        _depositWithRef(paul, 65e6, address(0));
+        (uint256 price, address seller) = grai.previewPoach(bob, paul);
+        assertEq(price, 65e6);
+        assertEq(seller, alice);
+
+        uint256 aliceGraiBefore = grai.balanceOf(alice);
+        vm.prank(paul);
+        grai.poach(bob);
+
+        assertEq(treasury.ownerOf(bobId), paul);
+        assertEq(treasury.referrerOf(bob), paul);
+        assertEq(grai.balanceOf(alice), aliceGraiBefore + price);
+        assertEq(grai.balanceOf(paul), 0);
+        // Carol's NFT still owned by Bob; Alice keeps her own slot
+        assertEq(treasury.ownerOf(uint256(uint160(carol))), bob);
+        assertEq(treasury.ownerOf(uint256(uint160(alice))), alice);
+
+        // L1/L2 book moves alice → paul for bob's subtree
+        (, uint256 aliceL1, uint256 aliceL2) = treasury.referralBooks(alice);
+        (, uint256 paulL1, uint256 paulL2) = treasury.referralBooks(paul);
+        assertEq(aliceL1, 0);
+        assertEq(aliceL2, 0);
+        assertEq(paulL1, 40e6);
+        assertEq(paulL2, 25e6);
+        // Subsequent poach(alice) no longer prices bob's volume
+        (uint256 priceAlice,) = grai.previewPoach(alice, paul);
+        assertEq(priceAlice, 100e6);
+    }
+
+    function test_Poach_SelfThenDownline_BookStaysConsistent() public {
+        address dias = makeAddr("dias");
+        address eve = makeAddr("eve");
+        usdc.mint(dias, 1_000e6);
+        usdc.mint(eve, 1_000e6);
+
+        _depositWithRef(alice, 100e6, address(0));
+        _depositWithRef(bob, 40e6, alice);
+        _depositWithRef(carol, 25e6, bob);
+
+        _depositWithRef(dias, 140e6, address(0));
+        vm.prank(dias);
+        grai.poach(alice);
+
+        // Dias credited alice.value / alice.l1 as l1/l2; alice keeps downline L1 on bob
+        (, uint256 diasL1, uint256 diasL2) = treasury.referralBooks(dias);
+        (, uint256 aliceL1, uint256 aliceL2) = treasury.referralBooks(alice);
+        assertEq(diasL1, 100e6);
+        assertEq(diasL2, 40e6);
+        assertEq(aliceL1, 40e6);
+        assertEq(aliceL2, 25e6);
+        (uint256 priceAlice,) = grai.previewPoach(alice, eve);
+        assertEq(priceAlice, 140e6); // still value+l1 on alice node
+
+        // Eve takes bob from alice → alice loses bob book; dias still holds alice
+        _depositWithRef(eve, 65e6, address(0));
+        vm.prank(eve);
+        grai.poach(bob);
+
+        (, aliceL1, aliceL2) = treasury.referralBooks(alice);
+        (, uint256 eveL1, uint256 eveL2) = treasury.referralBooks(eve);
+        assertEq(aliceL1, 0);
+        assertEq(aliceL2, 0);
+        assertEq(eveL1, 40e6);
+        assertEq(eveL2, 25e6);
+
+        // Resale of alice from dias: only alice.own left in ask
+        (priceAlice,) = grai.previewPoach(alice, eve);
+        assertEq(priceAlice, 100e6);
+        // Dias keeps L1 book on alice; loses L2 book on bob after eve took bob
+        (, diasL1, diasL2) = treasury.referralBooks(dias);
+        assertEq(diasL1, 100e6);
+        assertEq(diasL2, 0);
+    }
+
+    function test_Mint_CreditsL1L2ValuesUpUpline() public {
+        _depositWithRef(alice, 100e6, address(0)); // self
+        _depositWithRef(bob, 40e6, alice); // alice is L1 of bob
+        _depositWithRef(carol, 25e6, bob); // bob L1, alice L2 of carol
+
+        (uint256 aliceOwn, uint256 aliceL1, uint256 aliceL2) = treasury.referralBooks(alice);
+        (uint256 bobOwn, uint256 bobL1, uint256 bobL2) = treasury.referralBooks(bob);
+        (uint256 carolOwn, uint256 carolL1, uint256 carolL2) = treasury.referralBooks(carol);
+        assertEq(aliceOwn, 100e6);
+        assertEq(aliceL1, 40e6);
+        assertEq(aliceL2, 25e6);
+        assertEq(bobOwn, 40e6);
+        assertEq(bobL1, 25e6);
+        assertEq(bobL2, 0);
+        assertEq(carolOwn, 25e6);
+        assertEq(carolL1, 0);
+        assertEq(carolL2, 0);
+
+        // poach ask = value + l1Value (excludes l2Value / deeper tree)
+        (uint256 priceAlice,) = grai.previewPoach(alice, bob);
+        assertEq(priceAlice, 140e6);
+        (uint256 priceBob,) = grai.previewPoach(bob, carol);
+        assertEq(priceBob, 65e6);
+    }
+
+    function test_Mint_SecondDeposit_AccruesValue() public {
+        _depositWithRef(alice, 100e6, address(0));
+        _depositWithRef(alice, 50e6, bob); // referrer ignored; sticky self + accrue
+
+        assertEq(treasury.referrerOf(alice), alice);
+        (uint256 own, uint256 l1, uint256 l2) = treasury.referralBooks(alice);
+        assertEq(own, 150e6);
+        assertEq(l1, 0);
+        assertEq(l2, 0);
+        (uint256 price,) = grai.previewPoach(alice, bob);
+        assertEq(price, 150e6);
+    }
+
+    function test_Poach_Reverts_WhenAlreadyOwner() public {
+        _mintAff(alice, bob);
+        vm.expectRevert(ITreasury.AlreadyBound.selector);
+        vm.prank(bob);
+        grai.poach(alice);
+    }
+
     ////////////////////////////// helpers //////////////////////////////
 
     function _mintAff(address locker, address referrer) internal {
         vm.prank(address(grai));
-        treasury.mint(locker, referrer);
+        treasury.mint(locker, referrer, 0);
     }
 
     function _depositWithRef(address user, uint256 amount, address referrer) internal {
-        vm.prank(admin);
-        grai.setDepositor(user, true);
         vm.startPrank(user);
         usdc.approve(address(grai), amount);
         grai.deposit(address(usdc), amount, false, referrer);
