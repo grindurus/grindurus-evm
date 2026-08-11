@@ -25,12 +25,12 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 - **No GRAI vote-reward index** — buyback payments are not redistributed to voters as GRAI rewards.
 - A holder may `vote` without a prior `lock`: `vote` locks any wallet shortfall so `voted ≤ amount`.
 - `**distribute()**` — permissionless yield in; splits per `Config` cuts (see table below). Same cut path used for bribe premium / discount carve-outs.
-- `**bribe()**` — permissionless buyout of **voted** GRAI for `bribeAsset` at dynamic ask vs half-quorum.
+- `**bribe()**` — permissionless buyout of **voted** GRAI for `settlementAsset` at dynamic ask vs half-quorum.
 
 **Exit paths (no open-market redeem while live)**
 
 1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty stays on GRAI as orphan/dead inventory (next `buyback` scavenges it via `balanceOf(this) − totalLocked`).
-2. `bribe` — buy out **voted** GRAI for `bribeAsset` at a dynamic ask vs half-quorum (premium / par / discount).
+2. `bribe` — buy out **voted** GRAI for `settlementAsset` at a dynamic ask vs half-quorum (premium / par / discount).
 3. **Secondary market** — sell free (unlocked) wallet GRAI OTC / CEX / DEX; protocol does not provide a live redeem.
 4. **Liquidation** — **2-of-2**: vote quorum **and** owner confirmation (`confirmed` / owner `liquidate` with quorum) → holders `redeem` → anyone `resettle` (fund restarts). Voters alone cannot open; non-owner open needs prior `confirmed`.
 
@@ -50,8 +50,6 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 
 ---
 
-
-
 ## 2. Actors and contracts
 
 
@@ -61,13 +59,13 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 | **Locker (unvoted)**   | Escrows GRAI; earns **asset dividends** on `amount − voted`                                           |
 | **Voter**              | `vote()` (auto-locks shortfall); quorum; **no** asset dividends on voted share; buyable via `bribe()` |
 | **Buyback buyer**      | Pays GRAI Dutch ask; receives asset; payment auto lock+vote on buyer                                  |
-| **Briber**             | Pays `bribeAsset` to buy out voted GRAI (receives full `graiAmount` to wallet)                        |
+| **Briber**             | Pays `settlementAsset` to buy out voted GRAI (receives full `graiAmount` to wallet)                   |
 | **GRAI**               | Share token, oracles, auctions, lock/vote/bribe/liquidation, dividends                                |
 | **Grinders**           | NFT registry, reserve custody, allocation, liquidation sweeps                                         |
 | **Custodian**          | Per-NFT wallet; `distribute()` yield → GRAI                                                           |
-| **Treasury**           | Yield / bribe fee sink; sticky referrer **tree** + cashflow NFTs; claim-time affiliate + `beneficiar` split |
-| **Affiliate (upline)** | Sticky `referrer` link on a locker (moved by `poach`); tree position for L1/L2 books                        |
-| **Cashflow owner**     | `ownerOf` of a locker NFT; receives that node’s slice of claim-time `revenueShare` (OTC-transferable)     |
+| **Treasury**           | Yield / bribe fee sink; referrer **tree** + cashflow NFTs; claim-time affiliate + `beneficiar` split  |
+| **Referrer (upline)**  | `referrerOf(locker)` seat: L1/L2 book volume; sells that seat via `poach` (paid in GRAI)              |
+| **Poacher**            | Buys a locker’s upline link for GRAI (`poach`); rewrites the tree, not the cashflow NFT               |
 | **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; liquidation consent via `confirmed` / `liquidate` |
 
 
@@ -77,11 +75,7 @@ Native ETH = `address(0)`. WETH is the fallback when ETH pushes are rejected.
 
 ---
 
-
-
 ## Actor playbooks
-
-
 
 ### Depositor / locker
 
@@ -152,8 +146,6 @@ She may later `claim` / `claimAll` yield assets accrued to that escrow.
 
 ---
 
-
-
 ### Claimer
 
 Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). **Allowed while liquidation is open**: `claim` pays only from the `totalClaimable` reserve, which `_redeemable` excludes from redeem / `resettle` — the two pools do not mix. Unclaimed reserve also survives `resettle`. (`unlock` itself is still blocked in liquidation.)
@@ -199,8 +191,6 @@ sequenceDiagram
 
 ---
 
-
-
 ### Voter
 
 Any holder may `vote` directly. If `voted + graiAmount > amount`, `vote` first `lock`s the shortfall, then commits. Voted GRAI is excluded from the dividend index.
@@ -219,7 +209,7 @@ sequenceDiagram
         V->>G: unlock[graiAmount] clamps voted - penalty stays on GRAI as dead
     else Exit via bribe
         B->>G: bribe[voter, amount]
-        G->>V: voterShare in bribeAsset
+        G->>V: voterShare in settlementAsset
         G->>B: full graiAmount GRAI to wallet
     end
 ```
@@ -232,7 +222,7 @@ sequenceDiagram
 | 1    | `vote(graiAmount)` | Auto-lock shortfall; `voted ≤ amount`; `totalVoted` ↑; dividend base ↓                                |
 | 2    | Quorum             | `totalVoted / supply > quorumBps` (strict) — necessary but not sufficient for open (needs owner limb) |
 | 3a   | `unlock`           | Excess votes clamped; net GRAI returned; unlock fee stays on GRAI as dead                             |
-| 3b   | `bribe`            | Full `graiAmount` sold for exact `bribeAmount` in `bribeAsset` (non-FoT)                              |
+| 3b   | `bribe`            | Full `graiAmount` sold for exact `bribeAmount` in `settlementAsset` (non-FoT)                         |
 | 3c   | `liquidate`        | Owner: toggle `confirmed` if no quorum, else open; non-owner: open iff `confirmed && hasQuorum()`     |
 
 
@@ -258,8 +248,6 @@ Supply = **1,000 GRAI**. Alice already has **100 GRAI** locked unvoted (`amount 
 
 ---
 
-
-
 ### Buybacker
 
 ```mermaid
@@ -284,7 +272,7 @@ sequenceDiagram
 | 0    | Scavenge dead      | `balanceOf(this) − totalLocked` → buyer wallet (unlock fees, stray transfers)                 |
 | 1    | Pay Dutch `graiIn` | `lock(graiIn + dead)` then `vote(graiIn + dead)` — payment not reused from prior unvoted lock |
 | 2    | Receive asset      | Possible discount vs mint ask (floor at `BPS − bribePremiumBps`)                              |
-| 3    | Exit payment       | `bribe` (refund in `bribeAsset`) or `unlock` (fee stays on GRAI as dead)                      |
+| 3    | Exit payment       | `bribe` (refund in `settlementAsset`) or `unlock` (fee stays on GRAI as dead)                 |
 
 
 Buyback payment is **not burned** — it is a lock+vote that the buyer may exit immediately. Same-tx self-`bribe` or `unlock` is fine: the economic cost of taking the lot is the unlock fee (stays on GRAI as dead → next scavenger) or bribe cutPool (~½ premium / discount carve-out), not permanent loss of `graiIn`. Atomic exit via ETH/callback reentrancy is the same product path, not a separate bug.
@@ -307,7 +295,7 @@ Open auction after yield: **2,000 USDC** remaining, mint ask `maxPayment = 2,000
 | Auction                       | closed            | `remaining = 0`                                   |
 
 
-1. Exit that payment later via `bribe` (refund in `bribeAsset`) or `unlock` (flat unlock fee stays on GRAI as dead).
+1. Exit that payment later via `bribe` (refund in `settlementAsset`) or `unlock` (flat unlock fee stays on GRAI as dead).
 
 **Example 2** (Bob fills at Dutch discount — after `buybackPeriod`):
 
@@ -326,18 +314,16 @@ Same lot: **2,000 USDC**, `maxPayment = 2,000`, `minPayment = 1,960`. Clock has 
 3. Wallet **−2,000 GRAI**, wallet **+2,000 USDC**; escrow opens `amount = voted = 2,000`.
 4. That escrow is a **vote position** toward liquidation quorum (`totalVoted` ↑ by 2,000) and pays **no** asset dividends on those 2,000.
 5. Exit options for the vote:
-  - someone `bribe`s Bob’s voted GRAI for `bribeAsset` at the dynamic ask; or
+  - someone `bribe`s Bob’s voted GRAI for `settlementAsset` at the dynamic ask; or
   - Bob `unlock`s (flat fee stays on GRAI as dead).
 
 Net: secondary GRAI was the ticket into the auction; the fill automatically created a bribeable vote, not free liquid GRAI.
 
 ---
 
-
-
 ### Briber
 
-Buys **voted** GRAI only (`graiAmount ≤ voted`). `bribeAsset` must **not** be fee-on-transfer: `_pay` must credit exactly `bribeAmount`, and the briber receives the **full** escrowed `graiAmount`.
+Buys **voted** GRAI only (`graiAmount ≤ voted`). `settlementAsset` must **not** be fee-on-transfer: `_pay` must credit exactly `bribeAmount`, and the briber receives the **full** escrowed `graiAmount`.
 
 ```mermaid
 sequenceDiagram
@@ -348,7 +334,7 @@ sequenceDiagram
     B->>G: bribe[voter, graiAmount]
     G->>G: reserve escrow then transfer full graiAmount to briber
     G->>G: require exact bribeAmount credit non-FoT
-    G->>V: voterShare in bribeAsset
+    G->>V: voterShare in settlementAsset
     Note over G: premium half to cuts - discount half gap to cuts - par no cuts
 ```
 
@@ -366,7 +352,7 @@ sequenceDiagram
 
 To earn dividends after a bribe, the briber must `lock` the received GRAI (and leave it unvoted).
 
-**Examples** (Brian bribes **Violett**’s **100 voted GRAI**; default config; `book = 100` bribeAsset; exact pay; Brian gets **100 GRAI**):
+**Examples** (Brian bribes **Violett**’s **100 voted GRAI**; default config; `book = 100` settlementAsset; exact pay; Brian gets **100 GRAI**):
 
 Setup: Violett locked and `vote`d **100 GRAI** (wallet = 0, escrow `amount = voted = 100`). She forgoes dividends on that share and waits for a briber. Brian buys her vote out.
 
@@ -380,7 +366,96 @@ Setup: Violett locked and `vote`d **100 GRAI** (wallet = 0, escrow `amount = vot
 
 ---
 
+### Referrer (upline)
 
+A **referrer** is whoever currently sits in `referrerOf(locker)` — the upline link set on a depositor’s **first** `mint`, later moved only by `poach` / `rebind`. That seat is **not** the cashflow NFT: claim pay at each upline level goes to `ownerOf(uint160(uplineLocker))`, which can be sold OTC without changing the tree (see §10).
+
+```mermaid
+sequenceDiagram
+    participant D as Depositor
+    participant G as GRAI
+    participant T as Treasury
+    participant R as Referrer upline
+    D->>G: deposit[..., referrer]
+    G->>T: mint[locker, referrer, value]
+    Note over T: first mint binds referrerOf
+    Note over T: credits locker.value and upline l1/l2 books
+
+    Note over G,T: later claim on locker dividends
+    G->>T: distribute[asset, locker, gross, revenue]
+    T->>R: L1/L2 revenueShare to ownerOf(upline)
+    T->>T: unpaid + protocol slice → beneficiar
+```
+
+
+
+
+| Step | Action                         | Effect                                                                                        |
+| ---- | ------------------------------ | --------------------------------------------------------------------------------------------- |
+| 1    | First `deposit(..., referrer)` | Sets `referrerOf(locker)`; stub NFT to upline if needed; volumes into `value` / L1 / L2 books |
+| 2    | Later deposits                 | Referrer arg ignored; books keep accruing on the live upline                                  |
+| 3    | Locker `claim`                 | Affiliate pool sized from claimed dividends; walk the referral tree; pay **NFT owners**       |
+| 4    | OTC transfer of NFT            | Moves who receives that node’s claim slice; **does not** change `referrerOf` or books         |
+| 5    | Someone `poach`es a downline   | Referrer is paid the ask in GRAI and loses the upline seat (see Poacher)                      |
+
+
+Affiliates do **not** skim the locker’s dividend asset payout — they are paid from Treasury inventory on `claim`. Defaults and math: §10.
+
+**Example** (Bob under Alice; Carol under Bob — tree vs cashflow):
+
+1. Alice deposits with `referrer = 0` → self-root (`referrerOf(Alice) = Alice`), owns her cashflow NFT.
+2. Bob deposits with `referrer = Alice` → `referrerOf(Bob) = Alice`; Alice’s `l1Value` ↑ by Bob’s book.
+3. Carol deposits with `referrer = Bob` → Alice is L2 on Carol’s deposits (`l2Value` ↑).
+4. On Carol’s `claim`, L1 pay goes to `ownerOf(Bob)`, L2 to `ownerOf(Alice)` — even if Alice sold her NFT to Eve OTC, Eve receives Alice’s L2 slice while `referrerOf(Bob)` stays Alice until someone poaches.
+
+---
+
+### Poacher
+
+A **poacher** buys a bound locker’s **upline seat** for GRAI. Payment goes to the **current** `referrerOf(locker)` (not necessarily the locker or the NFT owner). `rebind` rewrites the tree and shifts L1/L2 books; the cashflow NFT stays put. Blocked while liquidation is open. Full pricing / book shift: §11.
+
+```mermaid
+sequenceDiagram
+    participant P as Poacher
+    participant G as GRAI
+    participant T as Treasury
+    participant S as Seller referrer
+
+    P->>G: previewPoach[locker] or poach[locker]
+    G->>T: poachOf[locker, poacher]
+    T-->>G: price, referrer
+    alt price > 0
+        G->>S: transfer price GRAI from poacher
+    end
+    G->>T: rebind[locker, poacher]
+    Note over T: referrerOf[locker] = poacher
+    Note over T: shift l1/l2 books; no NFT move
+```
+
+
+
+
+| Step | Action                 | Effect                                                                                      |
+| ---- | ---------------------- | ------------------------------------------------------------------------------------------- |
+| 1    | `previewPoach(locker)` | Quotes `price` + current referrer (seller); reverts if unbound or already the referrer      |
+| 2    | Ask                    | `referralBooks[locker].value + l1Value` (own deposits + direct recruits; **not** `l2Value`) |
+| 3    | `poach(locker)`        | Pay seller in GRAI → `rebind(locker, poacher)`                                              |
+| 4    | After                  | Poacher is L1 on that locker; later deposits / claims follow the new tree                   |
+| —    | Loop guard             | Cannot poach an upline from a downline (`ReferralLoop`); first `mint` self-roots instead    |
+
+
+**Example** (same tree: Alice ← Bob ← Carol; asks ignore deeper L2 cashflow):
+
+
+| Target         | Ask (GRAI)                          | Paid to                 | After                                        |
+| -------------- | ----------------------------------- | ----------------------- | -------------------------------------------- |
+| `poach(Bob)`   | Bob.`value` + Bob.`l1Value` (Carol) | Alice (referrer of Bob) | `referrerOf(Bob) = poacher`; Alice loses Bob |
+| `poach(Alice)` | Alice.`value` + Alice.`l1Value`     | Alice (self-root)       | Poacher becomes L1 on Alice                  |
+
+
+OTC sale of Alice’s NFT does **not** change who receives the next `poach(Bob)` payment — that still goes to `referrerOf(Bob)` until the tree is rebound.
+
+---
 
 ## 3. Value flows (high level)
 
@@ -392,28 +467,35 @@ Setup: Violett locked and `vote`d **100 GRAI** (wallet = 0, escrow `amount = vot
                     │  dividends (unvoted lockers only)        │
                     │  totalClaimable reserve (excluded from   │
                     │    redeem / resettle basket)             │
-                    └───────────┬──────────────────┬───────────┘
-                                │                  ▲
-                       transfer │                  │ distribute (yield)
-                                ▼                  │
-                    ┌───────────────────┐          │
-                    │     Grinders      │          │ yield
-                    │  reserve + NFTs   │          │ 
-                    └─────────┬─────────┘          │
-                              │ allocate()         │
-                              ▼                    │
-                    ┌───────────────────┐          │
-                    │    Custodian      │──────────┘
-                    └───────────────────┘
+                    │  poach — GRAI ask → referrer;     │
+                    │    rebind tree (not cashflow NFT)        │
+                    └───┬───────────────┬──────────────┬───────┘
+                        │               │              │
+               transfer │               │ claim        │ treasuryCut
+                        │               │ (affiliates) │ (yield / bribe)
+                        ▼               ▼              ▼
+                    ┌─────────┐   ┌────────────────────────────────┐
+                    │Grinders │   │            Treasury            │
+                    │reserve +│   │  referrer tree + cashflow NFTs   │
+                    │  NFTs   │   │                                │
+                    └────┬────┘   │  on claim distribute:          │
+                         │        │   revenueShare →               │
+                         │        │     ownerOf(uint160(upline))   │
+                         │        │   unpaid + protocol slice →    │
+                         │        │     beneficiar                 │
+                         │        └────────────────────────────────┘
+                         │ allocate()
+                         ▼
+                    ┌─────────┐
+                    │Custodian│─── yield ──► GRAI.distribute
+                    └─────────┘
 ```
+
+`poach` moves GRAI wallet-to-wallet (buyer → current `referrerOf(locker)`); Treasury only rewrites the referrer link + L1/L2 books. Claim-time affiliate pay is separate: sized from claimed dividends, walked along uplines, paid to each upline’s **cashflow NFT owner**, remainder to `beneficiar` (§10–§11).
 
 ---
 
-
-
 ## 4. GRAI share mechanics
-
-
 
 ### 4.1 Deposit
 
@@ -432,8 +514,6 @@ Cancelled Dutch inventory at `liquidate` enters the redeem basket by design (sti
 - FoT-safe on ERC20 pulls (`_pay` credited delta).
 - `paused` blocks deposits only.
 
-
-
 ### 4.2 Book vs market
 
 - **Book** = `totalValue / totalSupply`.
@@ -441,13 +521,47 @@ Cancelled Dutch inventory at `liquidate` enters the redeem basket by design (sti
 Share denominator is `totalSupply`. Orphan/dead GRAI still on the contract dilutes redeemers and
 leaves a residual book slice (live unlock-fee orphans are sent to the opener / `msg.sender` when liquidation opens).
 - New deposits dilute quorum until voters re-commit.
-- After `resettle`, `totalValue` marks to leftover basket NAV only when that raises mint price (`totalNAV >= totalValue`); otherwise book `totalValue` is kept and liquidation still clears (underwater reopen allowed).
+- After `resettle`, `totalValue` is **not** marked to leftover basket NAV — post-redeem book is kept so mint stays ~$1/GRAI; if `supply == 0`, `totalValue = 0`.
+
+### 4.3 GRAI classes: free, locked, unvoted
+
+Every GRAI unit sits in one of these roles (a holder’s escrow can mix locked slices):
+
+```
+free      = balanceOf(holder)          // wallet — not escrowed on GRAI
+locked    = escrows[holder].locked     // escrowed on GRAI (Σ → totalLocked)
+voted     = escrows[holder].voted      // ≤ locked; Σ → totalVoted
+unvoted   = locked − voted             // dividend-eligible slice; Σ → totalLocked − totalVoted
+```
+
+
+| Class       | Where it lives                      | Asset dividends                   | Main uses                                                       |
+| ----------- | ----------------------------------- | --------------------------------- | --------------------------------------------------------------- |
+| **Free**    | Holder wallet (`balanceOf`)         | No                                | OTC / CEX / DEX; pay `buyback` / `poach`; `lock` / `vote` input |
+| **Locked**  | Escrow on GRAI (`escrow.locked`)    | Only the **unvoted** part         | Exit via `unlock` (flat penalty) or, if voted, `bribe`          |
+| **Unvoted** | `locked − voted` inside that escrow | Yes — sole base for `dividendCut` | Accrue / `claim`; shrinks when you `vote`                       |
+
+
+Protocol totals:
+
+```
+totalSupply   = free (all wallets) + totalLocked + orphan/dead on GRAI
+                // orphan = balanceOf(this) − totalLocked (unlock fees, stray transfers)
+eligible      = totalLocked − totalVoted   // = Σ unvoted — dividend index denominator
+```
+
+- **Free → locked:** `lock`, or auto-lock shortfall inside `vote` / `buyback`.
+- **Locked → free:** `unlock` (net after penalty); `bribe` sends full `graiAmount` to the **briber** wallet (still free until they lock).
+- **Unvoted → voted:** `vote` (no extra GRAI if already locked).
+- **Voted → unvoted:** only by shrinking `voted` (unlock clamp when `voted > locked`, or bribe reducing both).
+
+Liquid wallet GRAI never earns yield. Fully voted escrow (`locked == voted`) earns none on new cuts. Orphan/dead GRAI on the contract is not free to a user and not in `eligible` until scavenged into a buyer via `buyback`.
 
 ---
 
-
-
 ## 5. Yield: `distribute` → auction / dividend / treasury
+
+### 5.1 Cuts
 
 ```
 received     = tokens pulled to GRAI
@@ -468,31 +582,27 @@ Initialize defaults: **≈33.33% auction / 33.34% dividend / 33.33% treasury** (
 
 Custodian / caller yield credited in `positions[from][asset].yielded` (analytics).
 
-### 5.1 Locker dividends (unvoted only)
+### 5.2 Locker dividends (unvoted only)
 
 ```
 eligible     = totalLocked - totalVoted
 accShare    += dividendCut * 1e18 / eligible     // or _place if eligible == 0 / dust
 totalClaimable += dividendCut                    // when index moves
-claimable   += (amount - voted) * accShare / 1e18 - debt
+claimable   += (locked - voted) * accShare / 1e18 - debt
 ```
 
 - Only **unvoted** locked GRAI earns asset dividends.
-- Fully voted escrow (`amount == voted`) earns **none** on new cuts.
+- Fully voted escrow (`locked == voted`) earns **none** on new cuts.
 - New lockers sync debt to the **current** index → they do **not** receive past cuts.
 - `vote` accrues then shrinks the eligible base and resyncs debt.
 - Claim: `claim` / `claimAll` / previews — **allowed while liquidation is open** (pays only the reserved slice; does not touch the redeem basket). On claim, GRAI also asks Treasury to pay affiliates / `beneficiar` (see §10).
 - Reserved `totalClaimable` is excluded from redeem / resettle sweeps (`_redeemable = bal − totalClaimable`) and remains claimable during liquidation and after restart.
 
-Example: Alice locks 100, votes 40 → eligible 60. Bob locks 100 unvoted → eligible 100. Total eligible 160. A 30 USDC dividend cut pays Alice **11.25**, Bob **18.75**.
+Example: Alice locks 100, votes 40 → unvoted 60. Bob locks 100 unvoted → unvoted 100. Total eligible 160. A 30 USDC dividend cut pays Alice **11.25**, Bob **18.75**.
 
 ---
 
-
-
 ## 6. Dutch auctions
-
-
 
 ### 6.1 Lots (`_place`)
 
@@ -529,25 +639,19 @@ Liquidation deletes open auctions into the redeem basket.
 
 ---
 
-
-
-## 7. Settlement asset (`bribeAsset`)
+## 7. Settlement asset (`settlementAsset`)
 
 Used for bribe settlement (dynamic ask). May be listed via `_place` when premium-regime cuts apply.
 
 **Not** payment for yield `buyback` (buyers pay GRAI).
 
-`bribeAsset` must **not** be fee-on-transfer: `bribe` requires exact `_pay` credit (`received == bribeAmount`) and releases the **full** escrowed `graiAmount`. Deposit / `distribute` remain FoT-safe via credited `_pay` deltas.
+`settlementAsset` must **not** be fee-on-transfer: `bribe` requires exact `_pay` credit (`received == bribeAmount`) and releases the **full** escrowed `graiAmount`. Deposit / `distribute` remain FoT-safe via credited `_pay` deltas.
 
-Switching requires a feed; open votes/auctions do not block. Setting `bribeAsset = address(this)` is a no-op.
+Switching requires a feed; open votes/auctions do not block. Setting `settlementAsset = address(this)` is a no-op.
 
 ---
 
-
-
 ## 8. Lock, vote, bribe
-
-
 
 ### 8.1 Lock / unlock
 
@@ -557,15 +661,11 @@ Switching requires a feed; open votes/auctions do not block. Setting `bribeAsset
 - While penalty > 0, unlocks must be ≥ `ceil(BPS / unlockPenaltyBps)` (e.g. 10 GRAI wei at 10%) — including full-escrow exit. Smaller bags cannot unlock until fee is 0 or the lock grows.
 - Unlock reduces lock first; vote is clamped only if `voted > amount` afterward.
 
-
-
 ### 8.2 Vote
 
 - Call `vote` from wallet — no prior `lock` required (shortfall auto-locked; account enters `lockers` via `lock`, `voters` when `voted` becomes non-zero).
 - Ends with `voted ≤ amount`; increases `totalVoted`; shrinks dividend eligibility.
 - Quorum: `totalVoted * BPS > supply * quorumBps` (strict `>`; exact `quorumBps` share is not enough; live supply by design).
-
-
 
 ### 8.3 Bribe
 
@@ -665,7 +765,7 @@ Split of `received`:
 - **Discount (**`discount > 0`**):** ask is book − ½ full gap; the other half (`discount`) → cuts; voter keeps the rest.
 - **Par:** voter gets **all** `received` (no cuts).
 
-**Examples** (default config, fixed `book = 100` bribeAsset, exact pay):
+**Examples** (default config, fixed `book = 100` settlementAsset, exact pay):
 
 
 | `totalVoted/supply` | Regime   | Briber pays | Voter receives | Cuts |
@@ -681,11 +781,7 @@ Briber receives the full requested `graiAmount` GRAI to **wallet**. Voter escrow
 
 ---
 
-
-
 ## 9. Liquidation cycle
-
-
 
 ### 9.1 Open (`liquidate`, **2-of-2**: quorum **and** owner confirmation)
 
@@ -710,7 +806,7 @@ While liquidation is open, `setConfig` **is fully blocked** (`LiquidationOpen`) 
 
 ### 9.2 Consolidation (`liquidationPeriod`, default 24h)
 
-`redeem` blocked (`LiquidationDelay`). Custodian + idle inventory is already pulled onto GRAI at open; keepers may still call `Grinders.liquidate` for any late balances. Deposit / buyback / bribe / lock / unlock / vote blocked while liquidation is open. `claim` **/** `claimAll` **stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
+`redeem` blocked (`LiquidationDelay`). Custodian + idle inventory is already pulled onto GRAI at open; keepers may still call `Grinders.liquidate` for any late balances. Deposit / buyback / bribe / lock / unlock / vote / poach blocked while liquidation is open. `claim` **/** `claimAll` **stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
 
 ### 9.3 Redeem
 
@@ -735,6 +831,7 @@ State when `redeem` opens (`liquidationPeriod` elapsed):
 2. She calls `redeem(100)`:
   - Burns **100 GRAI** from wallet (`supply` → 900).
   - Book burn: `totalValue -= 100` → **$900** (pro-rata of book, independent of basket marks).
+  - `treasury.burn(Alice, 100)` reverses deposit volume on Alice (+ L1/L2 upline books).
   - Pays her the frozen vector: wallet **+800 USDC**, **+0.1 WETH**.
 3. Remaining holders still share the leftover basket **7,200 USDC** + **0.9 WETH** against **900 GRAI** until they redeem or `resettle`.
 
@@ -744,15 +841,12 @@ Dividend `totalClaimable` is **not** in this vector — Alice (or anyone) may st
 
 Permissionless after `liquidationPeriod + redeemPeriod`:
 
-1. Sweep `_redeemable` → Grinders (dividend `totalClaimable` stays on GRAI).
+1. Sweep `_redeemable` → Grinders (dividend `totalClaimable` stays on GRAI). No oracle pricing of leftovers.
 2. Per-asset `paused` flags are left as the owner set them (liquidation itself never toggled them).
-3. If `supply > 0`: if `totalNAV >= totalValue` then `totalValue = totalNAV`; else keep book `totalValue` (no revert — underwater reopen allowed).
-4. If `supply == 0`: `totalValue = 0` even if dust was swept.
-5. Clear `liquidation` / `liquidationAt`.
+3. If `supply == 0`: `totalValue = 0`. If `supply > 0`: keep post-redeem `totalValue` (no NAV mark-up — mint stays ~$1/GRAI).
+4. Clear `liquidation` / `liquidationAt` / `confirmed`.
 
 ---
-
-
 
 ## 10. Treasury and affiliates
 
@@ -760,14 +854,16 @@ Permissionless after `liquidationPeriod + redeemPeriod`:
 
 Three layers are kept separate:
 
-| Layer | Source of truth | Changed by |
-| ----- | --------------- | ---------- |
-| **Slot** | `tokenId = uint256(uint160(locker))` | First `mint` (permanent locker id) |
-| **Tree (upline)** | `referralBooks[locker].referrer` (= `referrerOf`) | First `mint` (sticky); later only `rebind` / `poach` |
-| **Cashflow** | `ownerOf(tokenId)` | OTC `transfer` / `safeTransferFrom` |
+
+| Layer             | Source of truth                                   | Changed by                                  |
+| ----------------- | ------------------------------------------------- | ------------------------------------------- |
+| **Slot**          | `tokenId = uint256(uint160(locker))`              | First `mint` (permanent locker id)          |
+| **Tree (upline)** | `referralBooks[locker].referrer` (= `referrerOf`) | First `mint`; later only `rebind` / `poach` |
+| **Cashflow**      | `ownerOf(tokenId)`                                | OTC `transfer` / `safeTransferFrom`         |
+
 
 ```
-referrerOf(locker)            = referralBooks[locker].referrer   // sticky upline locker
+referrerOf(locker)            = referralBooks[locker].referrer   // upline locker
 ownerOf(uint160(locker))      = who receives that node’s claim pay
 referralBooks[locker].value   = Σ deposit book value credited to locker
 referralBooks[node].l1Value   = Σ deposits for which node is L1 in the tree
@@ -780,12 +876,13 @@ On every successful `deposit`, GRAI calls `treasury.mint(locker, referrer, value
 
 - `tokenId = uint256(uint160(locker))` — one NFT per depositor address, forever.
 - **First bind** (when `referrerOf(locker) == 0`):
-  - Sticky-sets `referrer` to the deposit arg, or to `locker` if `referrer == address(0)` (self-root).
+  - Sets `referrer` to the deposit arg, or to `locker` if `referrer == address(0)` (self-root).
   - If that link would cycle (§10.4), **falls back to self-root** (`referrer = locker`) instead of reverting — so a bad referrer does not skip book credit under GRAI’s `try/catch` mint.
   - Mints the cashflow NFT **to `locker`** (locker starts owning their own claim rights).
-  - If upline ≠ locker and has no NFT yet, mints a **stub** cashflow NFT to the upline **without** setting the upline’s `referrer` (so the upline can still sticky-bind on their own first deposit).
-- **Later deposits**: sticky `referrer` is ignored; only volumes accrue.
+  - If upline ≠ locker and has no NFT yet, mints a **stub** cashflow NFT to the upline **without** setting the upline’s `referrer` (so the upline can still bind on their own first deposit).
+- **Later deposits**: `referrer` arg is ignored; only volumes accrue.
 - Each call with `value > 0` credits `referralBooks[locker].value` and walks up to two upline levels into `l1Value` / `l2Value` (same stop rules as `revenueShareInfo`).
+- `**GRAI.redeem**` calls `treasury.burn(holder, value)` with the same book-USD `value` cut from `totalValue`, reversing that walk (`min(value, locker.value)`; upline L1/L2 saturate). `referrer` / cashflow NFT are unchanged.
 - Tree position may be purchased via `GRAI.poach` — see **§11**. Cashflow rights trade via ordinary ERC-721 transfer — see **§10.5**.
 - ERC-2981 royalty receiver is the **locker** (secondary sales of the cashflow NFT).
 
@@ -845,7 +942,7 @@ so claim-time withdrawals exactly exhaust the treasury income and the affiliate 
 
 1. No-op if Treasury balance `< grossProfitShare` (no partial affiliate pays).
 2. Builds payees via `revenueShareInfo(locker, revenueShare)` (default **L1 80% / L2 20%**).
-3. **Walk** follows sticky `referrerOf` links; **payee** at each level is `ownerOf(uint160(uplineLocker))`.
+3. **Walk** follows `referrerOf` links; **payee** at each level is `ownerOf(uint160(uplineLocker))`.
 4. Stops on empty / back-to-claimer / self-loop (`ref == 0 || ref == locker || ref == cur`), or missing cashflow NFT.
 5. Pays each present level; unpaid levels + remainder → `beneficiar` as `netProfitShare = grossProfitShare − paid`.
 
@@ -865,14 +962,14 @@ revenueShare = 30 * 1000 / 3000 = 10
 Assume each upline still owns their own cashflow NFT (`ownerOf(node) == node`):
 
 
-| Case                     | Tree (referrer)     | L1 payee | L2 payee | Beneficiar (`netProfitShare`) | Notes                                        |
-| ------------------------ | ------------------- | -------- | -------- | ----------------------------- | -------------------------------------------- |
-| No referrer / self-root  | Alice → Alice       | 0        | 0        | **20**                        | Empty `revenueShareInfo`                     |
-| L1 only                  | Alice → Bob         | **Bob 8**| 0        | **12**                        | Unpaid L2 (2) stays with protocol            |
-| L1 + L2                  | Alice → Bob → Carol | **Bob 8**| **Carol 2** | **10**                     | Full affiliate pool paid                     |
-| OTC moved L1 NFT         | Alice → Bob         | **Eve 8**| 0        | **12**                        | Tree still Bob; `ownerOf(Bob) = Eve`         |
-| Half claim (15)          | Alice → Bob → Carol | **4**    | **1**    | **5**                         | Pro-rata; rest of inventory waits            |
-| `bal < grossProfitShare` | any                 | 0        | 0        | 0                             | Distribute no-op; claim tip/locker still pay |
+| Case                     | Tree (referrer)     | L1 payee  | L2 payee    | Beneficiar (`netProfitShare`) | Notes                                        |
+| ------------------------ | ------------------- | --------- | ----------- | ----------------------------- | -------------------------------------------- |
+| No referrer / self-root  | Alice → Alice       | 0         | 0           | **20**                        | Empty `revenueShareInfo`                     |
+| L1 only                  | Alice → Bob         | **Bob 8** | 0           | **12**                        | Unpaid L2 (2) stays with protocol            |
+| L1 + L2                  | Alice → Bob → Carol | **Bob 8** | **Carol 2** | **10**                        | Full affiliate pool paid                     |
+| OTC moved L1 NFT         | Alice → Bob         | **Eve 8** | 0           | **12**                        | Tree still Bob; `ownerOf(Bob) = Eve`         |
+| Half claim (15)          | Alice → Bob → Carol | **4**     | **1**       | **5**                         | Pro-rata; rest of inventory waits            |
+| `bal < grossProfitShare` | any                 | 0         | 0           | 0                             | Distribute no-op; claim tip/locker still pay |
 
 
 Locker still receives `claimed − tip` in full; tip (`claimTipBps`, default 1%) goes to `msg.sender`.
@@ -881,11 +978,12 @@ Locker still receives `claimed − tip` in full; tip (`claimTipBps`, default 1%)
 
 `rebind` / `poach` revert `ReferralLoop` if setting `locker.referrer = to` would cycle:
 
-- Walk from `to` along sticky referrers; revert if the path hits `locker` or returns to `to`.
+- Walk from `to` along referrers (tortoise/hare); revert if the path hits `locker`, returns to `to`, or finds any cycle in `to`’s upline.
+- Deep **acyclic** trees are not treated as loops (no fixed hop cap false-positive).
 - Self-root (`to == locker`) is allowed.
 - Consequence: a **downline cannot poach an upline**.
 
-First `mint` **does not revert** on a looping referrer: it sticky-binds **self-root** instead, so deposit still credits books (GRAI’s `try treasury.mint` must not swallow the whole mint).
+First `mint` **does not revert** on a looping referrer: it binds **self-root** instead, so deposit still credits books.
 
 `revenueShareInfo` / mint volume walks still stop on `ref == 0 || ref == locker || self-loop` as a safety cap.
 
@@ -903,11 +1001,9 @@ Tests: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`, `[test
 
 ---
 
+## 11. Poach (buy the referrer link)
 
-
-## 11. Poach (buy the sticky referrer link)
-
-Anyone may buy a bound locker’s **sticky upline seat** for **GRAI**, paying the current `referrerOf(locker)`. This rewrites the referral tree; it does **not** move the cashflow NFT.
+Anyone may buy a bound locker’s **upline seat** for **GRAI**, paying the current `referrerOf(locker)`. This rewrites the referral tree; it does **not** move the cashflow NFT.
 
 ### 11.1 Interface
 
@@ -918,7 +1014,7 @@ poach(locker)                                       // msg.sender = poacher
 
 Flow:
 
-1. `price, referrer = treasury.poachOf(locker, poacher)` — `referrer` is sticky upline, not `ownerOf`.
+1. `price, referrer = treasury.poachOf(locker, poacher)` — `referrer` is the upline, not `ownerOf`.
 2. If `price > 0`: transfer `price` GRAI from poacher → `referrer`.
 3. `treasury.rebind(locker, poacher)` — set `locker.referrer = poacher` + L1/L2 book shift (no NFT transfer).
 4. Reverts `ReferralLoop` if the new link would cycle (§10.4).
@@ -942,7 +1038,7 @@ On `rebind(locker, to)` with seller `from = referrerOf(locker)`:
 
 | Who                                     | Update                                                 |
 | --------------------------------------- | ------------------------------------------------------ |
-| Sticky link                             | `referralBooks[locker].referrer = to`                  |
+| Referrer link                           | `referralBooks[locker].referrer = to`                  |
 | Buyer `to`                              | `l1Value += locker.value`, `l2Value += locker.l1Value` |
 | Seller `from` (if `from ≠ locker`)      | same amounts subtracted                                |
 | Old L2 `referrerOf(from)` (if distinct) | `l2Value -= locker.value`                              |
@@ -959,11 +1055,11 @@ Self-slot (`from == locker`): seller keeps downline L1/L2 on the locker node; on
 Deposits (book ≈ USDC at $1):
 
 
-| Step | Action                                  | Tree                         | Cashflow NFT        |
-| ---- | --------------------------------------- | ---------------------------- | ------------------- |
-| 1    | Alice deposits **100**, `referrer = 0`  | `referrerOf(Alice) = Alice`  | `ownerOf(Alice) = Alice` |
-| 2    | Bob deposits **40**, `referrer = Alice` | `referrerOf(Bob) = Alice`    | `ownerOf(Bob) = Bob`     |
-| 3    | Carol deposits **25**, `referrer = Bob` | `referrerOf(Carol) = Bob`    | `ownerOf(Carol) = Carol` |
+| Step | Action                                  | Tree                        | Cashflow NFT             |
+| ---- | --------------------------------------- | --------------------------- | ------------------------ |
+| 1    | Alice deposits **100**, `referrer = 0`  | `referrerOf(Alice) = Alice` | `ownerOf(Alice) = Alice` |
+| 2    | Bob deposits **40**, `referrer = Alice` | `referrerOf(Bob) = Alice`   | `ownerOf(Bob) = Bob`     |
+| 3    | Carol deposits **25**, `referrer = Bob` | `referrerOf(Carol) = Bob`   | `ownerOf(Carol) = Carol` |
 
 
 ```
@@ -1010,11 +1106,11 @@ Books after:
 Claim topology (tree / payee if owners unchanged):
 
 
-| Claimer | L1 tree | L1 payee | L2 tree | L2 payee |
-| ------- | ------- | -------- | ------- | -------- |
-| Alice   | **Dias**| Dias     | —       | —        |
-| Bob     | Alice   | Alice    | **Dias**| Dias     |
-| Carol   | Bob     | Bob      | Alice   | Alice    |
+| Claimer | L1 tree  | L1 payee | L2 tree  | L2 payee |
+| ------- | -------- | -------- | -------- | -------- |
+| Alice   | **Dias** | Dias     | —        | —        |
+| Bob     | Alice    | Alice    | **Dias** | Dias     |
+| Carol   | Bob      | Bob      | Alice    | Alice    |
 
 
 Dias paid for Alice+Bob volume (140), not Carol’s 25 — matches L1/L2 reach.
@@ -1043,7 +1139,7 @@ Claim: Bob → L1 Paul; Carol → L1 Bob, L2 Paul.
   - Alice loses Bob’s L1/L2 book
   - Dias loses L2 book on Bob (`l2Value` 40→**0**); keeps `l1Value = 100` (still L1 on Alice)
   - Ask `poach(Alice)` from Dias → **100**
-3. Eve `poach(Alice)` from Dias (`ask = 100`): pays Dias; Eve becomes sticky L1 on Alice.
+3. Eve `poach(Alice)` from Dias (`ask = 100`): pays Dias; Eve becomes L1 on Alice.
 
 #### D. OTC vs poach
 
@@ -1061,17 +1157,16 @@ ownerOf(Bob)      = Eve     // cashflow only
 ### 11.5 Invariants (poach)
 
 1. Ask = `value + l1Value` of the **locker**, never full deep subtree.
-2. Payment always goes to **current sticky referrer**, not necessarily the locker or the cashflow NFT owner.
+2. Payment always goes to **current referrer**, not necessarily the locker or the cashflow NFT owner.
 3. Poach does **not** move any NFT; OTC does **not** rewrite `referrer` / books.
 4. Later deposits keep accruing to the live upline (`mint` walk uses current `referrerOf`).
-5. `previewPoach` / `poachOf` revert if unbound or `poacher` is already the sticky referrer.
+5. `previewPoach` / `poachOf` revert if unbound or `poacher` is already the referrer.
 6. `rebind` / `poach` revert `ReferralLoop` if the new upline link would cycle; first `mint` falls back to self-root instead.
+7. `poach` reverts while liquidation is open (`LiquidationOpen`); same gate as deposit / lock / bribe.
 
 Tests: `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`, `[test/boundary/TreasuryOtcPoachBrick.t.sol](../test/boundary/TreasuryOtcPoachBrick.t.sol)`.
 
 ---
-
-
 
 ## 12. Grinders layer
 
@@ -1089,8 +1184,6 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
 
 ---
-
-
 
 ## 13. Protocol configuration (defaults)
 
@@ -1118,14 +1211,12 @@ Treasury defaults: L1/L2 `revenueShareBps = [8000, 2000]`, ERC-2981 `royaltyBps 
 
 ---
 
-
-
 ## 14. Access control
 
 
-| Role                     | GRAI                                                                                                                                                             |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/bribeAsset, feeds, `set` / `setFeed` / `setAssetConfig`; liquidation 2-of-2 via `confirmed` / `liquidate` |
+| Role                     | GRAI                                                                                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/settlementAsset, feeds, `set` / `setFeed` / `setAssetConfig`; liquidation 2-of-2 via `confirmed` / `liquidate` |
 
 
 Grinders: `Ownable` for custodians / allocation / upgrades.
@@ -1134,30 +1225,27 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 
 ---
 
-
-
 ## 15. Economic incentives
 
 
-| Participant               | Incentive                                                                              |
-| ------------------------- | -------------------------------------------------------------------------------------- |
-| **Depositor**             | Book-priced GRAI                                                                       |
-| **Unvoted locker**        | Asset dividends from yield / bribe premium                                             |
-| **Affiliate**             | Tradable L1/L2 claim on `revenueShare` when the bound locker claims                    |
-| **Voter**                 | Path toward liquidation quorum; forgoes dividends on voted GRAI; exit via bribe/unlock |
-| **Buyback buyer**         | Assets at Dutch discount; payment locked+voted; may scavenge unlock-fee dead GRAI      |
-| **Briber**                | Acquire full voted GRAI for exact ask; ask/premium dynamic vs half-quorum              |
-| **Grinders / custodians** | Trade allocated capital; `distribute` to protocol                                      |
-| **Treasury / beneficiar** | Yield / bribe-premium cut; unpaid affiliate levels + protocol slice on claim           |
+| Participant               | Incentive                                           |
+| ------------------------- | --------------------------------------------------- |
+| **Depositor**             | Mint GRAI at book                                   |
+| **Locker**                | Earn asset dividends                                |
+| **Referrer (affiliate)**  | Share of treasury cut when downline claims          |
+| **Poacher**               | Own the upline seat → earn affiliate fees on claims |
+| **Voter**                 | Push toward liquidation; exit via bribe/unlock      |
+| **Buyback buyer**         | Buy assets cheap for GRAI                           |
+| **Briber**                | Buy GRAI; reduce liquidation risk                   |
+| **Grinders / custodians** | Trade capital; send yield to protocol               |
+| **Treasury / beneficiar** | Keep protocol / unpaid affiliate slice              |
 
 
 ---
 
-
-
 ## 16. Key invariants
 
-1. **Book** — `totalValue` moves on deposit, redeem burn, resettle NAV — not on yield/`buyback`.
+1. **Book** — `totalValue` moves on deposit and redeem burn — not on yield/`buyback`/`resettle` NAV.
 2. **Dividends = unvoted lock** — index uses `totalLocked − totalVoted`; account base is `amount − voted`.
 3. **Past dividends are not diluted** — new locks sync debt to the live index.
 4. **No unvoted locks → dividend cut auctions** — same for bribe premium dividend cut.
@@ -1166,23 +1254,19 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 7. **Liquidation is 2-of-2** — `hasQuorum()` **and** owner confirmation (`confirmed`, or owner `liquidate` while quorum holds).
 8. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
 9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; `claim` **/** `claimAll` **allowed** — dividend reserve and redeemable basket are separate (`_redeemable`).
-10. **FoT** — deposit/`distribute` size economics from credited `_pay`; `bribeAsset` is **non-FoT** (exact credit required; full `graiAmount` out).
-11. `resettle` marks `totalValue = totalNAV` only when that raises mint price; otherwise keeps book TV (underwater reopen allowed). Deposit bootstrap when `totalValue == 0`.
+10. **FoT** — deposit/`distribute` size economics from credited `_pay`; `settlementAsset` is **non-FoT** (exact credit required; full `graiAmount` out).
+11. `resettle` does not reprice `totalValue` from leftover NAV (keeps ~$1/GRAI); zeroes book only when `supply == 0`. Deposit bootstrap when `totalValue == 0`.
 12. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
 13. **Unlock penalty → dead GRAI** — flat `unlockPenaltyBps` (no time decay); penalty is not sent to treasury; next `buyback` may scavenge `balanceOf(this) − totalLocked` (locked+voted with the Dutch payment).
 14. `buyback` **scavenges dead** before fill — orphan GRAI on the contract is credited to the buyer then lock+voted with `graiIn`.
 15. **Affiliates ≠ locker cut** — claim tip / locker payout are independent of Treasury; affiliates pay from Treasury inventory sized by `revenueShareBps`.
 16. **Treasury distribute is all-or-nothing** — `bal < grossProfitShare` → no affiliate / beneficiar transfer for that claim.
-17. **Poach ask = locker** `value + l1Value` — not `l2Value` / deeper tree; `rebind` shifts sticky referrer + L1/L2 books (not the cashflow NFT); OTC moves `ownerOf` only.
+17. **Poach ask = locker** `value + l1Value` — not `l2Value` / deeper tree; `rebind` shifts referrer + L1/L2 books (not the cashflow NFT); OTC moves `ownerOf` only.
 18. **No referral loops on poach** — `rebind` / `poach` revert `ReferralLoop` if the new upline would cycle; first `mint` self-roots instead. Claim walk still stops on `ref == locker` / self-loop.
 
 ---
 
-
-
 ## 17. Instruction reference
-
-
 
 ### GRAI
 
@@ -1195,29 +1279,26 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `buyback`                  | Anyone              | Blocked                                                           |
 | `claim` / `claimAll`       | Anyone              | Allowed (claims ≠ redeem basket)                                  |
 | `bribe`                    | Anyone              | Blocked                                                           |
-| `poach` / `previewPoach`   | Anyone              | Allowed (sticky referrer buyout; NFT unchanged)                   |
+| `poach` / `previewPoach`   | Anyone              | `poach` blocked; preview still quotes                             |
 | `redeem`                   | Holder              | Only when open (after delay); `nonReentrant`                      |
 | `liquidate`                | Owner / anyone      | 2-of-2 open; on open cancel auctions + send orphan GRAI to opener |
 | `resettle`                 | Anyone              | Closes cycle; fund restarts                                       |
 | `setConfig`                | Owner               | Blocked while open                                                |
 
 
-
-
 ### Treasury
 
 
-| Function                                                 | Caller        | When                                     |
-| -------------------------------------------------------- | ------------- | ---------------------------------------- |
-| `mint(locker, referrer, value)`                          | GRAI          | Every deposit (sticky tree + cashflow NFT to locker) |
-| `getReferralBooks(fromId, toId)`                         | Anyone (view) | Paginate lockers + books (`tokenByIndex`)            |
-| `referrerOf(locker)`                                     | Anyone (view) | Sticky upline (`referralBooks.referrer`)             |
-| `poachOf(locker, account)`                               | Anyone (view) | Poach quote + current sticky referrer                |
-| `rebind(locker, to)`                                     | GRAI          | After `poach` (tree + L1/L2 books; no NFT transfer)  |
-| `distribute(asset, locker, net, revenue)`                | GRAI          | On `claim` (try/catch); payees = `ownerOf` upline    |
-| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner    | Anytime                                              |
-
-
+| Function                                                 | Caller        | When                                                   |
+| -------------------------------------------------------- | ------------- | ------------------------------------------------------ |
+| `mint(locker, referrer, value)`                          | GRAI          | Every deposit (referrer tree + cashflow NFT to locker) |
+| `burn(locker, value)`                                    | GRAI          | Every redeem (reverse L1/L2 volume credits)            |
+| `getReferralBooks(fromId, toId)`                         | Anyone (view) | Paginate lockers + books (`tokenByIndex`)              |
+| `referrerOf(locker)`                                     | Anyone (view) | Upline (`referralBooks.referrer`)                      |
+| `poachOf(locker, account)`                               | Anyone (view) | Poach quote + current referrer                         |
+| `rebind(locker, to)`                                     | GRAI          | After `poach` (tree + L1/L2 books; no NFT transfer)    |
+| `distribute(asset, locker, net, revenue)`                | GRAI          | On `claim` (try/catch); payees = `ownerOf` upline      |
+| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner    | Anytime                                                |
 
 
 ### Grinders
