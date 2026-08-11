@@ -36,7 +36,7 @@ unlock(amount)                [locker]
    flat unlock fee stays on GRAI as orphan/dead; net GRAI to wallet
                       ↓
 bribe(voter)               [permissionless]
-   dynamic ask vs half-quorum (premium / par / discount) in bribeAsset (non-FoT);
+   dynamic ask vs half-quorum (premium / par / discount) in settlementAsset (non-FoT);
    exact pay → full graiAmount to briber; premium/discount carve-outs → same three cuts
 ```
 
@@ -78,7 +78,7 @@ initialize(admin, weth)
    ↓
 setConfig(ConfigId, data)   // patch knobs; yield cuts fixed at initialize
 setFeed(asset, feed)                           // list asset (`Feed.paused` on struct)
-setBribeAsset(usdc)
+setSettlementAsset(usdc)
 setGrinders(grinders)
    ↓
 deposit(asset, amount, lock?)                  // capital → Grinders; GRAI at book; optional escrow
@@ -115,9 +115,9 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   GRAI for a pro-rata share of `_redeemable` balances on GRAI (excludes dividend reserves; share
   denominator excludes orphan/dead GRAI on the contract). Grinders
   sweeps return custodian assets to GRAI. After `liquidationPeriod + redeemPeriod`, `resettle`
-  sends leftover redeemable balances to Grinders; with remaining supply, marks `totalValue = totalNAV`
-  only when that **raises** mint price (`totalNAV >= totalValue`), otherwise keeps book TV
-  (underwater reopen allowed). Unclaimed dividend reserve stays on GRAI
+  sends leftover redeemable balances to Grinders and clears liquidation **without** repricing
+  `totalValue` from leftover NAV (keeps ~$1/GRAI mint; zeroes book only if supply is 0).
+  Unclaimed dividend reserve stays on GRAI
 - **distribute:** splits `received` by `buybackCutBps` / `dividendCutBps` / `treasuryCutBps`
   (must sum to 100%; initialize defaults **3333 / 3334 / 3333**)
 - **auction:** one open lot per sold asset; `remaining` = asset qty; `maxPayment` = mint-price GRAI
@@ -132,11 +132,11 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   (not sent to treasury); net returns to the wallet (`previewUnlock` → `(unlockAmount, penalty)`).
   While penalty > 0, any unlock below `ceil(BPS / unlockPenaltyBps)` reverts (including full-escrow dust).
   Yield claims are separate
-- **bribe:** `previewBribe` prices a dynamic ask in `bribeAsset` vs half-quorum
+- **bribe:** `previewBribe` prices a dynamic ask in `settlementAsset` vs half-quorum
   (`quorumBps / 2`) with slope `bribePremiumBps`: `|adj| = bribePremiumBps` at 0 votes and at
   quorum, par at half; above quorum discount `adj` may exceed `bribePremiumBps`. Premium regime:
   voter gets book + ½ premium, other ½ → cuts. Discount regime: ask uses half the book−fullAsk gap,
-  other half → cuts. Par: full ask to voter. `bribeAsset` must **not** be fee-on-transfer: `_pay`
+  other half → cuts. Par: full ask to voter. `settlementAsset` must **not** be fee-on-transfer: `_pay`
   must credit exactly `bribeAmount`; briber receives the **full** escrowed `graiAmount`
 - **liquidation open:** 2-of-2 — `hasQuorum()` **and** owner consent. Owner `liquidate` without quorum
   toggles `confirmed`; with quorum, that call opens. Non-owner opens only if
@@ -149,8 +149,9 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
 
 Both `GRAI` and `Grinders` use OpenZeppelin `Ownable2StepUpgradeable`: a single `owner` gates admin
 ops and UUPS upgrades. Ownership transfer is two-step (`transferOwnership` → pending owner
-`acceptOwnership`). The oracle router is a base class of `GRAI` (not a separate contract), so feed
-management is `onlyOwner` — there is no separate oracle owner.
+`acceptOwnership`). On `GRAI`, `renounceOwnership` is disabled (`OwnershipRenounceDisabled`) so
+2-of-2 liquidation consent cannot be bricked. The oracle router is a base class of `GRAI` (not a
+separate contract), so feed management is `onlyOwner` — there is no separate oracle owner.
 
 ### Owner functions (`onlyOwner`)
 
@@ -158,8 +159,8 @@ management is `onlyOwner` — there is no separate oracle owner.
 
 - `setConfig` — cuts, quorum, auction/liquidation/redeem/unlock timing (blocked while liquidation open)
 - `setGrinders` — wire the Grinders yield pool (validates `grinders.grai() == this`)
-- `setTreasury` — protocol profit recipient (`Treasury` contract)
-- `setBribeAsset` — bribe payment asset (must have a feed; non-FoT)
+- `setTreasury` — protocol profit recipient (`Treasury`); blocked in liquidation
+- `setSettlementAsset` — bribe payment asset (must have a feed; non-FoT)
 - `setFeed` — list / delist / pause; while paused, may fully replace the feed; while unpaused, only `paused` changes
 - `liquidate` — 2-of-2 limb (toggle `confirmed` or open with quorum)
 - `_authorizeUpgrade` — UUPS implementation swap
@@ -174,7 +175,7 @@ management is `onlyOwner` — there is no separate oracle owner.
 Permissionless (after windows):
 
 - `resettle` — close liquidation after `liquidationPeriod + redeemPeriod`; leftovers → Grinders;
-  `totalValue` raised to leftover NAV only when solvent; fund accepts deposits again
+  no `totalValue` NAV reprice (keeps ~$1/GRAI); fund accepts deposits again
 
 ### Permissionless (any caller)
 
@@ -221,7 +222,7 @@ addresses — `GRAI` impl + ERC-1967 proxy and `Grinders` impl + ERC-1967 proxy 
 | Script | Purpose |
 |--------|---------|
 | `script/Deploy.s.sol` | Combined GRAI + Grinders CREATE3 deploy |
-| `script/DeployArbitrum.s.sol` | Same on Arbitrum One + list WETH / USDT / native ETH + `setBribeAsset(USDT)` |
+| `script/DeployArbitrum.s.sol` | Same on Arbitrum One + list WETH / USDT / native ETH + `setSettlementAsset(USDT)` |
 | `script/1_DeployGRAI.s.sol` | GRAI only |
 | `script/2_DeployGrinders.s.sol` | Grinders only (optionally `WIRE_GRAI=1`) |
 | `script/3_setGrinders.s.sol` | Wire / retarget `GRAI.setGrinders` |
@@ -235,7 +236,7 @@ PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
 PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy \
   --rpc-url <your_rpc_url> --broadcast
 
-# Arbitrum One (lists WETH, USDT, native ETH; bribeAsset = USDT)
+# Arbitrum One (lists WETH, USDT, native ETH; settlementAsset = USDT)
 PRIVATE_KEY=0x... forge script script/DeployArbitrum.s.sol:DeployArbitrum \
   --rpc-url $ARBITRUM_RPC_URL --broadcast --verify
 ```
@@ -429,7 +430,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 
 - Hold GRAI + Grinders ownership behind a multisig / timelock (`Ownable2Step` on both):
   - **owner** — asset ops, wiring, upgrades (`setFeed`, `liquidate` /
-    `confirmed`, `setConfig` / `setGrinders` / `setTreasury` / `setBribeAsset`, UUPS)
+    `confirmed`, `setConfig` / `setGrinders` / `setTreasury` / `setSettlementAsset`, UUPS)
   - **`resettle`** — permissionless after redeem window (restarts the fund)
 - On L2s (Arbitrum, Base, Optimism), additionally check the Chainlink **L2 Sequencer Uptime
   Feed** before trusting a price, and apply a grace period after sequencer recovery:

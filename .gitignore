@@ -12,7 +12,7 @@ out/
 /broadcast/**/dry-run/
 
 # Docs
-docs/
+# docs/
 
 # Dotenv file
 .cursorignore
