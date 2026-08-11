@@ -25,20 +25,18 @@ Related: fund-share mechanics `[GRAI.md](GRAI.md)`, custodian layer `[GRINDERS.m
 yield on custodians
         │
         ▼
-GRAI.distribute(received)
+GRAI.distribute(yield)
    ├─ buybackCutBps   (~33.33%) → Dutch auction → buyback (GRAI lock+vote on buyer)
    ├─ dividendCutBps  (~33.34%) → unvoted lockers (claim)
    └─ treasuryCutBps  (~33.33%) → Treasury inventory
                                       │
-                                      ├─ revenueShare (~3.33% of yield) → affiliates
-                                      └─ remainder → Treasury.beneficiar  ← GRS economic anchor
+                                      ├─ revenueShare (~3.33% of yield) → affiliates (inventory on claim)
+                                      └─ remainder → Treasury.beneficiar → admin income + GRS/ETH buy → GRS to affiliates
 ```
 
 Today `Treasury.beneficiar` is a single address set by `GRAI.owner()`. At GRS launch, `**beneficiar` is intended to migrate to a GRS-governed vault** (or streaming contract) so fee flow accrues to token holders / stakers instead of a static multisig wallet.
 
-![Locker deposits into GRAI, claim dividends, Treasury sink, affiliates, beneficiary](tokenomics.png)
-
-Source: `[tokenomics.svg](tokenomics.svg)` · PNG: `[tokenomics.png](tokenomics.png)`. **Grinders** custodians generate yield → **GRAI**. **Depositor = locker** → GRAI; **claim()** → locker dividends. **GRS buy → Affiliates**. **Treasury** → Affiliates + **Beneficiary**.
+**`Treasury.beneficiar`** splits ~30%: **admin income** + **GRS/ETH** market buy → GRS to **affiliates**. **revenueShare** (~3.33%) is still inventory on locker claim.
 
 ---
 
@@ -59,9 +57,65 @@ Source: `[tokenomics.svg](tokenomics.svg)` · PNG: `[tokenomics.png](tokenomics.
 | Upgrade pattern        | Non-upgradeable token recommended; governance executes via timelocked admin on GRAI / Grinders / Treasury |
 
 
-**GRS** is intended to exist on **Solana**, **Ethereum**, and **Arbitrum** under the same 1B cap. Canonical mint / bridge design is fixed at TGE (no extra issuance when listing a chain).
+**GRS** is intended to exist on **Solana**, **Ethereum**, and **Arbitrum** under the same 1B cap. Canonical mint and bridge are fixed at TGE — listing a chain **must not** mint extra GRS (§2.1).
 
 Metadata (ERC-1046 target): `https://grindurus.xyz/grs.json` (placeholder until deployment).
+
+### 2.1 Canonical mint
+
+One chain is the **canonical mint** (home). The full **1,000,000,000 GRS** is minted there once at genesis; mint authority is then **revoked / frozen**. Spoke deployments (the other two networks) are **representations** of that same supply — not independent tokens.
+
+Home chain is chosen at TGE and does not change without a GRS governance migration (new lockboxes, no second genesis mint).
+
+| Role | Networks | Token |
+| ---- | -------- | ----- |
+| **Home (canonical)** | One of Solana / Ethereum (fixed at TGE) | Native GRS — only place the 1B exists as “real” inventory |
+| **Spokes** | The other listed chains, including **Arbitrum** | Bridged GRS (lock-and-mint / burn-and-unlock) |
+
+Decimals are **18** in the cap table. Every chain’s user-visible amount must match **1 GRS = 10¹⁸ base units**. If the Solana mint cannot use 18 decimals, the bridge **scales** 1:1 in GRS terms and **must not** round in a way that creates or destroys supply.
+
+### 2.2 Bridge
+
+Holders move GRS between listed chains through a **burn/lock ↔ mint/unlock** path. Global circulating GRS (home unlocked + all spoke balances) **never exceeds 1B**, and **never exceeds** what was unlocked from vesting / sale / gates on the home ledger.
+
+```
+source chain                          dest chain
+─────────────                         ──────────
+lock or burn GRS
+        │
+        ▼
+  bridge message  ─────────────────►  mint or unlock GRS
+  (attested; same amount)
+```
+
+| Direction | Source | Destination |
+| --------- | ------ | ----------- |
+| Home → spoke | Lock GRS in the home lockbox (or burn if the home token is burnable for transit) | Mint spoke GRS 1:1 to the recipient |
+| Spoke → home | Burn spoke GRS | Unlock the same amount from the home lockbox |
+| Spoke → spoke | Burn on source spoke | Mint on dest spoke (home lockbox balance unchanged; inventory already locked on home) |
+
+**Invariants the bridge must keep**
+
+1. `Σ spoke.totalSupply + home.liquidOutsideLockbox + home.lockbox = 1B` (vested-but-unreleased escrow is part of the 1B; it is not bridgable until `release`).
+2. Spoke mint authority is **only** the bridge adapter. No admin mint, no sale mint, no “Arbitrum genesis”.
+3. Home mint authority stays **revoked**. The lockbox never mints; it only holds canonical GRS.
+4. Amount in = amount out (same 18-decimal GRS). Failed messages do not mint; retries are idempotent.
+5. Adding a future chain = new spoke + the same lockbox accounting — **zero** new genesis supply.
+
+**Token sales (5% / 50M)** are inventory on **home** (or a pre-funded spoke allocation that is already locked on home). Selling the same 50M independently on EVM and Solana is out of spec. Buyers may **bridge after claim**.
+
+**LP & MM (8%)** may seed pools on several chains; that GRS is bridged from home LP inventory, not minted per DEX.
+
+**Governance.** `ERC20Votes` / governor live on the **home** (or a designated EVM hub). Spoke GRS does not vote until it is bridged to the hub (or a later x-chain vote module is added by GRS proposal). Bridging does not copy checkpoints.
+
+**What the bridge is not**
+
+- Not a second GRS with its own cap.
+- Not GRAI (fund shares do not bridge as GRS).
+- Not a way to unlock vesting early — only released GRS can enter the lockbox.
+- Not required for GRAI / Grinders, which remain native per chain.
+
+Vendor (Wormhole, LayerZero OFT, NTT, custom) is an implementation choice at TGE. The accounting above is the spec; the adapter is replaceable via governance only if the lockbox invariant is preserved.
 
 ---
 
@@ -363,7 +417,7 @@ GRS does **not** entitle holders to GRAI book NAV or locker dividends — only t
 | Phase            | Action                                                                        |
 | ---------------- | ----------------------------------------------------------------------------- |
 | **Pre-TGE**      | `beneficiar` = team multisig; GRAI + Grinders `owner` = same multisig         |
-| **TGE**          | Deploy GRS on **Solana**, **Ethereum**, and **Arbitrum** + vesting escrows; seed liquidity; open airdrop claim |
+| **TGE**          | Canonical GRS mint (1B) + revoke minter; deploy spoke representations + bridge; vesting escrows; seed LP; open sale claim / airdrop |
 | **Migration**    | Transfer GRAI + Grinders ownership to **Timelock** controlled by GRS governor |
 | **Fee hook**     | `Treasury.setBeneficiar(FeeVault)`; FeeVault distributes to GRS stakers       |
 | **Steady state** | Upgrades and parameter changes only via GRS proposals                         |
@@ -422,7 +476,7 @@ Exact dates depend on TGE; vesting contracts are source of truth post-deploy.
 
 ## 8. Key invariants (design)
 
-1. **Fixed supply** — 1B cap; no mint function after genesis.
+1. **Fixed supply** — 1B cap; no mint function after genesis. Bridged GRS is a representation, not extra issuance (§2.2).
 2. **Separation from GRAI** — fund NAV and protocol equity do not share a token.
 3. **Fee alignment** — `beneficiar` net ≈ `treasuryCut − affiliatePaid`; GRS value tracks protocol revenue, not locker dividends.
 4. **Governance ⊃ admin** — GRS timelock holds `GRAI.owner()` and `Grinders.owner()` after migration.
@@ -438,8 +492,9 @@ Exact dates depend on TGE; vesting contracts are source of truth post-deploy.
 
 | Contract     | Function                                     | Caller      | Purpose                     |
 | ------------ | -------------------------------------------- | ----------- | --------------------------- |
-| **GRS**      | `delegate` / `delegateBySig`                 | Holder      | Governance voting           |
+| **GRS**      | `delegate` / `delegateBySig`                 | Holder      | Governance voting (hub)     |
 | **GRS**      | `transfer`                                   | Holder      | Secondary liquidity         |
+| **Bridge**   | lock / burn (source) → mint / unlock (dest)  | Holder      | Move GRS across listed chains, 1:1 |
 | **Vesting**  | `release`                                    | Anyone      | Pull vested tokens          |
 | **FeeVault** | `stake` / `withdraw` / `claim`               | Holder      | Accrue protocol fees        |
 | **Governor** | `propose` / `castVote` / `queue` / `execute` | GRS holders | Parameter & upgrade control |
@@ -454,7 +509,7 @@ Exact dates depend on TGE; vesting contracts are source of truth post-deploy.
 
 | Doc                          | Topic                                     |
 | ---------------------------- | ----------------------------------------- |
-| `[tokenomics.svg](tokenomics.svg)` | Locker → GRAI → Treasury → affiliates + beneficiary |
+| `[protocol.svg](protocol.svg)` | Actors: locker / voter / briber / referrer / poacher |
 | `[GRAI.md](GRAI.md)`         | Fund share, yield splits, liquidation     |
 | `[GRINDERS.md](GRINDERS.md)` | Custodian registry, allocate / distribute |
 | `[README.md](../README.md)`  | Deploy, oracles, access control           |

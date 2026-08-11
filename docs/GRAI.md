@@ -69,6 +69,10 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 | **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; liquidation consent via `confirmed` / `liquidate` |
 
 
+![Protocol map: locker, voter, briber, referrer, poacher](protocol.png)
+
+Source: `[protocol.svg](protocol.svg)` · PNG: `[protocol.png](protocol.png)`.
+
 Native ETH = `address(0)`. WETH is the fallback when ETH pushes are rejected.
 
 `paused` on an asset gates `deposit` **only** (not buyback / distribute / claim). Listing `address(this)` as an asset is a no-op (escrowed GRAI must not enter the redeem basket). Listed collateral is assumed **non-rebasing** (balance only changes via GRAI `_pay` / `_withdraw`); rebasing tokens are out of scope.
