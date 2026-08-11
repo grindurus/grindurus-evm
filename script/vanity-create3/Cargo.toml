@@ -1,0 +1,16 @@
+[package]
+name = "vanity-create3"
+version = "0.1.0"
+edition = "2021"
+description = "Brute-force CREATE3_SALT_TAG for Grindurus CREATE3 addresses"
+publish = false
+
+[dependencies]
+hex = "0.4"
+rayon = "1.10"
+sha3 = "0.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
