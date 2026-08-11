@@ -385,7 +385,9 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Pays `previewPoach` GRAI to the current sticky referrer, then `treasury.rebind` (tree only).
+    ///      Blocked while liquidation is open (same gate as deposit / lock / bribe).
     function poach(address locker) public nonReentrant {
+        _requireNotLiquidation();
         address poacher = msg.sender;
         (uint256 price, address referrer) = previewPoach(locker, poacher);
         _transfer(poacher, referrer, price);
@@ -422,7 +424,7 @@ contract GRAI is
     /// @dev Accrues lock dividends, takes flat unlock fee (`unlockPenaltyBps` of `graiAmount` → dead on GRAI),
     ///      clamps excess votes, and returns `graiAmount - penalty` to wallet. Dust partial / fee floor
     ///      rules live in `previewUnlock`. Yield claims are separate (`claim` / `claimAll`).
-    function unlock(uint256 graiAmount) public {
+    function unlock(uint256 graiAmount) public nonReentrant {
         _requireNotLiquidation();
         address account = msg.sender;
         Escrow storage entry = escrows[account];
@@ -782,10 +784,11 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Pays the frozen `previewRedeem` vector after burns/`totalValue` cut (both use
-    ///      `totalSupply`). Orphan GRAI on this contract dilutes redeemers and keeps a residual
-    ///      book slice until scavenged or burned. `nonReentrant` is required: without it, an
-    ///      ETH/ERC777 callback mid-loop can nest `redeem` and skim later assets above that
-    ///      snapshot (and over-claim the callback asset itself).
+    ///      `totalSupply`). Cuts matching book USD from Treasury referral volumes via
+    ///      `treasury.burn` (mirror of deposit `mint`). Orphan GRAI on this contract dilutes
+    ///      redeemers and keeps a residual book slice until scavenged or burned. `nonReentrant`
+    ///      is required: without it, an ETH/ERC777 callback mid-loop can nest `redeem` and skim
+    ///      later assets above that snapshot (and over-claim the callback asset itself).
     function redeem(uint256 graiAmount) public nonReentrant {
         address holder = msg.sender;
         _requireLiquidation();
@@ -812,6 +815,7 @@ contract GRAI is
             if (entry.locked == 0) _removeAccount(holder, false);
         }
         totalValue -= value;
+        treasury.burn(holder, value);
 
         uint256 len = assetOuts.length;
         for (uint256 i; i < len;) {
@@ -873,34 +877,21 @@ contract GRAI is
     /// @dev Permissionless after `liquidationPeriod + redeemPeriod`: return unredeemed basket
     ///      balances to Grinders and clear the claim clock so the fund can accept deposits again
     ///      (`_requireNotLiquidation` lifts). Per-asset `paused` flags are left as the owner set them.
-    ///      With leftover shares, marks `totalValue = totalNAV` only when that raises mint price
-    ///      (`totalNAV >= totalValue`); otherwise keeps book `totalValue` and still clears
-    ///      liquidation (underwater reopen is allowed). Dividend inventory in
-    ///      `assets[asset].totalClaimable` is left on GRAI for post-resettle `claim`. If no
-    ///      shares remain, book is cleared to zero even if dust NAV is swept to Grinders.
+    ///      Does **not** reprice `totalValue` from leftover NAV — book stays at the post-redeem
+    ///      level so mint stays ~$1/GRAI (`graiOut ≈ usdValue` while `totalSupply == totalValue`).
+    ///      If no shares remain, `totalValue = 0`. Dividend inventory in `assets[asset].totalClaimable`
+    ///      is left on GRAI for post-resettle `claim`.
     function resettle() public nonReentrant {
         _requireLiquidation();
         if (liquidationAt == 0) revert LiquidationClosed();
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
             revert RedeemPeriodActive();
         }
-        uint256 nav = 0;
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            uint256 redeemable = _redeemable(asset);
-            if (redeemable > 0) {
-                nav += usdValue(asset, redeemable);
-                _withdraw(address(grinders), asset, redeemable);
-            }
+            _withdraw(address(grinders), asset, _redeemable(asset));
             unchecked { ++i; }
-        }
-        uint256 supply = totalSupply();
-        if (supply > 0) {
-            // Raise mint price only; underwater reopen keeps book totalValue.
-            if (nav >= totalValue) totalValue = nav;
-        } else {
-            totalValue = 0;
         }
         liquidation = false;
         liquidationAt = 0;

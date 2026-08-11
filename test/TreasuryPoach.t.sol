@@ -51,6 +51,67 @@ contract TreasuryPoachTest is GRAIFixture {
         usdc.mint(paul, 1_000e6);
     }
 
+    /// 1. Bob 100 → Alice (Alice becomes stub)
+    /// 2. Bob 200 → sticky ignored
+    /// 3. Carol 300 → Bob
+    /// 4. Carol2 301 → Bob
+    /// 5. Dias poaches Bob (seller = Alice stub identity; Alice herself stays unbound)
+    function test_BobUnderAlice_TwoCarols_DiasPoachBob() public {
+        address carol2 = makeAddr("carol2");
+        usdc.mint(carol2, 1_000e6);
+
+        // 1. Bob deposits 100, ref=Alice → Alice stub, Bob.l1 walk into Alice
+        _deposit(bob, 100e6, alice);
+        assertEq(treasury.referrerOf(bob), alice);
+        assertEq(treasury.referrerOf(alice), address(0));
+        _assertNode(bob, 100e6, 0, 0);
+        _assertNode(alice, 0, 100e6, 0);
+
+        // 2. Bob deposits 200, no ref → sticky kept; Alice.l1 += 200
+        _deposit(bob, 200e6, address(0));
+        assertEq(treasury.referrerOf(bob), alice);
+        _assertNode(bob, 300e6, 0, 0);
+        _assertNode(alice, 0, 300e6, 0);
+
+        // 3. Carol deposits 300, ref=Bob → Bob.l1 += 300, Alice.l2 += 300
+        _deposit(carol, 300e6, bob);
+        assertEq(treasury.referrerOf(carol), bob);
+        _assertNode(carol, 300e6, 0, 0);
+        _assertNode(bob, 300e6, 300e6, 0);
+        _assertNode(alice, 0, 300e6, 300e6);
+
+        // 4. Carol2 deposits 301, ref=Bob → Bob.l1 += 301, Alice.l2 += 301
+        _deposit(carol2, 301e6, bob);
+        assertEq(treasury.referrerOf(carol2), bob);
+        _assertNode(carol2, 301e6, 0, 0);
+        _assertNode(bob, 300e6, 601e6, 0);
+        _assertNode(alice, 0, 300e6, 601e6);
+
+        // 5. Dias poaches Bob: ask = value+l1 = 300+601 = 901; seller = Alice
+        _deposit(dias, 1_000e6, address(0));
+        uint256 aliceGraiBefore = grai.balanceOf(alice);
+        (uint256 ask, address seller) = treasury.poachOf(bob, dias);
+        assertEq(seller, alice);
+        assertEq(ask, 901e6);
+
+        vm.prank(dias);
+        grai.poach(bob);
+
+        assertEq(treasury.referrerOf(bob), dias);
+        assertEq(treasury.referrerOf(alice), address(0), "Alice remains unbound stub");
+        assertEq(treasury.ownerOf(uint256(uint160(bob))), bob, "cashflow NFT stays with Bob");
+        assertEq(grai.balanceOf(alice), aliceGraiBefore + 901e6);
+
+        // Alice sold Bob seat: l1/l2 debited
+        _assertNode(alice, 0, 0, 0);
+        // Dias bought Bob: l1+=Bob.value, l2+=Bob.l1
+        _assertNode(dias, 1_000e6, 300e6, 601e6);
+        // Bob / downline node books unchanged
+        _assertNode(bob, 300e6, 601e6, 0);
+        _assertNode(carol, 300e6, 0, 0);
+        _assertNode(carol2, 301e6, 0, 0);
+    }
+
     ////////////////////////////// mint / referralBooks //////////////////////////////
 
     /// 1. Alice deposits with no referrer (self-slot).
@@ -331,7 +392,7 @@ contract TreasuryPoachTest is GRAIFixture {
         // Bob under Alice; becoming Alice's referrer would cycle Alice ↔ Bob.
         _deposit(dias, 300e6, address(0));
         vm.prank(dias);
-        grai.transfer(bob, 300e6);
+        assertTrue(grai.transfer(bob, 300e6));
         vm.expectRevert(ITreasury.ReferralLoop.selector);
         vm.prank(bob);
         grai.poach(alice);
@@ -342,10 +403,34 @@ contract TreasuryPoachTest is GRAIFixture {
         // Carol → Bob → Alice; poach(Alice) by Carol → cycle
         _deposit(dias, 300e6, address(0));
         vm.prank(dias);
-        grai.transfer(carol, 300e6);
+        assertTrue(grai.transfer(carol, 300e6));
         vm.expectRevert(ITreasury.ReferralLoop.selector);
         vm.prank(carol);
         grai.poach(alice);
+    }
+
+    /// Deep acyclic upline (≥33 hops) must not false-positive as ReferralLoop (old 32-cap).
+    function test_Poach_AllowsDeepAcyclicUpline() public {
+        uint256 depth = 40;
+        address[] memory chain = new address[](depth);
+        for (uint256 i; i < depth; ++i) {
+            chain[i] = makeAddr(string.concat("deep", vm.toString(i)));
+            usdc.mint(chain[i], 200e6);
+        }
+
+        _deposit(chain[0], 1e6, address(0));
+        for (uint256 i = 1; i < depth; ++i) {
+            _deposit(chain[i], 1e6, chain[i - 1]);
+        }
+
+        _deposit(eve, 10e6, address(0));
+        // Leaf already bound; top up GRAI to cover eve's poach ask (10).
+        _deposit(chain[depth - 1], 20e6, address(0));
+
+        vm.prank(chain[depth - 1]);
+        grai.poach(eve);
+
+        assertEq(treasury.referrerOf(eve), chain[depth - 1]);
     }
 
     function test_PoachOf_MatchesPreviewPoach() public {
@@ -401,6 +486,61 @@ contract TreasuryPoachTest is GRAIFixture {
 
         vm.expectRevert(abi.encodeWithSelector(ITreasury.InvalidRange.selector, 1, 1));
         treasury.getReferralBooks(1, 1);
+    }
+
+    function test_Poach_Reverts_DuringLiquidation() public {
+        _deposit(alice, 100e6, address(0));
+        uint256 aliceGrai = grai.balanceOf(alice);
+        vm.prank(alice);
+        grai.lock(aliceGrai);
+        vm.prank(alice);
+        grai.vote(aliceGrai);
+        assertTrue(grai.hasQuorum());
+
+        vm.prank(admin);
+        grai.liquidate();
+        assertTrue(grai.liquidation());
+
+        // Liquidation gate runs before balance/ask checks.
+        vm.prank(dias);
+        vm.expectRevert(IGRAI.LiquidationOpen.selector);
+        grai.poach(alice);
+    }
+
+    /// Redeem reverses deposit volume on locker + L1/L2 upline (treasury.burn).
+    function test_Redeem_BurnsReferralBooks() public {
+        _deposit(alice, 100e6, address(0));
+        _deposit(bob, 40e6, alice);
+        _deposit(carol, 25e6, bob);
+        _assertNode(alice, 100e6, 40e6, 25e6);
+        _assertNode(bob, 40e6, 25e6, 0);
+        _assertNode(carol, 25e6, 0, 0);
+
+        uint256 bobGrai = grai.balanceOf(bob);
+        vm.prank(bob);
+        grai.lock(bobGrai);
+        vm.prank(bob);
+        grai.vote(bobGrai);
+        // Need quorum: also vote alice
+        uint256 aliceGrai = grai.balanceOf(alice);
+        vm.prank(alice);
+        grai.lock(aliceGrai);
+        vm.prank(alice);
+        grai.vote(aliceGrai);
+        assertTrue(grai.hasQuorum());
+
+        vm.prank(admin);
+        grai.liquidate();
+        IGRAI.Config memory cfg = _readConfig();
+        vm.warp(block.timestamp + uint256(cfg.liquidationPeriod));
+
+        uint256 carolGrai = grai.balanceOf(carol);
+        vm.prank(carol);
+        grai.redeem(carolGrai);
+
+        _assertNode(carol, 0, 0, 0);
+        _assertNode(bob, 40e6, 0, 0); // l1 lost carol's 25
+        _assertNode(alice, 100e6, 40e6, 0); // l2 lost carol's 25
     }
 
     ////////////////////////////// helpers //////////////////////////////

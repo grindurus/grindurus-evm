@@ -219,7 +219,8 @@ abstract contract GRAIFixture is Test {
     }
 
     /// @dev Packed `config` is one storage word (current OZ layout). Update if inheritance changes.
-    uint256 private constant _CONFIG_SLOT = 17;
+    ///      `forge inspect GRAI storage-layout` → `config` slot.
+    uint256 private constant _CONFIG_SLOT = 15;
 
     function _writeConfig(IGRAI.Config memory cfg) internal {
         vm.store(address(grai), bytes32(_CONFIG_SLOT), bytes32(_packConfig(cfg)));

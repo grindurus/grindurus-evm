@@ -383,9 +383,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
-    ///         Grinders; force-unpause all listed assets (intentional restart business logic — does
-    ///         not restore pre-liquidation pauses); reset `totalValue` to leftover NAV so the fund
-    ///         can restart.
+    ///         Grinders; clear liquidation flags. Does not reprice `totalValue` from leftover NAV
+    ///         (keeps ~$1/GRAI mint); zeroes `totalValue` only when supply is 0.
     function resettle() external;
 
     /// @notice GRAI cost to poach the sticky referrer link for `locker`: `value + l1Value`.
@@ -396,5 +395,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Poach the sticky referrer link for `locker`. Pays `previewPoach` GRAI to the current
     ///         referrer, then `treasury.rebind` (tree only — cashflow NFT ownership unchanged).
+    ///         Reverts while liquidation is open.
     function poach(address locker) external;
 }

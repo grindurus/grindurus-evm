@@ -20,6 +20,7 @@ interface ITreasury {
     event Distribute(address indexed asset, address indexed to, uint256 amount);
 
     event Mint(address indexed locker, address indexed referrer, uint256 indexed tokenId);
+    event Burn(address indexed locker, uint256 value);
     event Rebind(address indexed locker, address indexed from, address indexed to, uint256 tokenId);
     event RoyaltyBpsUpdate(uint16 royaltyBps);
     event RevenueShareUpdate(uint16[] shares);
@@ -95,6 +96,11 @@ interface ITreasury {
     /// @notice GRAI-only: sticky-bind `referrer`, mint cashflow NFT to `locker` on first call;
     ///         every call credits deposit `value` to `locker` and L1/L2 upline books.
     function mint(address locker, address referrer, uint256 value) external returns (uint256 tokenId);
+
+    /// @notice GRAI-only: reverse of `mint` volume credits on `redeem` (same L1/L2 walk).
+    /// @dev Debits `min(value, locker.value)` so NAV-raised redeem slices cannot underflow books.
+    ///      Upline L1/L2 use saturating subs. Does not change sticky `referrer` or burn the NFT.
+    function burn(address locker, uint256 value) external;
 
     /// @notice GRAI-only: rewrite sticky `referrer` to `to` and shift L1/L2 books (after GRAI `poach`).
     /// @dev Does not transfer the cashflow NFT.

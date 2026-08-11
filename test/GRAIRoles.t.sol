@@ -200,9 +200,9 @@ contract GRAIRolesTest is Test {
             uint32 liquidationPeriod,
             uint32 redeemPeriod
         ) = grai.config();
-        // Yield cuts stay at initialize defaults.
-        assertEq(buybackCutBps, 3_333);
-        assertEq(dividendCutBps, 3_334);
+        // Yield cuts stay at initialize defaults (immutable via setConfig).
+        assertEq(buybackCutBps, 3_334);
+        assertEq(dividendCutBps, 3_333);
         assertEq(treasuryCutBps, 3_333);
         assertEq(revenueShareBps, 500);
         assertEq(claimTipBps, 100);

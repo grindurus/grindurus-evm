@@ -99,7 +99,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     ///      credits `locker.value` and walks up to `revenueShareBps.length` upline levels into
     ///      `l1Value` / `l2Value` (levels beyond L2 are walked for stop rules only — books only
     ///      store L1/L2).
-    function mint(address locker, address referrer, uint256 value) external returns (uint256 tokenId) {
+    function mint(address locker, address referrer, uint256 value) public returns (uint256 tokenId) {
         _onlyGrai();
         if (locker == address(0)) revert ZeroAddress();
         tokenId = uint256(uint160(locker));
@@ -137,6 +137,42 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
             if (next == ref) break;
             ref = next;
         }
+    }
+
+    /// @inheritdoc ITreasury
+    /// @dev Mirror of `mint` volume credits for `GRAI.redeem`: debit locker `value` then walk the
+    ///      current sticky upline into L1/L2. Caps at `locker.value` when redeem NAV slice exceeds
+    ///      credited deposits (e.g. after a NAV-raising `resettle`). Saturating upline subs keep
+    ///      redeem from bricking on book drift. NFT / sticky referrer unchanged.
+    function burn(address locker, uint256 value) public {
+        _onlyGrai();
+        if (locker == address(0)) revert ZeroAddress();
+        if (value == 0) return;
+
+        ReferralBook storage node = referralBooks[locker];
+        uint256 debit = value > node.value ? node.value : value;
+        if (debit == 0) return;
+        node.value -= debit;
+
+        address ref = referrerOf(locker);
+        uint256 levels = revenueShareBps.length;
+        for (uint256 level; level < levels;) {
+            if (ref == address(0) || ref == locker) break;
+            if (level == 0) {
+                uint256 bal = referralBooks[ref].l1Value;
+                referralBooks[ref].l1Value = bal > debit ? bal - debit : 0;
+            } else if (level == 1) {
+                uint256 bal = referralBooks[ref].l2Value;
+                referralBooks[ref].l2Value = bal > debit ? bal - debit : 0;
+            }
+            unchecked {
+                ++level;
+            }
+            address next = referrerOf(ref);
+            if (next == ref) break;
+            ref = next;
+        }
+        emit Burn(locker, debit);
     }
 
     /// @inheritdoc ITreasury
@@ -364,19 +400,42 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         }
     }
 
-    /// @dev True if setting `locker.referrer = to` would cycle (`to`'s upline reaches `locker`,
-    ///      or `to`'s upline cycles onto itself). Self-root `to == locker` is allowed.
+    /// @dev True if setting `locker.referrer = to` would cycle: `to`'s upline reaches `locker`,
+    ///      or `to`'s upline already contains a cycle. Self-root `to == locker` is allowed.
+    ///
+    ///      Algorithm (Floyd tortoise/hare on sticky `referrerOf`, starting at `to`):
+    ///      - `slow` advances one hop per iteration; `fast` advances two.
+    ///      - Terminal / self-root (`ref == 0 || ref == cur`) ⇒ acyclic end ⇒ no loop.
+    ///      - `ref == locker` ⇒ new edge would place `locker` on `to`'s upline (downline cannot
+    ///        poach upline). `ref == to` ⇒ `to`'s upline already returns to `to`.
+    ///      - `slow == fast` ⇒ a cycle exists somewhere on the walk (e.g. `D→E→F→D` that `to`
+    ///        reaches without `to` itself being revisited) — same as a hop-cap would need, but
+    ///        without false-positive on deep acyclic chains (old fixed limit of 32 hops).
+    ///      Deep trees terminate when pointers hit a root; cyclic ones meet or hit `locker`/`to`.
     function _hasReferralLoop(address locker, address to) internal view returns (bool) {
         if (to == locker) return false;
-        address cur = to;
-        uint256 limit = 32;
-        for (uint256 i; i < limit; ++i) {
-            address ref = referrerOf(cur);
-            if (ref == address(0) || ref == cur) return false;
-            if (ref == locker || ref == to) return true;
-            cur = ref;
+
+        address slow = to;
+        address fast = to;
+        while (true) {
+            address slowRef = referrerOf(slow);
+            if (slowRef == address(0) || slowRef == slow) return false;
+            if (slowRef == locker || slowRef == to) return true;
+            slow = slowRef;
+
+            address fastRef = referrerOf(fast);
+            if (fastRef == address(0) || fastRef == fast) return false;
+            if (fastRef == locker || fastRef == to) return true;
+            fast = fastRef;
+
+            fastRef = referrerOf(fast);
+            if (fastRef == address(0) || fastRef == fast) return false;
+            if (fastRef == locker || fastRef == to) return true;
+            fast = fastRef;
+
+            if (slow == fast) return true;
         }
-        return true;
+        return false; // unreachable; satisfies definite-assignment
     }
 
     /// @dev Soft-fail payout (no self-call). ETH → native, else WETH wrap; ERC20 via low-level
