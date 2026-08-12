@@ -282,7 +282,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         _depositWithRef(alice, 100e6, address(0)); // self-mint NFT + tree value
         uint256 tokenId = uint256(uint160(alice));
         assertEq(treasury.ownerOf(tokenId), alice);
-        (uint256 own, uint256 l1, uint256 l2,) = treasury.referralBooks(alice);
+        (uint256 own, uint256 l1, uint256 l2,) = treasury.lockerBooks(alice);
         assertEq(own, 100e6);
         assertEq(l1, 0);
         assertEq(l2, 0);
@@ -301,11 +301,11 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(grai.balanceOf(alice), aliceGraiBefore + price);
         assertEq(grai.balanceOf(bob), 0);
         // Self-poach: alice keeps her node; bob gains alice.value as l1
-        (uint256 aliceOwn, uint256 aliceL1, uint256 aliceL2,) = treasury.referralBooks(alice);
+        (uint256 aliceOwn, uint256 aliceL1, uint256 aliceL2,) = treasury.lockerBooks(alice);
         assertEq(aliceOwn, 100e6);
         assertEq(aliceL1, 0);
         assertEq(aliceL2, 0);
-        (, uint256 bobL1, uint256 bobL2,) = treasury.referralBooks(bob);
+        (, uint256 bobL1, uint256 bobL2,) = treasury.lockerBooks(bob);
         assertEq(bobL1, 100e6);
         assertEq(bobL2, 0);
     }
@@ -340,8 +340,8 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(treasury.ownerOf(uint256(uint160(alice))), alice);
 
         // L1/L2 book moves alice → paul for bob's subtree
-        (, uint256 aliceL1, uint256 aliceL2,) = treasury.referralBooks(alice);
-        (, uint256 paulL1, uint256 paulL2,) = treasury.referralBooks(paul);
+        (, uint256 aliceL1, uint256 aliceL2,) = treasury.lockerBooks(alice);
+        (, uint256 paulL1, uint256 paulL2,) = treasury.lockerBooks(paul);
         assertEq(aliceL1, 0);
         assertEq(aliceL2, 0);
         assertEq(paulL1, 40e6);
@@ -366,8 +366,8 @@ contract TreasuryReferralsTest is GRAIFixture {
         grai.poach(alice);
 
         // Dias credited alice.value / alice.l1 as l1/l2; alice keeps downline L1 on bob
-        (, uint256 diasL1, uint256 diasL2,) = treasury.referralBooks(dias);
-        (, uint256 aliceL1, uint256 aliceL2,) = treasury.referralBooks(alice);
+        (, uint256 diasL1, uint256 diasL2,) = treasury.lockerBooks(dias);
+        (, uint256 aliceL1, uint256 aliceL2,) = treasury.lockerBooks(alice);
         assertEq(diasL1, 100e6);
         assertEq(diasL2, 40e6);
         assertEq(aliceL1, 40e6);
@@ -380,8 +380,8 @@ contract TreasuryReferralsTest is GRAIFixture {
         vm.prank(eve);
         grai.poach(bob);
 
-        (, aliceL1, aliceL2,) = treasury.referralBooks(alice);
-        (, uint256 eveL1, uint256 eveL2,) = treasury.referralBooks(eve);
+        (, aliceL1, aliceL2,) = treasury.lockerBooks(alice);
+        (, uint256 eveL1, uint256 eveL2,) = treasury.lockerBooks(eve);
         assertEq(aliceL1, 0);
         assertEq(aliceL2, 0);
         assertEq(eveL1, 40e6);
@@ -391,7 +391,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         (priceAlice,) = treasury.poachOf(alice, eve);
         assertEq(priceAlice, 100e6);
         // Dias keeps L1 book on alice; loses L2 book on bob after eve took bob
-        (, diasL1, diasL2,) = treasury.referralBooks(dias);
+        (, diasL1, diasL2,) = treasury.lockerBooks(dias);
         assertEq(diasL1, 100e6);
         assertEq(diasL2, 0);
     }
@@ -401,9 +401,9 @@ contract TreasuryReferralsTest is GRAIFixture {
         _depositWithRef(bob, 40e6, alice); // alice is L1 of bob
         _depositWithRef(carol, 25e6, bob); // bob L1, alice L2 of carol
 
-        (uint256 aliceOwn, uint256 aliceL1, uint256 aliceL2,) = treasury.referralBooks(alice);
-        (uint256 bobOwn, uint256 bobL1, uint256 bobL2,) = treasury.referralBooks(bob);
-        (uint256 carolOwn, uint256 carolL1, uint256 carolL2,) = treasury.referralBooks(carol);
+        (uint256 aliceOwn, uint256 aliceL1, uint256 aliceL2,) = treasury.lockerBooks(alice);
+        (uint256 bobOwn, uint256 bobL1, uint256 bobL2,) = treasury.lockerBooks(bob);
+        (uint256 carolOwn, uint256 carolL1, uint256 carolL2,) = treasury.lockerBooks(carol);
         assertEq(aliceOwn, 100e6);
         assertEq(aliceL1, 40e6);
         assertEq(aliceL2, 25e6);
@@ -426,7 +426,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         _depositWithRef(alice, 50e6, bob); // referrer ignored; sticky self + accrue
 
         assertEq(treasury.referrerOf(alice), alice);
-        (uint256 own, uint256 l1, uint256 l2,) = treasury.referralBooks(alice);
+        (uint256 own, uint256 l1, uint256 l2,) = treasury.lockerBooks(alice);
         assertEq(own, 150e6);
         assertEq(l1, 0);
         assertEq(l2, 0);

@@ -12,7 +12,7 @@ import {ITreasury} from "../src/interfaces/ITreasury.sol";
 ///   Bob   deposits  40, ref=Alice → referrer=Alice, NFT∈Bob
 ///   Carol deposits  25, ref=Bob   → referrer=Bob,   NFT∈Carol
 ///
-/// referralBooks after setup:
+/// lockerBooks after setup:
 ///   Alice: value=100, l1=40, l2=25
 ///   Bob:   value=40,  l1=25, l2=0
 ///   Carol: value=25,  l1=0,  l2=0
@@ -112,7 +112,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _assertNode(carol2, 301e6, 0, 0);
     }
 
-    ////////////////////////////// mint / referralBooks //////////////////////////////
+    ////////////////////////////// mint / lockerBooks //////////////////////////////
 
     /// 1. Alice deposits with no referrer (self-slot).
     /// 2. Dias poach ask = Alice.value + Alice.l1Value = deposit book (no downline yet).
@@ -243,7 +243,7 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.poach(bob);
 
         // Eve is new L2 on bob claims → +bob.value on eve.l2
-        (,, uint256 eveL2,) = treasury.referralBooks(eve);
+        (,, uint256 eveL2,) = treasury.lockerBooks(eve);
         assertEq(eveL2, 40e6);
         _assertNode(paul, 65e6, 40e6, 25e6);
         _assertNode(alice, 100e6, 0, 0);
@@ -281,7 +281,7 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(grai.balanceOf(dias), diasGraiBefore + 100e6);
         // eve gains alice.value as l1; dias loses that l1 credit (dias was non-self seller)
         _assertNode(dias, 140e6, 0, 0);
-        (, uint256 eveL1,,) = treasury.referralBooks(eve);
+        (, uint256 eveL1,,) = treasury.lockerBooks(eve);
         // eve already had 40 from bob + 100 from alice
         // prior eve.l1=40, eve.l2=25 → after: l1=140, l2=25
         assertEq(eveL1, 140e6);
@@ -466,35 +466,35 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(r1, alice);
     }
 
-    function test_GetReferralBooks_PaginatesEnumerableOrder() public {
+    function test_GetLockerBooks_PaginatesEnumerableOrder() public {
         _seedTree();
         assertEq(treasury.totalSupply(), 3);
 
-        ITreasury.ReferralData[] memory all_ = treasury.getReferralsData(0, 100);
+        ITreasury.LockerData[] memory all_ = treasury.getReferralsData(0, 100);
         assertEq(all_.length, 3);
 
         bool sawAlice;
         bool sawBob;
         bool sawCarol;
         for (uint256 i; i < all_.length; ++i) {
-            ITreasury.ReferralData memory row = all_[i];
+            ITreasury.LockerData memory row = all_[i];
             if (row.locker == alice) {
                 sawAlice = true;
-                assertEq(row.referrer, alice);
+                assertEq(row.book.referrer, alice);
                 assertEq(row.ownerOf, alice);
                 assertEq(row.book.value, 100e6);
                 assertEq(row.book.l1Value, 40e6);
                 assertEq(row.book.l2Value, 25e6);
             } else if (row.locker == bob) {
                 sawBob = true;
-                assertEq(row.referrer, alice);
+                assertEq(row.book.referrer, alice);
                 assertEq(row.ownerOf, bob);
                 assertEq(row.book.value, 40e6);
                 assertEq(row.book.l1Value, 25e6);
                 assertEq(row.book.l2Value, 0);
             } else if (row.locker == carol) {
                 sawCarol = true;
-                assertEq(row.referrer, bob);
+                assertEq(row.book.referrer, bob);
                 assertEq(row.ownerOf, carol);
                 assertEq(row.book.value, 25e6);
                 assertEq(row.book.l1Value, 0);
@@ -561,7 +561,7 @@ contract TreasuryPoachTest is GRAIFixture {
     }
 
     /// Redeem does not reverse deposit volume — referral books stay sticky after mint.
-    function test_Redeem_KeepsReferralBooks() public {
+    function test_Redeem_KeepsLockerBooks() public {
         _deposit(alice, 100e6, address(0));
         _deposit(bob, 40e6, alice);
         _deposit(carol, 25e6, bob);
@@ -634,7 +634,7 @@ contract TreasuryPoachTest is GRAIFixture {
     }
 
     function _assertNode(address who, uint256 value, uint256 l1, uint256 l2) internal view {
-        (uint256 v, uint256 a, uint256 b,) = treasury.referralBooks(who);
+        (uint256 v, uint256 a, uint256 b,) = treasury.lockerBooks(who);
         assertEq(v, value, "value");
         assertEq(a, l1, "l1Value");
         assertEq(b, l2, "l2Value");

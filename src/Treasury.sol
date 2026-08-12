@@ -16,8 +16,8 @@ import {IWETH} from "./interfaces/IWETH.sol";
 /// @notice Protocol fee sink, sticky referrer tree, and claim-time split between affiliates and `beneficiar`.
 /// @dev Three layers:
 ///      - `tokenId = uint160(locker)` — permanent locker slot; `ownerOf` = cashflow rights (OTC-transferable).
-///      - `referralBooks[locker].referrer` — upline link (set on first `mint`, moved only by `rebind` / `poach`).
-///      - `referralBooks` volumes — L1/L2 deposit books keyed by locker identity in the tree.
+///      - `lockerBooks[locker].referrer` — upline link (set on first `mint`, moved only by `rebind` / `poach`).
+///      - `lockerBooks` volumes — L1/L2 deposit books keyed by locker identity in the tree.
 ///      Claim payees = `ownerOf` of each upline locker node. UUPS; `mint`/`rebind`/`distribute` = only GRAI;
 ///      payout knobs / upgrades = `GRAI.owner()` (knobs frozen while GRAI liquidation is open).
 ///      Interact via ERC1967Proxy only.
@@ -40,7 +40,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     uint16[] public revenueShareBps;
 
     /// @notice Deposit book + sticky upline per locker.
-    mapping(address locker => ReferralBook) public referralBooks;
+    mapping(address locker => LockerBook) public lockerBooks;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -112,7 +112,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
             if (referrer != locker) _requireValidReferrer(referrer);
             // Looping upline → self-root so a bad referrer does not brick deposit binding.
             if (_hasReferralLoop(locker, referrer)) referrer = locker;
-            referralBooks[locker].referrer = referrer;
+            lockerBooks[locker].referrer = referrer;
             if (_ownerOf(tokenId) == address(0)) {
                 _mint(locker, tokenId);
             }
@@ -120,8 +120,8 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
                 _ensure(referrer);
                 // Stub had L1 recruits before bind — those are now L2 under `referrer`.
                 if (revenueShareBps.length > 1) {
-                    uint256 stubL1 = referralBooks[locker].l1Value;
-                    if (stubL1 > 0) referralBooks[referrer].l2Value += stubL1;
+                    uint256 stubL1 = lockerBooks[locker].l1Value;
+                    if (stubL1 > 0) lockerBooks[referrer].l2Value += stubL1;
                 }
             }
             emit Mint(locker, referrer, tokenId);
@@ -133,13 +133,13 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @dev Credit `value` to locker + L1/L2 upline walk (same stop rules as `revenueShareInfo`).
     function _creditBooks(address locker, uint256 value) internal {
         if (value == 0) return;
-        referralBooks[locker].value += value;
+        lockerBooks[locker].value += value;
         address ref = referrerOf(locker);
         uint256 levels = revenueShareBps.length;
         for (uint256 level; level < levels;) {
             if (ref == address(0) || ref == locker) break;
-            if (level == 0) referralBooks[ref].l1Value += value;
-            else if (level == 1) referralBooks[ref].l2Value += value;
+            if (level == 0) lockerBooks[ref].l1Value += value;
+            else if (level == 1) lockerBooks[ref].l2Value += value;
             unchecked {
                 ++level;
             }
@@ -166,7 +166,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         if (newReferrer == from) revert AlreadyBound();
         if (_hasReferralLoop(locker, newReferrer)) revert ReferralLoop();
 
-        ReferralBook storage node = referralBooks[locker];
+        LockerBook storage node = lockerBooks[locker];
         uint256 own = node.value;
         uint256 direct = node.l1Value;
         address newL2 = referrerOf(newReferrer);
@@ -175,22 +175,22 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         // Self-slot: locker was their own referrer — keep downline L1/L2 on the locker node;
         // only credit the new upline (+ its L2).
         if (from != locker) {
-            ReferralBook storage seller = referralBooks[from];
+            LockerBook storage seller = lockerBooks[from];
             seller.l1Value -= own;
             if (shiftL2) {
                 seller.l2Value -= direct;
                 address oldL2 = referrerOf(from);
                 if (oldL2 != address(0) && oldL2 != from && oldL2 != locker) {
-                    referralBooks[oldL2].l2Value -= own;
+                    lockerBooks[oldL2].l2Value -= own;
                 }
             }
         }
-        ReferralBook storage buyer = referralBooks[newReferrer];
+        LockerBook storage buyer = lockerBooks[newReferrer];
         buyer.l1Value += own;
         if (shiftL2) {
             buyer.l2Value += direct;
             if (newL2 != address(0) && newL2 != newReferrer && newL2 != locker) {
-                referralBooks[newL2].l2Value += own;
+                lockerBooks[newL2].l2Value += own;
             }
         }
 
@@ -302,7 +302,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
     /// @inheritdoc ITreasury
     function referrerOf(address locker) public view returns (address) {
-        return referralBooks[locker].referrer;
+        return lockerBooks[locker].referrer;
     }
 
     /// @inheritdoc ITreasury
@@ -310,29 +310,28 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         referrer = referrerOf(locker);
         if (referrer == address(0)) revert ZeroAddress();
         if (account == referrer) revert AlreadyBound();
-        ReferralBook memory node = referralBooks[locker];
+        LockerBook memory node = lockerBooks[locker];
         price = node.value + node.l1Value;
     }
 
     /// @inheritdoc ITreasury
     /// @dev Pages `_allTokens` via `tokenByIndex`. Empty page if `fromId >= totalSupply`.
-    function getReferralsData(uint256 fromId, uint256 toId) public view returns (ReferralData[] memory list) {
+    function getReferralsData(uint256 fromId, uint256 toId) public view returns (LockerData[] memory list) {
         if (fromId >= toId) revert InvalidRange(fromId, toId);
         uint256 n = totalSupply();
         if (fromId >= n) return list;
         if (toId > n) toId = n;
         uint256 len = toId - fromId;
-        list = new ReferralData[](len);
+        list = new LockerData[](len);
         for (uint256 i; i < len;) {
             uint256 tokenId = tokenByIndex(fromId + i);
             // tokenId is always uint256(uint160(locker)) from mint
             // forge-lint: disable-next-line(unsafe-typecast)
             address locker = address(uint160(tokenId));
-            list[i] = ReferralData({
+            list[i] = LockerData({
                 locker: locker,
-                referrer: referrerOf(locker),
                 ownerOf: ownerOf(tokenId),
-                book: referralBooks[locker]
+                book: lockerBooks[locker]
             });
             unchecked {
                 ++i;

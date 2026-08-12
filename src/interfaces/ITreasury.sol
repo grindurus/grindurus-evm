@@ -33,7 +33,7 @@ interface ITreasury {
     /// @param l1Value Deposits for which this address is L1 (direct recruits).
     /// @param l2Value Deposits for which this address is L2.
     /// @param referrer Sticky upline locker (`poach` / `rebind` only); independent of `ownerOf`.
-    struct ReferralBook {
+    struct LockerBook {
         uint256 value;
         uint256 l1Value;
         uint256 l2Value;
@@ -41,12 +41,11 @@ interface ITreasury {
     }
 
     /// @notice One bound locker row for frontend pagination over ERC-721 enumerable order.
-    /// @dev `referrer` = sticky upline; `ownerOf` = cashflow NFT holder.
-    struct ReferralData {
+    /// @dev `book.referrer` = sticky upline; `ownerOf` = cashflow NFT holder.
+    struct LockerData {
         address locker;
-        address referrer;
         address ownerOf;
-        ReferralBook book;
+        LockerBook book;
     }
 
     function grai() external view returns (IGRAI);
@@ -61,19 +60,18 @@ interface ITreasury {
     /// @notice Per-level split of claim-time revenue share (bps; sum must equal 10_000).
     function revenueShareBps(uint256 index) external view returns (uint16);
 
-    /// @notice Sticky upline locker for `locker` (`referralBooks.referrer`, or `address(0)` if unset).
+    /// @notice Sticky upline locker for `locker` (`lockerBooks.referrer`, or `address(0)` if unset).
     function referrerOf(address locker) external view returns (address);
 
     /// @notice Own / L1 / L2 deposit book value and sticky `referrer` for `locker`.
-    function referralBooks(address locker)
+    function lockerBooks(address locker)
         external
         view
         returns (uint256 value, uint256 l1Value, uint256 l2Value, address referrer);
 
     /// @notice Bound lockers in ERC-721 enumerable order for `[fromId, toId)` (`totalSupply` clipped).
-    /// @dev `tokenByIndex` → `locker = address(uint160(tokenId))`, sticky `referrer`, cashflow
-    ///      `ownerOf`, plus `referralBooks`.
-    function getReferralsData(uint256 fromId, uint256 toId) external view returns (ReferralData[] memory list);
+    /// @dev `tokenByIndex` → `locker = address(uint160(tokenId))`, cashflow `ownerOf`, plus `lockerBooks`.
+    function getReferralsData(uint256 fromId, uint256 toId) external view returns (LockerData[] memory list);
 
     /// @notice Poach quote for `locker`: `value + l1Value` ask and current sticky referrer.
     /// @dev Reverts if unbound or `account` is already the referrer.
@@ -112,7 +110,7 @@ interface ITreasury {
     function rebind(address locker, address newReferrer) external;
 
     /// @notice Pay claim-time treasury split from inventory; credit poach books for `claimedValue`.
-    /// @dev Credits `claimedValue` (book USD) into referral books first. No-op payouts if balance
+    /// @dev Credits `claimedValue` (book USD) into locker books first. No-op payouts if balance
     ///      < `grossProfitShare`. Soft-fail per recipient; unpaid shares roll into `beneficiar`.
     function distribute(
         address asset,
