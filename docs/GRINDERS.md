@@ -67,7 +67,7 @@ Custodian also emits its own `Deallocate` / `Distribute` (asset + amount, no cus
 | Trade profit left on custodian, then Grinders `distribute` | Protocol yield → GRAI tokenomics |
 | Inventory returned via Grinders `deallocate` | Capital back to reserve (may be a different token/size than allocated) |
 | Idle reserve on Grinders | Not earning until `allocate`d |
-| GRAI book (`totalValue`) | Unaffected by trades / distribute until deposit / redeem / resettle |
+| GRAI book (`totalValue`) | Unaffected by trades / distribute until deposit / redeem / revive |
 
 Example (happy path):
 
@@ -185,7 +185,7 @@ While `grai.liquidation()` is true:
 1. Keepers call `Grinders.liquidate(fromId, toId)` with `fromId < toId` to page custodian ids, pull each wallet’s ETH / base / quote onto Grinders, then forward those amounts to GRAI.
 2. **Idle sweep:** if `fromId >= toId`, the call treats the range as a sentinel (`type(uint256).max`) and forwards Grinders’ **own** balances of assets from `grai.getAssets()` to GRAI (no custodian pulls).
 3. Custodian `distribute` / `deallocate` revert (`LiquidationOpen`).
-4. Holders `GRAI.redeem` from the redeemable basket; later `resettle` can return leftovers to Grinders.
+4. Holders `GRAI.redeem` from the redeemable basket; later `revive` can return leftovers to Grinders.
 
 Grinders does not open liquidation — that is GRAI’s 2-of-2 (`hasQuorum` ∧ owner `liquidate`). Gate: `_requireLiquidation()` reads `grai.liquidation()` (fail-open if `grai` has no code or the view reverts — keep `setGrai` correct in production).
 

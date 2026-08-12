@@ -28,7 +28,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty stays on GRAI as orphan/dead inventory (scooped to the liquidation opener via `balanceOf(this) − totalLocked`).
 2. `bribe` — buy out **voted** GRAI for `settlementAsset` at a dynamic ask vs half-quorum (premium / par / discount).
 3. **Secondary market** — sell free (unlocked) wallet GRAI OTC / CEX / DEX; protocol does not provide a live redeem.
-4. **Liquidation** — **2-of-2**: vote quorum **and** owner confirmation (`confirmed` / owner `liquidate` with quorum) → holders `redeem` → anyone `resettle` (fund restarts). Voters alone cannot open; non-owner open needs prior `confirmed`.
+4. **Liquidation** — **2-of-2**: vote quorum **and** owner confirmation (`confirmed` / owner `liquidate` with quorum) → holders `redeem` → anyone `revive` (fund restarts). Voters alone cannot open; non-owner open needs prior `confirmed`.
 
 **Yield (**`distribute`**) / bribe premium** splits per `Config` (initialize defaults **50% / 50%**):
 
@@ -144,7 +144,7 @@ She may later `claim` / `claimAll` yield assets accrued to that escrow.
 
 ### Claimer
 
-Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). **Allowed while liquidation is open**: `claim` pays only from the `totalClaimable` reserve, which `_redeemable` excludes from redeem / `resettle` — the two pools do not mix. Unclaimed reserve also survives `resettle`. (`unlock` itself is still blocked in liquidation.)
+Anyone may call `claim` / `claimAll` for a **holder** who has accrued yield on **unvoted** locked GRAI (`escrow.amount − escrow.voted`). Dividends are paid in the **yield asset** (not GRAI). **Allowed while liquidation is open**: `claim` pays only from the `totalClaimable` reserve, which `_redeemable` excludes from redeem / `revive` — the two pools do not mix. Unclaimed reserve also survives `revive`. (`unlock` itself is still blocked in liquidation.)
 
 **Each successful `claim` also grows referral books:** Treasury credits `claimedValue = usdValue(asset, claimed)` to the locker’s `value` and walks L1/L2 upline the same way as deposit `mint`. That permanently raises the locker (and upline) **poach ask** — claims compound seat price; `redeem` does not reverse them.
 
@@ -391,7 +391,7 @@ OTC sale of Alice’s NFT does **not** change who receives the next `poach(Bob)`
                     │  locks + votes                          │
                     │  dividends (unvoted lockers only)        │
                     │  totalClaimable reserve (excluded from   │
-                    │    redeem / resettle basket)             │
+                    │    redeem / revive basket)             │
                     │  poach — GRAI ask → referrer;     │
                     │    rebind tree (not cashflow NFT)        │
                     └───┬───────────────┬──────────────┬───────┘
@@ -445,7 +445,7 @@ if (lock) lock(graiOut)
 Share denominator is `totalSupply`. Orphan/dead GRAI still on the contract dilutes redeemers and
 leaves a residual book slice (live unlock-fee orphans are sent to the opener / `msg.sender` when liquidation opens).
 - New deposits dilute quorum until voters re-commit.
-- After `resettle`, `totalValue` is **not** marked to leftover basket NAV — post-redeem book is kept so mint stays ~$1/GRAI; if `supply == 0`, `totalValue = 0`.
+- After `revive`, `totalValue` is **not** marked to leftover basket NAV — post-redeem book is kept so mint stays ~$1/GRAI; if `supply == 0`, `totalValue = 0`.
 
 ### 4.3 GRAI classes: free, locked, unvoted
 
@@ -518,7 +518,7 @@ claimable   += (locked - voted) * accShare / 1e18 - debt
 - New lockers sync debt to the **current** index → they do **not** receive past cuts.
 - `vote` accrues then shrinks the eligible base and resyncs debt.
 - Claim: `claim` / `claimAll` / previews — **allowed while liquidation is open** (pays only the reserved slice; does not touch the redeem basket). On claim, GRAI also asks Treasury to pay affiliates / `beneficiar` (see §10).
-- Reserved `totalClaimable` is excluded from redeem / resettle sweeps (`_redeemable = bal − totalClaimable`) and remains claimable during liquidation and after restart.
+- Reserved `totalClaimable` is excluded from redeem / revive sweeps (`_redeemable = bal − totalClaimable`) and remains claimable during liquidation and after restart.
 
 Example: Alice locks 100, votes 40 → unvoted 60. Bob locks 100 unvoted → unvoted 100. Total eligible 160. A 50 USDC dividend cut pays Alice **18.75**, Bob **31.25**.
 
@@ -716,11 +716,11 @@ State when `redeem` opens (`liquidationPeriod` elapsed):
   - Book burn: `totalValue -= 100` → **$900** (pro-rata of book, independent of basket marks).
   - Referral books are unchanged (`redeem` never reverses deposit/claim volume — books stay sticky).
   - Pays her the frozen vector: wallet **+800 USDC**, **+0.1 WETH**.
-3. Remaining holders still share the leftover basket **7,200 USDC** + **0.9 WETH** against **900 GRAI** until they redeem or `resettle`.
+3. Remaining holders still share the leftover basket **7,200 USDC** + **0.9 WETH** against **900 GRAI** until they redeem or `revive`.
 
 Dividend `totalClaimable` is **not** in this vector — Alice (or anyone) may still `claim` that reserve during liquidation; it never enters the redeem pro-rata.
 
-### 9.4 Close (`resettle`)
+### 9.4 Close (`revive`)
 
 Permissionless after `liquidationPeriod + redeemPeriod`:
 
@@ -1099,7 +1099,7 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 | `quorumBps`         | 66_67 (66.67%)  | Strict: `voted/supply > quorumBps` to open liquidation |
 | `unlockPenaltyBps`  | 10_00 (10%)     | Flat unlock penalty (stays on GRAI as dead)            |
 | `liquidationPeriod` | 24 hours        | Delay before `redeem` (must be `> 0`)                  |
-| `redeemPeriod`      | 7 days          | Window before `resettle` (must be `> 0`)               |
+| `redeemPeriod`      | 7 days          | Window before `revive` (must be `> 0`)               |
 
 
 Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is open**. Treasury payout knobs (`setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps`) are frozen the same way.
@@ -1144,7 +1144,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 
 ## 16. Key invariants
 
-1. **Book** — `totalValue` moves on deposit and redeem burn — not on yield/`resettle` NAV.
+1. **Book** — `totalValue` moves on deposit and redeem burn — not on yield/`revive` NAV.
 2. **Dividends = unvoted lock** — index uses `totalLocked − totalVoted`; account base is `amount − voted`.
 3. **Past dividends are not diluted** — new locks sync debt to the live index.
 4. **No unvoted locks → dividend cut to treasury** — same for bribe premium dividend cut.
@@ -1153,7 +1153,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 8. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
 9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; `claim` **/** `claimAll` **allowed** — dividend reserve and redeemable basket are separate (`_redeemable`).
 10. **FoT** — deposit/`distribute` size economics from credited `_pay`; `settlementAsset` is **non-FoT** (exact credit required; full `graiAmount` out).
-11. `resettle` does not reprice `totalValue` from leftover NAV (keeps ~$1/GRAI); zeroes book only when `supply == 0`. Deposit bootstrap when `totalValue == 0`.
+11. `revive` does not reprice `totalValue` from leftover NAV (keeps ~$1/GRAI); zeroes book only when `supply == 0`. Deposit bootstrap when `totalValue == 0`.
 12. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
 13. **Unlock penalty → dead GRAI** — flat `unlockPenaltyBps` (no time decay); penalty is not sent to treasury; scooped to liquidation opener (`balanceOf(this) − totalLocked`). Dust floor `ceil(BPS / unlockPenaltyBps)` applies to full-escrow exit; remainder below dust stays until lock grows, fee is 0, or liquidation redeem.
 15. **Affiliates ≠ locker cut** — claim tip / locker payout are independent of Treasury; affiliates pay from Treasury inventory sized by `revenueShareBps`.
@@ -1179,7 +1179,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `poach` / `previewPoach`   | Anyone              | `poach` blocked; preview still quotes                             |
 | `redeem`                   | Holder              | Only when open (after delay); `nonReentrant`                      |
 | `liquidate`                | Owner / anyone      | 2-of-2 open; on open send orphan GRAI to opener                   |
-| `resettle`                 | Anyone              | Closes cycle; fund restarts                                       |
+| `revive`                 | Anyone              | Closes cycle; fund restarts                                       |
 | `setConfig`                | Owner               | Blocked while open                                                |
 
 
