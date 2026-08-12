@@ -277,7 +277,7 @@ contract GRAI is
 
     /// @inheritdoc IERC1046
     function tokenURI() public pure returns (string memory) {
-        return "https://grindurus.xyz/metadata.json";
+        return "https://grindurus.xyz/grai.json";
     }
 
     function decimals() public pure override(ERC20Upgradeable, IERC20Metadata) returns (uint8) {
