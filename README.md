@@ -7,9 +7,8 @@ is disabled during normal operation and becomes available only after liquidation
 Holders may `lock` GRAI for **asset dividends** on the **unvoted** escrow
 (`amount − voted`), and/or `vote` toward liquidation quorum (`vote` auto-locks any
 wallet shortfall). Protocol yield flows through `distribute` and splits per `Config`
-cuts (initialize defaults **≈33.33% / 33.34% / 33.33%**): auction → Dutch lot sold for
-GRAI via **`buyback`** (payment is `lock`+`vote`d on the buyer — **not** a GRAI vote-reward
-index); dividend → unvoted lockers via `claim` / `claimAll`; treasury → `treasury`.
+cuts (initialize defaults **50% / 50%**): dividend → unvoted lockers via `claim` /
+`claimAll` (else → treasury); treasury → `treasury`.
 
 Full mechanics: [`docs/GRAI.md`](docs/GRAI.md). Grinders / custodians / yield path: [`docs/GRINDERS.md`](docs/GRINDERS.md).
 
@@ -24,25 +23,20 @@ deposit(asset, amount, lock?) →  asset to Grinders  →  GRAI at book value (t
               Grinders / custodians earn yield
                       ↓
 distribute(asset)          [custodian or any payer]
-   ├─ buybackCutBps  → Dutch auction (sold for GRAI via buyback)
-   ├─ dividendCutBps → unvoted lockers (claim / claimAll); else → auction
+   ├─ dividendCutBps → unvoted lockers (claim / claimAll); else → treasury
    └─ treasuryCutBps → treasury
-                      ↓
-buyback(asset)                [permissionless]
-   scavenges dead GRAI (balanceOf(this) − totalLocked) onto buyer;
-   buyer pays GRAI ask; receives listed asset; graiIn+dead → lock+vote on buyer
                       ↓
 unlock(amount)                [locker]
    flat unlock fee stays on GRAI as orphan/dead; net GRAI to wallet
                       ↓
 bribe(voter)               [permissionless]
    dynamic ask vs half-quorum (premium / par / discount) in settlementAsset (non-FoT);
-   exact pay → full graiAmount to briber; premium/discount carve-outs → same three cuts
+   exact pay → full graiAmount to briber; premium/discount carve-outs → same two cuts
 ```
 
 | Contract | Role |
 |----------|------|
-| `GRAI` | UUPS ERC20 fund share + oracle router + auctions + lock/vote/dividends + liquidation. Implements [ERC-1046](https://eips.ethereum.org/EIPS/eip-1046). |
+| `GRAI` | UUPS ERC20 fund share + oracle router + lock/vote/dividends + liquidation. Implements [ERC-1046](https://eips.ethereum.org/EIPS/eip-1046). |
 | `Grinders` | UUPS ERC-721 **Grinders Custodians** collection, custodian proxy wallets, `allocate` / `deallocate`. On-chain NFT art via embedded `GrinderArt` library. |
 | `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
 | `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
@@ -86,7 +80,6 @@ lock / unlock / claim                         // unvoted dividends; unlock fee �
    ↓
 distribute(asset, yieldAmount)                 // auction + dividend + treasury cuts
    ↓
-buyback(asset, amount)                         // scavenge dead; buy lot for GRAI; lock+vote
    ↓
 vote(graiAmount) / bribe(voter, graiAmount)    // liquidation quorum + dynamic bribe buyouts
    ↓
@@ -94,7 +87,7 @@ liquidate()                                    // 2-of-2: quorum + owner confirm
    ↓
 Grinders.liquidate(…) + GRAI.redeem(…)         // sweep custodians; pro-rata redeem basket
    ↓
-resettle()                                     // anyone: close after redeem window; fund restarts
+revive()                                     // anyone: close after redeem window; fund restarts
 ```
 
 For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when required.
@@ -104,33 +97,25 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
 - `depositValue = usdValue(asset, amount)` (oracle; `USD_DECIMALS = 6`)
 - **deposit:** `graiOut = depositValue * totalSupply / totalValue` when book is live; bootstrap mint
   when `totalValue == 0` is `graiOut = depositValue` (1 GRAI per $1). Optional `lock` escrows minted
-  GRAI in the same tx. `paused` blocks deposits only (not buyback / distribute / claim)
+  GRAI in the same tx. `paused` blocks deposits only (not distribute / claim)
 - **lock / claim:** only **unvoted** locked GRAI (`escrow.locked − voted`) earns listed-asset dividends
   from `dividendCutBps`; `claim` / `claimAll` (and `previewClaim` / `previewClaimAll`) pay accrued
   dividends to the holder — **allowed while liquidation is open** (pays only the `totalClaimable`
-  reserve, excluded from redeem / resettle). If `totalLocked == totalVoted` (no eligible base), the
-  dividend cut is merged into the auction instead. Every `lock` (including buyback / vote shortfall)
+  reserve, excluded from redeem / revive). If `totalLocked == totalVoted` (no eligible base), the
+  dividend cut is sent to treasury instead. Every `lock` (including vote shortfall)
   resets `lockedAt` on the whole escrow
 - **redeem during open liquidation only** — after `liquidationPeriod`, burns wallet and/or locked
   GRAI for a pro-rata share of `_redeemable` balances on GRAI (excludes dividend reserves; share
   denominator excludes orphan/dead GRAI on the contract). Grinders
-  sweeps return custodian assets to GRAI. After `liquidationPeriod + redeemPeriod`, `resettle`
+  sweeps return custodian assets to GRAI. After `liquidationPeriod + redeemPeriod`, `revive`
   sends leftover redeemable balances to Grinders and clears liquidation **without** repricing
   `totalValue` from leftover NAV (keeps ~$1/GRAI mint; zeroes book only if supply is 0).
   Unclaimed dividend reserve stays on GRAI
-- **distribute:** splits `received` by `buybackCutBps` / `dividendCutBps` / `treasuryCutBps`
-  (must sum to 100%; initialize defaults **3333 / 3334 / 3333**)
-- **auction:** one open lot per sold asset; `remaining` = asset qty; `maxPayment` = mint-price GRAI
-  for the lot (`previewDeposit`); ask decays to `(BPS - bribePremiumBps)` of mint (default **98%**,
-  −2% max discount) over `config.buybackPeriod` (default **7 days**, `setConfig` enforces
-  `>= 7 days`); each `_place` merges inventory and restarts the clock at the new mint ask
-- **buyback:** scavenges orphan/dead GRAI (`balanceOf(this) − totalLocked`) to the buyer first, then
-  pays Dutch GRAI ask for the listed asset; `lock(graiIn + dead)` + `vote(graiIn + dead)`. Reverts
-  unless both `graiIn > 0` and `amountOut > 0` (no free / zero fills). Exit payment later via `bribe`
-  or `unlock`
+- **distribute:** splits `received` by `dividendCutBps` / `treasuryCutBps` (defaults 50/50); no eligible locks → dividend cut to treasury
 - **unlock:** `unlock(graiAmount)` — flat penalty (`unlockPenaltyBps`, default **1%**) **stays on GRAI as dead**
   (not sent to treasury); net returns to the wallet (`previewUnlock` → `(unlockAmount, penalty)`).
-  While penalty > 0, any unlock below `ceil(BPS / unlockPenaltyBps)` reverts (including full-escrow dust).
+  While penalty > 0, any unlock below `ceil(BPS / unlockPenaltyBps)` reverts — including full-escrow
+  dust and any remainder after a partial unlock (intentional: top up, set fee to 0, or liquidation redeem).
   Yield claims are separate
 - **bribe:** `previewBribe` prices a dynamic ask in `settlementAsset` vs half-quorum
   (`quorumBps / 2`) with slope `bribePremiumBps`: `|adj| = bribePremiumBps` at 0 votes and at
@@ -143,7 +128,6 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   `confirmed && hasQuorum()`. `setConfig` is blocked while liquidation is open
 
 > Liquid wallet GRAI does not earn yield dividends — only **unvoted** lockers do. Auctioned yield is
-> sold for GRAI via `buyback`; that GRAI becomes the buyer’s locked vote, not a redistributed reward.
 
 ## Access control
 
@@ -174,19 +158,19 @@ separate contract), so feed management is `onlyOwner` — there is no separate o
 
 Permissionless (after windows):
 
-- `resettle` — close liquidation after `liquidationPeriod + redeemPeriod`; leftovers → Grinders;
+- `revive` — close liquidation after `liquidationPeriod + redeemPeriod`; leftovers → Grinders;
   no `totalValue` NAV reprice (keeps ~$1/GRAI); fund accepts deposits again
 
 ### Permissionless (any caller)
 
-- `deposit`, `distribute`, `buyback`, `redeem` (`redeem` requires open liquidation + delay)
+- `deposit`, `distribute`, `redeem` (`redeem` requires open liquidation + delay)
 - `lock`, `unlock`, `claim`, `claimAll` (`claim` / `claimAll` stay open in liquidation)
 - `vote` (auto-locks wallet shortfall)
 - `bribe` (third-party or self buyout; blocked while liquidation is open)
 - `liquidate` — non-owner opens only when `confirmed && hasQuorum()`
 - `Grinders.liquidate` / `Grinders.liquidate(fromId, toId)` while GRAI liquidation is open
 - `Grinders.deallocate` — from the custodian
-- views: `previewDeposit`, `previewBuyback`, `previewUnlock`, `previewClaim`, `previewClaimAll`,
+- views: `previewDeposit`, `previewUnlock`, `previewClaim`, `previewClaimAll`,
   `previewBribe`, `previewRedeem`, `hasQuorum`, `confirmed`, `getAssets`, `getEscrows`,
   `tokenURI`
 
@@ -431,7 +415,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 - Hold GRAI + Grinders ownership behind a multisig / timelock (`Ownable2Step` on both):
   - **owner** — asset ops, wiring, upgrades (`setFeed`, `liquidate` /
     `confirmed`, `setConfig` / `setGrinders` / `setTreasury` / `setSettlementAsset`, UUPS)
-  - **`resettle`** — permissionless after redeem window (restarts the fund)
+  - **`revive`** — permissionless after redeem window (restarts the fund)
 - On L2s (Arbitrum, Base, Optimism), additionally check the Chainlink **L2 Sequencer Uptime
   Feed** before trusting a price, and apply a grace period after sequencer recovery:
   - Arbitrum: `0xFdB631F5EE196F0ed6FAa767959853A9F217697D`
@@ -444,7 +428,7 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
   For Pyth-priced assets, run a keeper that periodically calls
   `IPyth.updatePriceFeeds{value: fee}(updateData)` (with `fee = getUpdateFee(updateData)`,
   using update blobs from Hermes) so the price stays within `maxStaleness`; otherwise any path
-  that touches oracle pricing (`deposit`, `distribute` auctions, `buyback` previews) will
+  that touches oracle pricing (`deposit`, `distribute`) will
   revert with `StalePrice`.
 - ERC-1046 collection metadata: `tokenURI()` on GRAI and Grinders → `https://grindurus.xyz/metadata.json`.
   Per-custodian NFT metadata is on-chain via `Grinders.tokenURI(id)` (`GrinderArt`).
