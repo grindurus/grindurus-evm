@@ -17,7 +17,7 @@ interface ITreasury {
     error InvalidAmount();
     error TokenNonexistent(uint256 tokenId);
     error InvalidRange(uint256 fromId, uint256 toId);
-    /// @notice GRAI liquidation is open — payout routing knobs are frozen until `resettle`.
+    /// @notice GRAI liquidation is open — payout routing knobs are frozen until `revive`.
     error LiquidationOpen();
 
     /// @notice Claim-time payout to a referrer or `beneficiar`.

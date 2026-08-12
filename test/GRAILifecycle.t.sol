@@ -4,7 +4,7 @@ pragma solidity ^0.8.30;
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
 
-/// @dev End-to-end happy path: gradual deposits → yield → claims → liquidate → redeem → resettle.
+/// @dev End-to-end happy path: gradual deposits → yield → claims → liquidate → redeem → revive.
 contract GRAILifecycleTest is GRAIFixture {
     address carol = makeAddr("carol");
 
@@ -31,7 +31,7 @@ contract GRAILifecycleTest is GRAIFixture {
         vm.deal(carol, 2 ether);
     }
 
-    function test_DepositYieldClaimLiquidateRedeemResettle() public {
+    function test_DepositYieldClaimLiquidateRedeemRevive() public {
         // ── 1. Gradual deposits: 1000 USDC + 3 ETH across Alice / Bob / Carol ──
         _depositUsdc(alice, 200e6);
         _depositUsdc(bob, 150e6);
@@ -159,10 +159,10 @@ contract GRAILifecycleTest is GRAIFixture {
         assertLe(usdc.balanceOf(address(grai)), 2);
         assertLe(address(grai).balance, 2);
 
-        // ── 8. Resettle after redeemPeriod ──
+        // ── 8. Revive after redeemPeriod ──
         vm.warp(block.timestamp + uint256(cfg.redeemPeriod));
         vm.prank(carol);
-        grai.resettle();
+        grai.revive();
 
         assertFalse(grai.liquidation());
         assertEq(uint256(grai.liquidationAt()), 0);

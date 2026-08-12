@@ -52,7 +52,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 id;
         /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`locked - voted`), scaled by 1e18.
         uint256 accShare;
-        /// @notice Tokens reserved for locker claims (excluded from redeem / resettle).
+        /// @notice Tokens reserved for locker claims (excluded from redeem / revive).
         uint256 totalClaimable;
     }
 
@@ -110,7 +110,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
         ///      where they sit as idle inventory for the subsequent pro-rata `redeem` basket.
         uint32 liquidationPeriod;
-        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `resettle`.
+        /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `revive`.
         uint32 redeemPeriod;
     }
 
@@ -195,7 +195,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function voters(uint256 index) external view returns (address);
 
-    /// @notice Redeem / resettle basket in `assetList` order: every listed asset and its
+    /// @notice Redeem / revive basket in `assetList` order: every listed asset and its
     ///         `_redeemable` balance (contract balance minus `totalClaimable`; may be 0).
     ///         Reverts with `LiquidationClosed` when liquidation is not open.
     function getRedeemables() external view returns (address[] memory assetOuts, uint256[] memory amounts);
@@ -209,7 +209,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Owner confirmation for non-owner liquidation open. Owner toggles via `liquidate` when no quorum; cleared on open.
     function confirmed() external view returns (bool);
 
-    /// @notice True after `liquidate` opens until `resettle` closes it.
+    /// @notice True after `liquidate` opens until `revive` closes it.
     function liquidation() external view returns (bool);
 
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
@@ -334,7 +334,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
     ///         Grinders; clear liquidation flags. Does not reprice `totalValue` from leftover NAV
     ///         (keeps ~$1/GRAI mint); zeroes `totalValue` only when supply is 0.
-    function resettle() external;
+    function revive() external;
 
     /// @notice GRAI cost to poach the sticky referrer link for `locker`: `value + l1Value`.
     ///         Reverts if unbound, `poacher` is already the referrer, `price == 0`, or balance `< price`.

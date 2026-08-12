@@ -71,7 +71,7 @@ contract GRAI is
     uint256 public totalVoted;
 
     /// @notice Book NAV in `USD_DECIMALS` (6); mint rate = `value * totalSupply / totalValue`. Moves on
-    ///         `deposit`, redeem burn, and `resettle`; excludes yield inventory on this contract.
+    ///         `deposit`, redeem burn, and `revive`; excludes yield inventory on this contract.
     uint256 public totalValue;
 
     /** SLOT BEGIN */
@@ -86,7 +86,7 @@ contract GRAI is
     ///         cleared on open. Owner with quorum opens without needing this flag.
     bool public confirmed;
 
-    /// @notice True after liquidation opens until `resettle` closes it.
+    /// @notice True after liquidation opens until `revive` closes it.
     bool public liquidation;
 
     /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
@@ -180,7 +180,7 @@ contract GRAI is
     /// @dev `id` selects the field; `data` is the packed value. Yield cuts are immutable after
     ///      `initialize` — only tip, quorum, unlock, periods, and `revenueShareBps` are patchable.
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
-        // Live redeem/resettle clocks; freeze both windows for the whole liquidation.
+        // Live redeem/revive clocks; freeze both windows for the whole liquidation.
         _requireNotLiquidation();
 
         Config memory cfg = config;
@@ -677,7 +677,7 @@ contract GRAI is
 
         // Unlock fees / stray GRAI on this contract are not escrow — send to the opener
         // (`msg.sender`) as a normal holder so they can redeem (or hold) rather than leave
-        // ghost supply on Treasury / dilute after a full redeem + `resettle` bootstrap.
+        // ghost supply on Treasury / dilute after a full redeem + `revive` bootstrap.
         uint256 bal = balanceOf(address(this));
         if (bal > totalLocked) _transfer(address(this), liquidator, bal - totalLocked);
 
@@ -779,7 +779,7 @@ contract GRAI is
         }
     }
 
-    //////////////////// RESETTLE ////////////////////
+    //////////////////// REVIVE ////////////////////
 
     /// @inheritdoc IGRAI
     /// @dev Permissionless after `liquidationPeriod + redeemPeriod`: return unredeemed basket
@@ -788,8 +788,8 @@ contract GRAI is
     ///      Does **not** reprice `totalValue` from leftover NAV — book stays at the post-redeem
     ///      level so mint stays ~$1/GRAI (`graiOut ≈ usdValue` while `totalSupply == totalValue`).
     ///      If no shares remain, `totalValue = 0`. Dividend inventory in `assets[asset].totalClaimable`
-    ///      is left on GRAI for post-resettle `claim`.
-    function resettle() public nonReentrant {
+    ///      is left on GRAI for post-revive `claim`.
+    function revive() public nonReentrant {
         _requireLiquidation();
         if (liquidationAt == 0) revert LiquidationClosed();
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
@@ -862,7 +862,7 @@ contract GRAI is
         return entry.locked - entry.voted;
     }
 
-    /// @notice Balance available to liquidation redeem / resettle (excludes dividend claim reserve).
+    /// @notice Balance available to liquidation redeem / revive (excludes dividend claim reserve).
     function _redeemable(address asset) internal view returns (uint256) {
         uint256 bal = _balance(asset);
         uint256 reserved = assets[asset].totalClaimable;
