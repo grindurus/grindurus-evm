@@ -33,9 +33,8 @@ abstract contract GRAIFixture is Test {
     MockAggregator wethFeed; // 8 decimals, $2000
 
     uint16 constant BPS = 10_000;
-    uint16 constant BUYBACK_CUT_BPS = 5_000;
-    uint16 constant DIVIDEND_CUT_BPS = 3_000;
-    uint16 constant TREASURY_CUT_BPS = 2_000;
+    uint16 constant DIVIDEND_CUT_BPS = 5_000;
+    uint16 constant TREASURY_CUT_BPS = 5_000;
     uint256 constant DEFAULT_MAX_STALENESS = 1 hours;
 
     function setUp() public virtual {
@@ -194,7 +193,6 @@ abstract contract GRAIFixture is Test {
 
     function _readConfig() internal view returns (IGRAI.Config memory cfg) {
         (
-            cfg.buybackCutBps,
             cfg.dividendCutBps,
             cfg.treasuryCutBps,
             cfg.revenueShareBps,
@@ -202,17 +200,15 @@ abstract contract GRAIFixture is Test {
             cfg.bribePremiumBps,
             cfg.quorumBps,
             cfg.unlockPenaltyBps,
-            cfg.buybackPeriod,
             cfg.liquidationPeriod,
             cfg.redeemPeriod
         ) = grai.config();
     }
 
-    /// @dev Test economics often assume 50/30/20; initialize defaults are ~33/33/33.
+    /// @dev Test economics often assume 50/50; initialize defaults match.
     ///      Yield cuts are immutable via `setConfig` — poke the packed config word for tests only.
-    function _setYieldSplitFiftyThirtyTwenty() internal {
+    function _setYieldSplitFiftyFifty() internal {
         IGRAI.Config memory cfg = _readConfig();
-        cfg.buybackCutBps = BUYBACK_CUT_BPS;
         cfg.dividendCutBps = DIVIDEND_CUT_BPS;
         cfg.treasuryCutBps = TREASURY_CUT_BPS;
         _writeConfig(cfg);
@@ -220,23 +216,18 @@ abstract contract GRAIFixture is Test {
 
     /// @dev Packed `config` is one storage word (current OZ layout). Update if inheritance changes.
     ///      `forge inspect GRAI storage-layout` → `config` slot.
-    uint256 private constant _CONFIG_SLOT = 15;
+    uint256 private constant _CONFIG_SLOT = 14;
 
     function _writeConfig(IGRAI.Config memory cfg) internal {
         vm.store(address(grai), bytes32(_CONFIG_SLOT), bytes32(_packConfig(cfg)));
     }
 
     function _packConfig(IGRAI.Config memory cfg) internal pure returns (uint256 data) {
-        data = uint256(cfg.buybackCutBps) | (uint256(cfg.dividendCutBps) << 16) | (uint256(cfg.treasuryCutBps) << 32)
-            | (uint256(cfg.revenueShareBps) << 48) | (uint256(cfg.claimTipBps) << 64) | (uint256(cfg.bribePremiumBps) << 80)
-            | (uint256(cfg.quorumBps) << 96) | (uint256(cfg.unlockPenaltyBps) << 112) | (uint256(cfg.buybackPeriod) << 128)
-            | (uint256(cfg.liquidationPeriod) << 160) | (uint256(cfg.redeemPeriod) << 192);
-    }
-
-    /// @dev Buy from the open auction for `asset` as `buyer`, paying GRAI.
-    function _buyback(address buyer, address asset, uint256 amount) internal {
-        vm.prank(buyer);
-        grai.buyback(asset, amount);
+        data = uint256(cfg.dividendCutBps) | (uint256(cfg.treasuryCutBps) << 16)
+            | (uint256(cfg.revenueShareBps) << 32) | (uint256(cfg.claimTipBps) << 48)
+            | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
+            | (uint256(cfg.unlockPenaltyBps) << 96) | (uint256(cfg.liquidationPeriod) << 112)
+            | (uint256(cfg.redeemPeriod) << 144);
     }
 
     function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {

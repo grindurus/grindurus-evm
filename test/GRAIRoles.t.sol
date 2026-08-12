@@ -172,12 +172,6 @@ contract GRAIRolesTest is Test {
             ownerMultisig,
             ownerSigner,
             address(grai),
-            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.BUYBACK_PERIOD, uint256(uint32(180 days))))
-        );
-        _exec(
-            ownerMultisig,
-            ownerSigner,
-            address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.LIQUIDATION_PERIOD, uint256(uint32(12 hours))))
         );
         _exec(
@@ -188,7 +182,6 @@ contract GRAIRolesTest is Test {
         );
 
         (
-            uint16 buybackCutBps,
             uint16 dividendCutBps,
             uint16 treasuryCutBps,
             uint16 revenueShareBps,
@@ -196,20 +189,17 @@ contract GRAIRolesTest is Test {
             uint16 bribePremiumBps,
             uint16 quorum,
             uint16 unlockPenaltyBps,
-            uint32 buybackPeriod,
             uint32 liquidationPeriod,
             uint32 redeemPeriod
         ) = grai.config();
         // Yield cuts stay at initialize defaults (immutable via setConfig).
-        assertEq(buybackCutBps, 3_334);
-        assertEq(dividendCutBps, 3_333);
-        assertEq(treasuryCutBps, 3_333);
+        assertEq(dividendCutBps, 5_000);
+        assertEq(treasuryCutBps, 5_000);
         assertEq(revenueShareBps, 500);
         assertEq(claimTipBps, 100);
         assertEq(bribePremiumBps, 300);
         assertEq(quorum, 5_000);
         assertEq(unlockPenaltyBps, 1_000);
-        assertEq(buybackPeriod, 180 days);
         assertEq(liquidationPeriod, 12 hours);
         assertEq(redeemPeriod, 3 days);
     }
@@ -221,7 +211,7 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
         );
-        (,,,, uint16 claimTipBps,,,,,,) = grai.config();
+        (,,, uint16 claimTipBps,,,,,) = grai.config();
         assertEq(claimTipBps, 50);
     }
 

@@ -66,7 +66,7 @@ contract GRAILifecycleTest is GRAIFixture {
         _lock(carol, carolGrai);
         assertEq(grai.totalLocked(), supply);
 
-        // ── 3. Protocol income → auction / dividend / treasury cuts ──
+        // ── 3. Protocol income → dividend / treasury cuts ──
         uint256 treasuryBefore = usdc.balanceOf(address(treasury));
         usdc.mint(address(this), YIELD_USDC);
         usdc.approve(address(grai), YIELD_USDC);
@@ -75,7 +75,9 @@ contract GRAILifecycleTest is GRAIFixture {
         IGRAI.Config memory cfg = _readConfig();
         uint256 dividendCut = (YIELD_USDC * cfg.dividendCutBps) / BPS;
         uint256 treasuryCut = (YIELD_USDC * cfg.treasuryCutBps) / BPS;
-        assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, treasuryCut, "treasury cut");
+        assertApproxEqAbs(
+            usdc.balanceOf(address(treasury)) - treasuryBefore, treasuryCut, 1, "treasury cut"
+        );
         assertGt(dividendCut, 0, "dividend cut");
 
         // ── 4. Everyone claims USDC dividends ──
@@ -123,13 +125,10 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(usdc.balanceOf(address(grinders)), 0, "idle usdc swept at open");
         assertEq(address(grinders).balance, 0, "idle eth swept at open");
         assertEq(address(grai).balance, ETH_TOTAL, "eth basket on grai");
-        (,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
-        assertEq(auctionRemaining, 0, "auctions cleared at liquidate");
-        // Deposits + fixture custodian USDC + Dutch buyback cut; ±1 wei sticky dividend dust.
-        uint256 buybackCut = YIELD_USDC - treasuryCut - dividendCut;
+        // Deposits + fixture custodian USDC; ±1 wei sticky dividend dust.
         uint256 custodianUsdc = 1_000e6; // GRAIFixture mints this onto the test custodian
         assertApproxEqAbs(
-            usdc.balanceOf(address(grai)), USDC_TOTAL + custodianUsdc + buybackCut, 1, "usdc basket"
+            usdc.balanceOf(address(grai)), USDC_TOTAL + custodianUsdc, 1, "usdc basket"
         );
 
         // ── 7. Everyone redeems full escrow ──

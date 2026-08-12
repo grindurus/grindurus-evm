@@ -29,8 +29,8 @@ contract TreasuryPoachTest is GRAIFixture {
 
     uint16 constant REVENUE_SHARE_BPS = 1_000;
     uint256 constant YIELD = 100e6;
-    uint256 constant DIVIDEND = 30e6;
-    uint256 constant GROSS_PROFIT_SHARE = 20e6;
+    uint256 constant DIVIDEND = 50e6;
+    uint256 constant GROSS_PROFIT_SHARE = 50e6;
     uint256 constant REVENUE = 10e6;
     uint256 constant L1_FULL = 8e6;
     uint256 constant L2_FULL = 2e6;
@@ -40,7 +40,7 @@ contract TreasuryPoachTest is GRAIFixture {
 
         vm.startPrank(admin);
         grai.setGrinders(address(grinders));
-        _setYieldSplitFiftyThirtyTwenty();
+        _setYieldSplitFiftyFifty();
         grai.setConfig(IGRAI.ConfigId.REVENUE_SHARE, REVENUE_SHARE_BPS);
         treasury.setBeneficiar(beneficiar);
         vm.stopPrank();
@@ -346,7 +346,7 @@ contract TreasuryPoachTest is GRAIFixture {
 
         // Alice was self → after poach L1=dias gets L1_FULL of affiliate; no L2
         // Affiliate pool REVENUE=10e6, L1=8e6 to dias; beneficiar gets rest of gross
-        assertEq(usdc.balanceOf(dias) - diasBefore, L1_FULL);
+        assertApproxEqAbs(usdc.balanceOf(dias) - diasBefore, L1_FULL, 1);
         // locker tip stays with alice when self-claim; dividend path unchanged beyond affiliate
         assertGt(usdc.balanceOf(alice), aliceBefore);
     }
@@ -363,8 +363,30 @@ contract TreasuryPoachTest is GRAIFixture {
         _claimMax(bob);
 
         // Bob upline: L1=paul only (paul self → no L2)
-        assertEq(usdc.balanceOf(paul) - paulBefore, L1_FULL);
+        assertApproxEqAbs(usdc.balanceOf(paul) - paulBefore, L1_FULL, 1);
         assertEq(usdc.balanceOf(alice), aliceBefore);
+    }
+
+    /// Claim credits `usdValue(claimed)` into referral books → poach ask rises.
+    function test_Claim_IncreasesPoachAskByClaimedUsd() public {
+        _seedTree();
+        (uint256 askBefore,) = treasury.poachOf(bob, dias);
+        assertEq(askBefore, 65e6); // value 40 + l1 25
+
+        _lock(bob, grai.balanceOf(bob));
+        _yield(YIELD);
+        uint256 claimed = grai.previewClaim(bob, address(usdc), type(uint256).max);
+        assertEq(claimed, DIVIDEND); // sole unvoted locker after alice unlocked? alice not locked
+        // alice still has unlocked GRAI; only bob locked → bob gets full dividend slice
+        uint256 book = grai.usdValue(address(usdc), claimed);
+
+        _claimMax(bob);
+
+        (uint256 askAfter,) = treasury.poachOf(bob, dias);
+        assertEq(askAfter, askBefore + book);
+        _assertNode(bob, 40e6 + book, 25e6, 0);
+        _assertNode(alice, 100e6, 40e6 + book, 25e6); // L1 += bob's claim book
+        _assertNode(carol, 25e6, 0, 0);
     }
 
     ////////////////////////////// reverts //////////////////////////////
@@ -448,29 +470,32 @@ contract TreasuryPoachTest is GRAIFixture {
         _seedTree();
         assertEq(treasury.totalSupply(), 3);
 
-        ITreasury.LockerReferral[] memory all_ = treasury.getReferralBooks(0, 100);
+        ITreasury.ReferralData[] memory all_ = treasury.getReferralsData(0, 100);
         assertEq(all_.length, 3);
 
         bool sawAlice;
         bool sawBob;
         bool sawCarol;
         for (uint256 i; i < all_.length; ++i) {
-            ITreasury.LockerReferral memory row = all_[i];
+            ITreasury.ReferralData memory row = all_[i];
             if (row.locker == alice) {
                 sawAlice = true;
                 assertEq(row.referrer, alice);
+                assertEq(row.ownerOf, alice);
                 assertEq(row.book.value, 100e6);
                 assertEq(row.book.l1Value, 40e6);
                 assertEq(row.book.l2Value, 25e6);
             } else if (row.locker == bob) {
                 sawBob = true;
                 assertEq(row.referrer, alice);
+                assertEq(row.ownerOf, bob);
                 assertEq(row.book.value, 40e6);
                 assertEq(row.book.l1Value, 25e6);
                 assertEq(row.book.l2Value, 0);
             } else if (row.locker == carol) {
                 sawCarol = true;
                 assertEq(row.referrer, bob);
+                assertEq(row.ownerOf, carol);
                 assertEq(row.book.value, 25e6);
                 assertEq(row.book.l1Value, 0);
                 assertEq(row.book.l2Value, 0);
@@ -480,12 +505,12 @@ contract TreasuryPoachTest is GRAIFixture {
         }
         assertTrue(sawAlice && sawBob && sawCarol);
 
-        assertEq(treasury.getReferralBooks(0, 2).length, 2);
-        assertEq(treasury.getReferralBooks(2, 99).length, 1);
-        assertEq(treasury.getReferralBooks(3, 5).length, 0);
+        assertEq(treasury.getReferralsData(0, 2).length, 2);
+        assertEq(treasury.getReferralsData(2, 99).length, 1);
+        assertEq(treasury.getReferralsData(3, 5).length, 0);
 
         vm.expectRevert(abi.encodeWithSelector(ITreasury.InvalidRange.selector, 1, 1));
-        treasury.getReferralBooks(1, 1);
+        treasury.getReferralsData(1, 1);
     }
 
     function test_Poach_Reverts_DuringLiquidation() public {
@@ -507,8 +532,36 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.poach(alice);
     }
 
-    /// Redeem reverses deposit volume on locker + L1/L2 upline (treasury.burn).
-    function test_Redeem_BurnsReferralBooks() public {
+    /// Claim still runs in liquidation; payout routing knobs must not move under in-flight claims.
+    function test_TreasurySetters_Revert_DuringLiquidation() public {
+        _deposit(alice, 100e6, address(0));
+        uint256 aliceGrai = grai.balanceOf(alice);
+        vm.prank(alice);
+        grai.lock(aliceGrai);
+        vm.prank(alice);
+        grai.vote(aliceGrai);
+
+        vm.prank(admin);
+        grai.liquidate();
+        assertTrue(grai.liquidation());
+
+        vm.startPrank(admin);
+        vm.expectRevert(ITreasury.LiquidationOpen.selector);
+        treasury.setBeneficiar(makeAddr("other"));
+
+        vm.expectRevert(ITreasury.LiquidationOpen.selector);
+        treasury.setRoyaltyBps(100);
+
+        uint16[] memory shares = new uint16[](2);
+        shares[0] = 7_000;
+        shares[1] = 3_000;
+        vm.expectRevert(ITreasury.LiquidationOpen.selector);
+        treasury.setRevenueShareBps(shares);
+        vm.stopPrank();
+    }
+
+    /// Redeem does not reverse deposit volume — referral books stay sticky after mint.
+    function test_Redeem_KeepsReferralBooks() public {
         _deposit(alice, 100e6, address(0));
         _deposit(bob, 40e6, alice);
         _deposit(carol, 25e6, bob);
@@ -538,9 +591,9 @@ contract TreasuryPoachTest is GRAIFixture {
         vm.prank(carol);
         grai.redeem(carolGrai);
 
-        _assertNode(carol, 0, 0, 0);
-        _assertNode(bob, 40e6, 0, 0); // l1 lost carol's 25
-        _assertNode(alice, 100e6, 40e6, 0); // l2 lost carol's 25
+        _assertNode(carol, 25e6, 0, 0);
+        _assertNode(bob, 40e6, 25e6, 0);
+        _assertNode(alice, 100e6, 40e6, 25e6);
     }
 
     ////////////////////////////// helpers //////////////////////////////

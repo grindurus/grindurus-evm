@@ -30,7 +30,7 @@ interface IPriceOracleRouter {
         address source;
         uint8 decimals;
         bytes32 data;
-        /// @notice When true, blocks `deposit` for this asset only (not buyback / distribute / claim).
+        /// @notice When true, blocks `deposit` for this asset only (not distribute / claim).
         bool paused;
         int256 storedPrice;
         uint256 storedUpdatedAt;

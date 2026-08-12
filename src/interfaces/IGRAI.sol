@@ -14,7 +14,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error BpsTooHigh();
     error NotPaused();
     error Paused();
-    error AuctionNotFound();
     error ZeroAddress();
     /// @notice Amount is zero or otherwise out of range (balance/allowance/supply, min>max, payment bounds).
     error InvalidAmount();
@@ -34,15 +33,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice `renounceOwnership` is disabled — owner is required for 2-of-2 liquidation consent.
     error OwnershipRenounceDisabled();
     /// @notice Field selector for `setConfig`.
-    /// @dev Yield cuts (`buybackCutBps` / `dividendCutBps` / `treasuryCutBps`) are fixed at
-    ///      `initialize` and cannot be changed via `setConfig`. Still blocked while liquidation is open.
+    /// @dev Yield cuts (`dividendCutBps` / `treasuryCutBps`) are fixed at `initialize` and cannot
+    ///      be changed via `setConfig`. Still blocked while liquidation is open.
     enum ConfigId {
         REVENUE_SHARE,
         CLAIM_TIP,
         BRIBE_PREMIUM,
         QUORUM,
         UNLOCK_PENALTY,
-        BUYBACK_PERIOD,
         LIQUIDATION_PERIOD,
         REDEEM_PERIOD
     }
@@ -56,22 +54,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 accShare;
         /// @notice Tokens reserved for locker claims (excluded from redeem / resettle).
         uint256 totalClaimable;
-    }
-
-    /// @notice One Dutch auction lot.
-    /// @dev `remaining`/`initial` = sold asset quantity; `maxPayment`/`minPayment` = full-lot GRAI ask
-    ///      (mint-price max → floor over `period`). Unit USD/GRAI ask = `maxPayment * 10**decimals / initial`.
-    struct DutchAuction {
-        address asset;
-        uint48 startTime;
-        /// @notice Snapshot of `config.buybackPeriod` at last `_place`.
-        uint32 period;
-        uint256 remaining;
-        uint256 initial;
-        /// @notice Full-lot Dutch start: GRAI ask at listing (mint price).
-        uint256 maxPayment;
-        /// @notice Full-lot Dutch end: GRAI ask after `period` (floor at `BPS - bribePremiumBps`).
-        uint256 minPayment;
     }
 
     /// @notice Per-account, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
@@ -103,8 +85,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Yield split, bribe premium, liquidation quorum, unlock fee, and timing.
     struct Config {
-        /// @notice Share of distributed yield / bribe premium listed for GRAI buyback, in bps.
-        uint16 buybackCutBps;
         /// @notice Share of distributed yield / bribe premium paid as dividends on unvoted locked GRAI, in bps.
         uint16 dividendCutBps;
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
@@ -114,10 +94,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         ///      `grossProfitShare - allocated` → `Treasury.beneficiar` as `netProfitShare`
         ///      (`grossProfitShare = claimed * treasuryCutBps / dividendCutBps`).
         uint16 revenueShareBps;
-        /// @notice Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
+        /// @notice Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 5%).
         uint16 claimTipBps;
-        /// @notice Slope scale for dynamic bribe ask adj, in bps of book value per half-quorum of
-        ///         vote-share (also Dutch buyback max discount).
+        /// @notice Slope scale for dynamic bribe ask adj, in bps of book value per half-quorum of vote-share.
         /// @dev Ask scales linearly with vote-share vs half-quorum: `|adj| = bribePremiumBps` at 0
         ///      votes and at quorum; par at half quorum; above quorum discount `adj` may exceed
         ///      `bribePremiumBps` (uncapped until `adj ≥ BPS`). Premium splits half the premium to
@@ -127,9 +106,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 quorumBps;
         /// @notice Flat unlock penalty in bps of unlocked GRAI (every unlock; no time decay).
         uint16 unlockPenaltyBps;
-        /// @notice Buyback Dutch duration from `maxPayment` to `minPayment`.
-        /// @dev `minPayment = maxPayment * (BPS - bribePremiumBps) / BPS` (max discount = premium).
-        uint32 buybackPeriod;
         /// @notice Delay after liquidation opens before `redeem` (claim) is allowed.
         /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
         ///      where they sit as idle inventory for the subsequent pro-rata `redeem` basket.
@@ -144,12 +120,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         address indexed from,
         address indexed asset,
         uint256 yieldAmount,
-        uint256 buybackShare,
         uint256 dividendShare,
         uint256 treasuryShare
     );
-    event AuctionUpdate(address indexed asset, uint256 remaining, uint256 maxPayment, uint256 startTime);
-    event Buyback(address indexed buyer, address indexed asset, uint256 graiIn, uint256 amountOut);
     event Redeem(address indexed account, uint256 graiAmount, uint256 depositValue);
     event Lock(address indexed account, uint256 amount, uint256 totalLocked);
     event Unlock(address indexed account, uint256 amount, uint256 totalLocked);
@@ -169,7 +142,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         external
         view
         returns (
-            uint16 buybackCutBps,
             uint16 dividendCutBps,
             uint16 treasuryCutBps,
             uint16 revenueShareBps,
@@ -177,7 +149,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 bribePremiumBps,
             uint16 quorumBps,
             uint16 unlockPenaltyBps,
-            uint32 buybackPeriod,
             uint32 liquidationPeriod,
             uint32 redeemPeriod
         );
@@ -196,22 +167,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         view
         returns (uint256 debt, uint256 claimable, uint256 yielded);
 
-    function auctions(address asset)
-        external
-        view
-        returns (
-            address asset_,
-            uint48 startTime,
-            uint32 period,
-            uint256 remaining,
-            uint256 initial,
-            uint256 maxPayment,
-            uint256 minPayment
-        );
-
     /// @notice Listed assets in `assetList` order.
-    /// @dev One `DutchAuction` per listed asset; `startTime == 0` means no open auction (`asset` is still set).
-    function getAssets() external view returns (DutchAuction[] memory list);
+    function getAssets() external view returns (address[] memory list);
 
     function escrows(address locker)
         external
@@ -282,23 +239,12 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
-    /// @notice Dutch GRAI in and asset out (capped to auction remaining) at `timestamp`.
-    function previewBuyback(address asset, uint256 amount, uint256 timestamp)
-        external
-        view
-        returns (uint256 graiIn, uint256 amountOut);
-
     /// @notice Mint GRAI against deposited `asset`. If `lock`, escrow the minted `graiOut` for
     ///         dividends in the same tx. Sticky affiliate bind via `referrer` (once; `address(0)` → self).
     function deposit(address asset, uint256 amount, bool lock, address referrer)
         external
         payable
         returns (uint256 graiOut, uint256 depositValue);
-
-    /// @notice Fill a Dutch lot: pay GRAI ask, receive `asset`; `graiIn` is locked+voted on the buyer.
-    ///         Reverts if `graiIn == 0` or `amountOut == 0` (no free fills). Partial fills
-    ///         ceil-pay the pro-rata Dutch ask so chunked underpay cannot clear below ask.
-    function buyback(address asset, uint256 amount) external;
 
     function distribute(address asset, uint256 yieldAmount) external payable;
 
@@ -323,15 +269,18 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Accrue residual dividends and return `graiAmount` from the active lock to the wallet.
     ///         Takes a flat unlock fee (`unlockPenaltyBps` of `graiAmount`); the penalty GRAI stays on
-    ///         GRAI as orphan/dead for the next `buyback` scavenge (not sent to treasury).
-    ///         While fee > 0, unlocks below `ceil(BPS / unlockPenaltyBps)` revert (including full-escrow dust).
-    ///         Yield dividends are claimed separately via `claim` / `claimAll`.
+    ///         GRAI as orphan/dead (scooped to the liquidation opener; not sent to treasury).
+    ///         While fee > 0, unlocks below `ceil(BPS / unlockPenaltyBps)` revert — including
+    ///         full-escrow exit and any remainder after a legal partial unlock. Intentional: top up,
+    ///         set fee to 0, or exit via liquidation `redeem`. Yield claims are separate
+    ///         (`claim` / `claimAll`).
     function unlock(uint256 graiAmount) external;
 
     /// @notice Preview unlock of `graiAmount`: `unlockAmount` GRAI returned to wallet and `penalty` dead
-    ///         on GRAI (`penalty = graiAmount * unlockPenaltyBps / BPS`). Reverts if
+    ///         on GRAI (`penalty = ceil(graiAmount * unlockPenaltyBps / BPS)`). Reverts if
     ///         `graiAmount > escrows[account].locked`, or while fee > 0 if
-    ///         `graiAmount < ceil(BPS / unlockPenaltyBps)` (same rules as `unlock`).
+    ///         `graiAmount < ceil(BPS / unlockPenaltyBps)` — same floor for full-escrow exit
+    ///         (remainder below dust cannot `unlock` until lock grows, fee is 0, or liquidation redeem).
     function previewUnlock(address account, uint256 graiAmount)
         external
         view
@@ -350,10 +299,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Claim yield dividends for `asset` accrued to `locker`'s active lock; pays tip to
     ///         `msg.sender`, remainder to `locker`. Claim-time treasury income is split via
-    ///         `treasury.distribute(asset, locker, grossProfitShare, revenueShare)` resolves
-    ///         sticky referrers and pays them; remainder (`netProfitShare`) → `beneficiar`.
-    ///         `type(uint256).max` claims the full accrued
-    ///         balance; otherwise `min(amount, claimable)`.
+    ///         `treasury.distribute(asset, locker, grossProfitShare, revenueShare, claimedValue)`
+    ///         credits poach books for claimed USD, resolves sticky referrers and pays them;
+    ///         remainder (`netProfitShare`) → `beneficiar`. `type(uint256).max` claims the full
+    ///         accrued balance; otherwise `min(amount, claimable)`.
     function claim(address locker, address asset, uint256 amount) external returns (uint256 claimed);
 
     /// @notice Claim yield dividends for every listed asset accrued to `locker`'s lock.

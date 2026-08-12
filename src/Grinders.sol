@@ -317,15 +317,15 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         if (fromId >= toId) {
             fromId = type(uint256).max;
             toId = type(uint256).max;
-            IGRAI.DutchAuction[] memory assets;
-            try IGRAI(grai_).getAssets() returns (IGRAI.DutchAuction[] memory list) {
+            address[] memory assets;
+            try IGRAI(grai_).getAssets() returns (address[] memory list) {
                 assets = list;
             } catch {
                 return;
             }
             uint256 len = assets.length;
             for (uint256 i; i < len;) {
-                address asset = assets[i].asset;
+                address asset = assets[i];
                 _liquidate(grai_, asset, balance(asset));
                 unchecked { ++i; }
             }

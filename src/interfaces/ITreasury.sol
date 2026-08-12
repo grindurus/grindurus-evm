@@ -10,17 +10,20 @@ interface ITreasury {
     error NotGraiOwner();
     error AlreadyBound();
     error ReferralLoop();
+    /// @notice Sticky referrer / poach target is a protocol sink (GRAI, Treasury, WETH).
+    error InvalidReferrer();
     error BpsTooHigh();
     error InvalidShares();
     error InvalidAmount();
     error TokenNonexistent(uint256 tokenId);
     error InvalidRange(uint256 fromId, uint256 toId);
+    /// @notice GRAI liquidation is open — payout routing knobs are frozen until `resettle`.
+    error LiquidationOpen();
 
     /// @notice Claim-time payout to a referrer or `beneficiar`.
     event Distribute(address indexed asset, address indexed to, uint256 amount);
 
     event Mint(address indexed locker, address indexed referrer, uint256 indexed tokenId);
-    event Burn(address indexed locker, uint256 value);
     event Rebind(address indexed locker, address indexed from, address indexed to, uint256 tokenId);
     event RoyaltyBpsUpdate(uint16 royaltyBps);
     event RevenueShareUpdate(uint16[] shares);
@@ -38,9 +41,11 @@ interface ITreasury {
     }
 
     /// @notice One bound locker row for frontend pagination over ERC-721 enumerable order.
-    struct LockerReferral {
+    /// @dev `referrer` = sticky upline; `ownerOf` = cashflow NFT holder.
+    struct ReferralData {
         address locker;
         address referrer;
+        address ownerOf;
         ReferralBook book;
     }
 
@@ -66,8 +71,9 @@ interface ITreasury {
         returns (uint256 value, uint256 l1Value, uint256 l2Value, address referrer);
 
     /// @notice Bound lockers in ERC-721 enumerable order for `[fromId, toId)` (`totalSupply` clipped).
-    /// @dev `tokenByIndex` → `locker = address(uint160(tokenId))`, sticky `referrer`, plus `referralBooks`.
-    function getReferralBooks(uint256 fromId, uint256 toId) external view returns (LockerReferral[] memory list);
+    /// @dev `tokenByIndex` → `locker = address(uint160(tokenId))`, sticky `referrer`, cashflow
+    ///      `ownerOf`, plus `referralBooks`.
+    function getReferralsData(uint256 fromId, uint256 toId) external view returns (ReferralData[] memory list);
 
     /// @notice Poach quote for `locker`: `value + l1Value` ask and current sticky referrer.
     /// @dev Reverts if unbound or `account` is already the referrer.
@@ -86,31 +92,35 @@ interface ITreasury {
 
     function initialize(address grai_) external;
 
+    /// @notice Retarget the protocol fee recipient. Reverts while GRAI liquidation is open.
     function setBeneficiar(address beneficiar_) external;
 
+    /// @notice Set ERC-2981 royalty bps. Reverts while GRAI liquidation is open.
     function setRoyaltyBps(uint16 royaltyBps_) external;
 
-    /// @notice Set per-level revenue-share weights in bps; `sum(shares) == 10_000`.
+    /// @notice Set L1/L2 revenue-share weights in bps; `shares.length == 2` and `sum == 10_000`.
+    ///         Reverts while GRAI liquidation is open.
     function setRevenueShareBps(uint16[] memory shares) external;
 
     /// @notice GRAI-only: sticky-bind `referrer`, mint cashflow NFT to `locker` on first call;
-    ///         every call credits deposit `value` to `locker` and L1/L2 upline books.
+    ///         every call credits deposit book `value` to `locker` and L1/L2 upline books.
+    /// @dev Volumes are sticky — not reversed on `GRAI.redeem`. Claim-time book credit is in `distribute`.
     function mint(address locker, address referrer, uint256 value) external returns (uint256 tokenId);
 
-    /// @notice GRAI-only: reverse of `mint` volume credits on `redeem` (same L1/L2 walk).
-    /// @dev Debits `min(value, locker.value)` so NAV-raised redeem slices cannot underflow books.
-    ///      Upline L1/L2 use saturating subs. Does not change sticky `referrer` or burn the NFT.
-    function burn(address locker, uint256 value) external;
-
-    /// @notice GRAI-only: rewrite sticky `referrer` to `to` and shift L1/L2 books (after GRAI `poach`).
+    /// @notice GRAI-only: rewrite sticky `referrer` to `newReferrer` and shift L1/L2 books (after GRAI `poach`).
     /// @dev Does not transfer the cashflow NFT.
-    function rebind(address locker, address to) external;
+    function rebind(address locker, address newReferrer) external;
 
-    /// @notice Pay claim-time treasury split from inventory.
-    /// @dev No-op if balance < `grossProfitShare`. Soft-fail per recipient; unpaid shares roll into
-    ///      `beneficiar` as `netProfitShare` (`grossProfitShare - paid`).
-    function distribute(address asset, address locker, uint256 grossProfitShare, uint256 revenueShare)
-        external;
+    /// @notice Pay claim-time treasury split from inventory; credit poach books for `claimedValue`.
+    /// @dev Credits `claimedValue` (book USD) into referral books first. No-op payouts if balance
+    ///      < `grossProfitShare`. Soft-fail per recipient; unpaid shares roll into `beneficiar`.
+    function distribute(
+        address asset,
+        address locker,
+        uint256 grossProfitShare,
+        uint256 revenueShare,
+        uint256 claimedValue
+    ) external;
 
     /// @notice Collection metadata (ERC-1046).
     function tokenURI() external pure returns (string memory);

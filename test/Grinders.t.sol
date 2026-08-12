@@ -30,7 +30,7 @@ contract GrindersTest is GRAIFixture {
     function test_DistributePaysProtocolProfitToOwner() public {
         _setSettlementAsset(address(usdc));
         vm.startPrank(admin);
-        _setYieldSplitFiftyThirtyTwenty();
+        _setYieldSplitFiftyFifty();
         address custodyWallet = grinders.mint(cowKind, grinder, address(usdc), address(weth));
         vm.stopPrank();
 
@@ -44,10 +44,9 @@ contract GrindersTest is GRAIFixture {
         vm.prank(admin);
         grinders.distribute(custodyWallet, address(usdc), 20e6);
 
-        assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, 4e6); // 20% treasury
-        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore + 16e6); // 50% auction + 30% dividends → auction
-        (,,, uint256 auctionRemaining,,,) = grai.auctions(address(usdc));
-        assertEq(auctionRemaining, 16e6);
+        // No eligible locks → full dividend cut spills to treasury with the treasury cut.
+        assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, 20e6);
+        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore);
         assertEq(grinders.balance(address(usdc)), 0);
     }
 
