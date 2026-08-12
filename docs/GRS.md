@@ -10,7 +10,7 @@ Related: fund-share mechanics `[GRAI.md](GRAI.md)`, custodian layer `[GRINDERS.m
 
 ## 1. Executive summary
 
-**GRS** is the **protocol token**: fixed supply, governance over admin surfaces, and the economic claim on **protocol fee income** (the slice of yield that does not go to GRAI lockers or Dutch buybacks).
+**GRS** is the **protocol token**: fixed supply, governance over admin surfaces, and the economic claim on **protocol fee income** (the treasury slice of yield that does not go to GRAI lockers).
 
 **GRAI** and **GRS** are deliberately separate:
 
@@ -26,17 +26,16 @@ yield on custodians
         │
         ▼
 GRAI.distribute(yield)
-   ├─ buybackCutBps   (~33.33%) → Dutch auction → buyback (GRAI lock+vote on buyer)
-   ├─ dividendCutBps  (~33.34%) → unvoted lockers (claim)
-   └─ treasuryCutBps  (~33.33%) → Treasury inventory
+   ├─ dividendCutBps  (50%) → unvoted lockers (claim); else → treasury
+   └─ treasuryCutBps  (50%) → Treasury inventory
                                       │
-                                      ├─ revenueShare (~3.33% of yield) → affiliates (inventory on claim)
+                                      ├─ revenueShare (5% of yield) → affiliates (inventory on claim)
                                       └─ remainder → Treasury.beneficiar → admin income + GRS/ETH buy → GRS to affiliates
 ```
 
 Today `Treasury.beneficiar` is a single address set by `GRAI.owner()`. At GRS launch, `**beneficiar` is intended to migrate to a GRS-governed vault** (or streaming contract) so fee flow accrues to token holders / stakers instead of a static multisig wallet.
 
-**`Treasury.beneficiar`** splits ~30%: **admin income** + **GRS/ETH** market buy → GRS to **affiliates**. **revenueShare** (~3.33%) is still inventory on locker claim.
+**`Treasury.beneficiar`** splits ~30%: **admin income** + **GRS/ETH** market buy → GRS to **affiliates**. **revenueShare** (5%) is still inventory on locker claim.
 
 ---
 
@@ -316,7 +315,7 @@ At TGE **5% of supply (50M GRS)** from this bucket enters circulation. Remaining
 | **Legal & compliance**       | Entity setup, token / securities classification memos, Terms of Service & privacy policy, regulatory counsel, trademark                              | Milestone-driven (TGE, new jurisdictions) |
 | **Listings & market access** | CEX / aggregator listing fees, market-data subscriptions, secondary liquidity programs beyond the **Liquidity Providing & Market Makers** TGE bucket | As needed                                 |
 | **Insurance & risk**         | Protocol cover (e.g. Nexus Mutual–style), incident-response retainer, user-protection fund                                                           | Optional; high bar for large allocations  |
-| **GRS buybacks**             | Open-market repurchase or on-chain buyback programs for **GRS** (distinct from GRAI Dutch buyback auctions in `[GRAI.md](GRAI.md)` §5)               | Discretionary                             |
+| **GRS buybacks**             | Open-market repurchase or on-chain buyback programs for **GRS**                                                                                     | Discretionary                             |
 | **Operations & infra**       | Indexers, RPC, subgraphs, security tooling, analytics — **not** a substitute for the **Team** vesting schedule                                       | Ongoing                                   |
 | **Strategic reserve**        | Chain expansion collateral, partnership investments, treasury diversification (stables / ETH)                                                        | Exceptional votes only                    |
 
@@ -388,7 +387,7 @@ Protocol fee path under default GRAI config:
 
 ```text
 treasuryCutBps  = 33.33% of gross yield
-revenueShareBps =  3.33% of gross yield → affiliates (paid on claim from Treasury inventory)
+revenueShareBps =  5% of gross yield → affiliates (paid on claim from Treasury inventory)
 beneficiar net  ≈ 30.00% of gross yield   → intended GRS stakers / vault
 ```
 
@@ -437,12 +436,12 @@ Current on-chain defaults (August 2026) that GRS governance inherits:
 | Parameter         | Default                     | GRS relevance                       |
 | ----------------- | --------------------------- | ----------------------------------- |
 | `treasuryCutBps`  | 33_33                       | Size of fee pool routed to Treasury |
-| `revenueShareBps` | 3_33                        | Affiliate budget (≤ treasury cut)   |
+| `revenueShareBps` | 5_00                        | Affiliate budget (≤ treasury cut)   |
 | Treasury L1/L2    | 80% / 20%                   | Split inside affiliate pool         |
 | `beneficiar`      | unset → `address(treasury)` | Fee sink until GRS FeeVault wired   |
 
 
-Yield cuts (`buyback` / `dividend` / `treasury`) are **fixed at GRAI** `initialize` — changing them requires a GRAI implementation upgrade, itself subject to GRS governance after migration.
+Yield cuts (`dividend` / `treasury`) are **fixed at GRAI** `initialize` — changing them requires a GRAI implementation upgrade, itself subject to GRS governance after migration.
 
 ---
 

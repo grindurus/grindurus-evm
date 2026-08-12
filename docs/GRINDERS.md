@@ -46,7 +46,7 @@ Grinders itself does **not** run a yield strategy. Income is produced by **custo
 2. Grinders **owner** calls `allocate(custodian, asset, amount)` → moves reserve inventory into a registered custodian wallet; emits `Allocate`.
 3. Custodian NFT **owner** trades (kind-specific): swaps, CoW orders, LiFi routes, etc. Balances of `baseAsset` / `quoteAsset` (and optionally ETH) change on the wallet.
 4. When booking **profit** for the protocol:
-   - Grinders owner → `Grinders.distribute(custodian, asset, yieldAmount)` → `Custodian.distribute` → `GRAI.distribute` → cuts (Dutch auction / unvoted dividends / treasury).
+   - Grinders owner → `Grinders.distribute(custodian, asset, yieldAmount)` → `Custodian.distribute` → `GRAI.distribute` → cuts (unvoted dividends / treasury).
 5. When returning **working capital** (not yield accounting):
    - Grinders owner → `Grinders.deallocate(custodian, asset, amount)` → `Custodian.deallocate` → assets back to the Grinders reserve; emits `Deallocate`.
 
@@ -169,10 +169,10 @@ When Grinders owner routes yield through `Custodian.distribute` → `GRAI.distri
 ```text
 treasuryCut  = received * treasuryCutBps / BPS
 dividendCut  = received * dividendCutBps / BPS
-buybackCut   = received - treasuryCut - dividendCut
+dividendCut  = received - treasuryCut
 ```
 
-Defaults ≈ **33.33% / 33.34% / 33.33%** → Dutch buyback lot / unvoted-locker dividends / treasury. Full cut rules, auctions, and claims: [`TOKENOMICS.md`](TOKENOMICS.md) §5.
+Defaults **50% / 50%** → unvoted-locker dividends / treasury. Full cut rules and claims: [`GRAI.md`](GRAI.md) §5.
 
 Analytics: `positions[msg.sender][asset].yielded` on GRAI accumulates credited distribute amounts (per caller — here the custodian wallet).
 
