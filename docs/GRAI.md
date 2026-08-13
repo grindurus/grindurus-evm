@@ -1,5 +1,7 @@
 # GRAI Tokenomics — Protocol Overview
 
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **NOT RECOMMENDED**, **MAY**, and **OPTIONAL** in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174).
+
 Report derived from on-chain logic in `[GRAI.sol](../src/GRAI.sol)`, `[Treasury.sol](../src/Treasury.sol)`, and `[Grinders.sol](../src/Grinders.sol)` (EVM implementation, July 2026). Integration happy path: `[test/GRAILifecycle.t.sol](../test/GRAILifecycle.t.sol)`. Affiliate / claim-time split: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`. Poach / tree book: `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`.
 
 ---
@@ -43,7 +45,40 @@ If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is t
 
 ---
 
-## 2. Actors and contracts
+## 2. Price Oracle Lifecycle
+
+The price oracle (`PriceOracleRouter` inside GRAI) is a **fundamental component of deposit valuation**. Every `deposit` mints GRAI from `usdValue(asset, received)` — book USD read from `feeds[asset]`. The same mark prices bribes (`settlementAsset`), claim-time `claimedValue` that grows locker books, and any other USD path. **No listed feed → no mint.** GRAI itself (`address(this)`) cannot be listed.
+
+**Listed** means `feeds[asset].feedType != NONE`. That writes the oracle and appends `asset` to `assetList` (ETH = `address(0)`). Owner listing is a single call: `setFeed(asset, feed)`.
+
+### 2.1 `setFeed` waterfall
+
+State is `feeds[asset].feedType` + `paused`:
+
+
+| Current state | What the call does |
+| ------------- | ------------------ |
+| Not listed (`NONE`) | `_writeFeed` then `_addAsset` — list |
+| Listed, **not** paused | Only `paused` is written; oracle fields are ignored |
+| Listed, paused, `feedType != NONE` | Full oracle replace (may set `paused: false` in the same tx) |
+| Listed, paused, `feedType == NONE` | Delist (`_removeAsset`; blocked while liquidation is open) |
+
+
+`_writeFeed` requires a live feed: type not `NONE`, `source != 0`, `maxStaleness > 0`, `feed.asset == asset`. Types: `CHAINLINK` (`source` = aggregator), `PYTH` (`data` = price id), `CUSTOM` (`data` = selector; `source` returns `(price, priceDecimals, updatedAt)`).
+
+### 2.2 Pause vs delist
+
+`feeds[asset].paused` gates **`deposit` only** — not `distribute`, `claim`, or liquidation redeem. Liquidation itself never rewrites per-asset pause flags.
+
+Delist also requires the asset empty on GRAI: `_balance(asset) == 0` and `totalClaimable == 0`. Swap-remove from `assetList`, then `delete assets[asset]` and `delete feeds[asset]`.
+
+**Replace an oracle while deposits stay blocked:** (1) `setFeed` with `paused: true`; (2) `setFeed` with the new oracle fields and `paused` true or false. **Delist:** pause → drain balance → wait until dividends are claimed (`totalClaimable == 0`) → `setFeed` with `feedType: NONE`.
+
+Listed collateral is assumed **non-rebasing** (balance only changes via GRAI `_pay` / `_withdraw`). `settlementAsset` must already be listed (and non-FoT); switching it does not require pause.
+
+---
+
+## 3. Actors and contracts
 
 
 | Actor / contract       | Role                                                                                                  |
@@ -67,7 +102,7 @@ Source: `[protocol.svg](protocol.svg)` · PNG: `[protocol.png](protocol.png)`.
 
 Native ETH = `address(0)`. WETH is the fallback when ETH pushes are rejected.
 
-`paused` on an asset gates `deposit` **only** (not distribute / claim). Listing `address(this)` as an asset is a no-op (escrowed GRAI must not enter the redeem basket). Listed collateral is assumed **non-rebasing** (balance only changes via GRAI `_pay` / `_withdraw`); rebasing tokens are out of scope.
+`paused` on an asset gates `deposit` **only** (not distribute / claim) — oracle list / pause / delist is §2. Listing `address(this)` as an asset is a no-op (escrowed GRAI must not enter the redeem basket).
 
 ---
 
@@ -382,7 +417,7 @@ OTC sale of Alice’s NFT does **not** change who receives the next `poach(Bob)`
 
 ---
 
-## 3. Value flows (high level)
+## 4. Value flows (high level)
 
 ```
                     ┌──────────────────────────────────────────┐
@@ -420,7 +455,7 @@ OTC sale of Alice’s NFT does **not** change who receives the next `poach(Bob)`
 
 ---
 
-## 4. GRAI share mechanics
+## 5. GRAI share mechanics
 
 ### 4.1 Deposit
 
@@ -434,6 +469,7 @@ if (lock) lock(graiOut)
 
 - Assets go to **Grinders**.
 - Bootstrap mint when `totalValue == 0` (typically empty supply); yield on GRAI is excluded from the mint rate.
+- `usdValue` is the listed oracle mark (§2) — no feed, no mint.
 - Reverts if unknown / paused / liquidation open / zero value or shares.
 - FoT-safe on ERC20 pulls (`_pay` credited delta).
 - `paused` blocks deposits only.
@@ -483,7 +519,7 @@ Liquid wallet GRAI never earns yield. Fully voted escrow (`locked == voted`) ear
 
 ---
 
-## 5. Yield: `distribute` → dividend / treasury
+## 6. Yield: `distribute` → dividend / treasury
 
 ### 5.1 Cuts
 
@@ -524,7 +560,7 @@ Example: Alice locks 100, votes 40 → unvoted 60. Bob locks 100 unvoted → unv
 
 ---
 
-## 6. Settlement asset (`settlementAsset`)
+## 7. Settlement asset (`settlementAsset`)
 
 Used for bribe settlement (dynamic ask).
 
@@ -534,7 +570,7 @@ Switching requires a feed; open votes/auctions do not block. Setting `settlement
 
 ---
 
-## 7. Lock, vote, bribe
+## 8. Lock, vote, bribe
 
 ### 8.1 Lock / unlock
 
@@ -664,7 +700,7 @@ Briber receives the full requested `graiAmount` GRAI to **wallet**. Voter escrow
 
 ---
 
-## 8. Liquidation cycle
+## 9. Liquidation cycle
 
 ### 9.1 Open (`liquidate`, **2-of-2**: quorum **and** owner confirmation)
 
@@ -731,7 +767,7 @@ Permissionless after `liquidationPeriod + redeemPeriod`:
 
 ---
 
-## 9. Treasury and affiliates
+## 10. Treasury and affiliates
 
 `[Treasury.sol](../src/Treasury.sol)` is the fee sink for `treasuryCutBps` (yield / bribe carve-outs) and the referral layer. Affiliates do **not** cut the locker’s dividend payout — they are paid from Treasury inventory when the locker `claim`s.
 
@@ -902,7 +938,7 @@ Tests: `[test/TreasuryReferrals.t.sol](../test/TreasuryReferrals.t.sol)`, `[test
 
 ---
 
-## 10. Poach (buy the referrer link)
+## 11. Poach (buy the referrer link)
 
 Anyone may buy a bound locker’s **upline seat** for **GRAI**, paying the current `referrerOf(locker)`. This rewrites the referral tree; it does **not** move the cashflow NFT.
 
@@ -1069,7 +1105,7 @@ Tests: `[test/TreasuryPoach.t.sol](../test/TreasuryPoach.t.sol)`, `[test/boundar
 
 ---
 
-## 12. Grinders layer
+## 13. Grinders layer
 
 Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
@@ -1086,7 +1122,7 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 
 ---
 
-## 13. Protocol configuration (defaults)
+## 14. Protocol configuration (defaults)
 
 
 | Parameter           | Default         | Meaning                                                |
@@ -1110,7 +1146,7 @@ Treasury defaults: L1/L2 `revenueShareBps = [8000, 2000]` (fixed depth 2; `setRe
 
 ---
 
-## 14. Access control
+## 15. Access control
 
 
 | Role                     | GRAI                                                                                                                                                                  |
@@ -1124,7 +1160,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 
 ---
 
-## 15. Economic incentives
+## 16. Economic incentives
 
 
 | Participant               | Incentive                                           |
@@ -1142,7 +1178,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 
 ---
 
-## 16. Key invariants
+## 17. Key invariants
 
 1. **Book** — `totalValue` moves on deposit and redeem burn — not on yield/`revive` NAV.
 2. **Dividends = unvoted lock** — index uses `totalLocked − totalVoted`; account base is `amount − voted`.
@@ -1164,7 +1200,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 
 ---
 
-## 17. Instruction reference
+## 18. Instruction reference
 
 ### GRAI
 
@@ -1181,6 +1217,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `liquidate`                | Owner / anyone      | 2-of-2 open; on open send orphan GRAI to opener                   |
 | `revive`                 | Anyone              | Closes cycle; fund restarts                                       |
 | `setConfig`                | Owner               | Blocked while open                                                |
+| `setFeed`                  | Owner               | List / pause / replace oracle / delist (§2); delist blocked while open |
 
 
 ### Treasury

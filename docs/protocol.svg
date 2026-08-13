@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1040" width="1200" height="1040" role="img" aria-label="Grindurus protocol diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1276 1240" width="1276" height="1240" role="img" aria-label="Grindurus protocol diagram">
   <defs>
     <marker id="arrow" markerUnits="userSpaceOnUse" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="10" markerHeight="8" orient="auto">
       <path d="M1,1 L11,5 L1,9 z" fill="#1f2937"/>
@@ -32,8 +32,8 @@
     </style>
   </defs>
 
-  <rect width="1200" height="1040" fill="#f8fafc" rx="12"/>
-  <rect x="0.5" y="0.5" width="1199" height="1039" fill="none" stroke="#e2e8f0" rx="12"/>
+  <rect width="1276" height="1240" fill="#f8fafc" rx="12"/>
+  <rect x="0.5" y="0.5" width="1275" height="1239" fill="none" stroke="#e2e8f0" rx="12"/>
 
   <!-- ===== ROW 1: Voter / Briber / Grinders ===== -->
   <g filter="url(#shadow)">
@@ -45,177 +45,180 @@
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="430" y="28" width="340" height="80" rx="28" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
-    <use href="#human" x="446" y="46" fill="#c2410c"/>
-    <text x="490" y="52" class="ah">Briber</text>
-    <text x="490" y="74" class="am">bribe()</text>
-    <text x="490" y="90" class="ap">apply voters intent for exit</text>
+    <rect x="468" y="28" width="340" height="80" rx="28" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+    <use href="#human" x="484" y="46" fill="#c2410c"/>
+    <text x="528" y="52" class="ah">Briber</text>
+    <text x="528" y="74" class="am">bribe()</text>
+    <text x="528" y="90" class="ap">apply voters intent for exit</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="820" y="28" width="340" height="80" rx="6" fill="#4f46e5"/>
-    <text x="836" y="54" class="h">Grinders</text>
-    <text x="836" y="74" class="p">reserve + custodian NFTs</text>
-    <text x="836" y="90" class="mono">allocate / deallocate</text>
+    <rect x="896" y="28" width="340" height="80" rx="6" fill="#9d174d"/>
+    <text x="912" y="54" class="h">Grinders</text>
+    <text x="912" y="74" class="p">reserve + custodian NFTs</text>
+    <text x="912" y="90" class="mono">allocate / deallocate</text>
   </g>
 
-  <line x1="430" y1="68" x2="384" y2="68" class="wire" marker-end="url(#arrow)"/>
-  <rect x="382" y="50" width="44" height="16" rx="3" fill="#f8fafc"/>
-  <text x="404" y="62" text-anchor="middle" class="chip">bribe</text>
+  <line x1="468" y1="68" x2="384" y2="68" class="wire" marker-end="url(#arrow)"/>
+  <rect x="402" y="50" width="44" height="16" rx="3" fill="#f8fafc"/>
+  <text x="424" y="62" text-anchor="middle" class="chip">bribe</text>
 
   <!-- ===== ROW 2: Locker / GRAI / Custodian ===== -->
   <g filter="url(#shadow)">
-    <rect x="40" y="152" width="340" height="80" rx="28" fill="#e0e7ff" stroke="#1e3a8a" stroke-width="1.5"/>
-    <use href="#human" x="56" y="170" fill="#1e3a8a"/>
-    <text x="100" y="178" class="ah">Locker</text>
-    <text x="100" y="198" class="am">deposit(asset, amount, lock?, referrer)</text>
-    <text x="100" y="214" class="ap">lock() · claim() unvoted</text>
+    <rect x="40" y="196" width="340" height="80" rx="28" fill="#e0e7ff" stroke="#1e3a8a" stroke-width="1.5"/>
+    <use href="#human" x="56" y="214" fill="#1e3a8a"/>
+    <text x="100" y="222" class="ah">Locker</text>
+    <text x="100" y="242" class="am">deposit(asset, amount, lock?, referrer)</text>
+    <text x="100" y="258" class="ap">lock() · claim() unvoted</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="430" y="152" width="340" height="80" rx="6" fill="#0e7490"/>
-    <text x="446" y="178" class="h">GRAI</text>
-    <text x="446" y="198" class="p">fund share · lock / vote / bribe</text>
-    <text x="446" y="214" class="p">book NAV · quorum</text>
+    <rect x="468" y="196" width="340" height="80" rx="6" fill="#db2777"/>
+    <text x="484" y="222" class="h">GRAI</text>
+    <text x="484" y="242" class="p">fund share · lock / vote / bribe</text>
+    <text x="484" y="258" class="p">book NAV · quorum</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="820" y="152" width="340" height="80" rx="6" fill="#4338ca"/>
-    <text x="836" y="178" class="h">Custodian</text>
-    <text x="836" y="198" class="p">NFT wallet · Swap / CoW / LiFi</text>
-    <text x="836" y="214" class="p">trade base / quote</text>
+    <rect x="896" y="196" width="340" height="80" rx="6" fill="#4338ca"/>
+    <text x="912" y="222" class="h">Custodian</text>
+    <text x="912" y="242" class="p">NFT wallet · Swap / CoW / LiFi</text>
+    <text x="912" y="258" class="p">trade base / quote</text>
   </g>
 
-  <line x1="210" y1="152" x2="210" y2="112" class="wire" marker-end="url(#arrow)"/>
-  <rect x="218" y="122" width="40" height="16" rx="3" fill="#f8fafc"/>
-  <text x="238" y="134" text-anchor="middle" class="chip">vote()</text>
+  <line x1="210" y1="196" x2="210" y2="112" class="wire" marker-end="url(#arrow)"/>
+  <rect x="218" y="144" width="40" height="16" rx="3" fill="#f8fafc"/>
+  <text x="238" y="156" text-anchor="middle" class="chip">vote()</text>
 
-  <line x1="380" y1="192" x2="426" y2="192" class="wire" marker-end="url(#arrow)"/>
-  <rect x="354" y="168" width="100" height="16" rx="3" fill="#f8fafc"/>
-  <text x="404" y="180" text-anchor="middle" class="chip">1. deposit(assets)</text>
+  <line x1="380" y1="236" x2="464" y2="236" class="wire" marker-end="url(#arrow)"/>
+  <rect x="374" y="212" width="100" height="16" rx="3" fill="#f8fafc"/>
+  <text x="424" y="224" text-anchor="middle" class="chip">1. deposit(assets)</text>
 
-  <path d="M 770 152 L 770 132 L 860 132 L 860 68 L 816 68" class="wire" marker-end="url(#arrow)"/>
-  <rect x="778" y="108" width="108" height="16" rx="3" fill="#f8fafc"/>
-  <text x="832" y="120" text-anchor="middle" class="chip">1. transfer(assets)</text>
+  <line x1="380" y1="258" x2="464" y2="258" class="wire" marker-end="url(#arrow)"/>
+  <rect x="386" y="260" width="76" height="16" rx="3" fill="#f8fafc"/>
+  <text x="424" y="272" text-anchor="middle" class="chip">3. claim()</text>
 
-  <line x1="990" y1="108" x2="990" y2="148" class="wire" marker-end="url(#arrow)"/>
-  <rect x="996" y="118" width="52" height="16" rx="3" fill="#f8fafc"/>
-  <text x="1022" y="130" text-anchor="middle" class="chip">allocate</text>
+  <path d="M 808 196 L 808 152 L 852 152 L 852 68 L 892 68" class="wire" marker-end="url(#arrow)"/>
+  <rect x="798" y="128" width="108" height="16" rx="3" fill="#f8fafc"/>
+  <text x="852" y="140" text-anchor="middle" class="chip">1. deposit(assets)</text>
 
-  <line x1="820" y1="192" x2="774" y2="192" class="wire" marker-end="url(#arrow)"/>
-  <rect x="748" y="168" width="112" height="16" rx="3" fill="#f8fafc"/>
-  <text x="804" y="180" text-anchor="middle" class="chip">2. distribute(yield)</text>
+  <line x1="1066" y1="108" x2="1066" y2="192" class="wire" marker-end="url(#arrow)"/>
+  <rect x="1072" y="140" width="52" height="16" rx="3" fill="#f8fafc"/>
+  <text x="1098" y="152" text-anchor="middle" class="chip">allocate</text>
+
+  <line x1="896" y1="236" x2="812" y2="236" class="wire" marker-end="url(#arrow)"/>
+  <rect x="798" y="212" width="112" height="16" rx="3" fill="#f8fafc"/>
+  <text x="854" y="224" text-anchor="middle" class="chip">2. distribute(yield)</text>
 
   <!-- ===== ROW 3: 50/50 split ===== -->
-  <line x1="600" y1="232" x2="600" y2="280" class="wire" marker-end="url(#arrow)"/>
-  <path d="M 600 232 L 600 256 L 990 256 L 990 280" class="wire" marker-end="url(#arrow)"/>
-  <rect x="538" y="236" width="124" height="16" rx="3" fill="#f8fafc"/>
-  <text x="600" y="248" text-anchor="middle" class="chip">2. distribute(yield)</text>
+  <line x1="638" y1="276" x2="638" y2="360" class="wire" marker-end="url(#arrow)"/>
+  <path d="M 638 276 L 638 318 L 1066 318 L 1066 360" class="wire" marker-end="url(#arrow)"/>
+  <rect x="576" y="284" width="124" height="16" rx="3" fill="#f8fafc"/>
+  <text x="638" y="296" text-anchor="middle" class="chip">2. distribute(yield)</text>
 
-  <rect x="430" y="280" width="340" height="56" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.25"/>
-  <text x="600" y="304" text-anchor="middle" class="pct">50%</text>
-  <text x="600" y="322" text-anchor="middle" class="cut">dividends</text>
+  <rect x="468" y="364" width="340" height="56" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.25"/>
+  <text x="638" y="388" text-anchor="middle" class="pct">50%</text>
+  <text x="638" y="406" text-anchor="middle" class="cut">dividends</text>
 
-  <rect x="820" y="280" width="340" height="56" rx="8" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.25"/>
-  <text x="990" y="304" text-anchor="middle" class="pct">50%</text>
-  <text x="990" y="322" text-anchor="middle" class="cut">gross profit</text>
+  <rect x="896" y="364" width="340" height="56" rx="8" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.25"/>
+  <text x="1066" y="388" text-anchor="middle" class="pct">50%</text>
+  <text x="1066" y="406" text-anchor="middle" class="cut">gross profit</text>
 
-  <path d="M 430 308 L 290 308 L 290 232" class="wire" marker-end="url(#arrow)"/>
-  <rect x="320" y="288" width="56" height="16" rx="3" fill="#f8fafc"/>
-  <text x="348" y="300" text-anchor="middle" class="chip">3. claim()</text>
+  <path d="M 468 392 L 320 392 L 320 276" class="wire" marker-end="url(#arrow)"/>
+  <rect x="358" y="372" width="56" height="16" rx="3" fill="#f8fafc"/>
+  <text x="386" y="384" text-anchor="middle" class="chip">3. claim()</text>
 
-  <line x1="210" y1="232" x2="210" y2="388" class="wire" marker-end="url(#arrow)"/>
-  <rect x="148" y="300" width="108" height="16" rx="3" fill="#f8fafc"/>
-  <text x="202" y="312" text-anchor="middle" class="chip">referrerOf(locker)</text>
+  <line x1="210" y1="276" x2="210" y2="504" class="wire" marker-end="url(#arrow)"/>
+  <rect x="148" y="380" width="108" height="16" rx="3" fill="#f8fafc"/>
+  <text x="202" y="392" text-anchor="middle" class="chip">referrerOf(locker)</text>
 
   <!-- ===== ROW 4: Referrer / Poacher ===== -->
   <g filter="url(#shadow)">
-    <rect x="40" y="388" width="340" height="76" rx="28" fill="#e0e7ff" stroke="#1e3a8a" stroke-width="1.5"/>
-    <use href="#human" x="56" y="406" fill="#1e3a8a"/>
-    <text x="100" y="412" class="ah">Referrer</text>
-    <text x="100" y="432" class="am">referrerOf</text>
-    <text x="100" y="448" class="ap">L1 / L2 tree seat · rebind target</text>
+    <rect x="40" y="508" width="340" height="76" rx="28" fill="#e0e7ff" stroke="#1e3a8a" stroke-width="1.5"/>
+    <use href="#human" x="56" y="526" fill="#1e3a8a"/>
+    <text x="100" y="532" class="ah">Referrer</text>
+    <text x="100" y="552" class="ap">L1 / L2 tree seat · rebind target</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="430" y="388" width="340" height="92" rx="28" fill="#ecfdf5" stroke="#065f46" stroke-width="1.5"/>
-    <use href="#human" x="446" y="406" fill="#065f46"/>
-    <text x="490" y="416" class="ah">Poacher</text>
-    <text x="490" y="436" class="am">poach(locker)</text>
-    <text x="490" y="452" class="ap">GRAI ask → referrer · rebind tree, not NFT</text>
+    <rect x="468" y="508" width="340" height="108" rx="28" fill="#ecfdf5" stroke="#065f46" stroke-width="1.5"/>
+    <use href="#human" x="484" y="526" fill="#065f46"/>
+    <text x="528" y="536" class="ah">Poacher</text>
+    <text x="528" y="556" class="am">poach(locker)</text>
+    <text x="528" y="572" class="ap">rebind locker under poacher</text>
+    <text x="528" y="588" class="ap">and pay referrer cost of his tree</text>
   </g>
 
-  <line x1="430" y1="434" x2="384" y2="434" class="wireg" marker-end="url(#arrowGreen)"/>
-  <rect x="382" y="416" width="44" height="16" rx="3" fill="#f8fafc"/>
-  <text x="404" y="428" text-anchor="middle" class="flowg">poach</text>
+  <line x1="468" y1="554" x2="384" y2="554" class="wireg" marker-end="url(#arrowGreen)"/>
+  <rect x="402" y="536" width="44" height="16" rx="3" fill="#f8fafc"/>
+  <text x="424" y="548" text-anchor="middle" class="flowg">poach</text>
 
-  <line x1="990" y1="336" x2="990" y2="520" class="wire" marker-end="url(#arrow)"/>
+  <line x1="1066" y1="420" x2="1066" y2="668" class="wire" marker-end="url(#arrow)"/>
 
   <!-- ===== ROW 5: Revenue Receiver / Treasury ===== -->
-  <line x1="210" y1="464" x2="210" y2="520" class="wire" marker-end="url(#arrow)"/>
-  <rect x="220" y="480" width="108" height="16" rx="3" fill="#f8fafc"/>
-  <text x="274" y="492" text-anchor="middle" class="chip">ownerOf(referrer)</text>
+  <line x1="210" y1="584" x2="210" y2="668" class="wire" marker-end="url(#arrow)"/>
+  <rect x="220" y="614" width="108" height="16" rx="3" fill="#f8fafc"/>
+  <text x="274" y="626" text-anchor="middle" class="chip">ownerOf(referrer)</text>
 
   <g filter="url(#shadow)">
-    <rect x="40" y="520" width="340" height="76" rx="28" fill="#fdf2f8" stroke="#db2777" stroke-width="1.5"/>
-    <use href="#human" x="56" y="538" fill="#db2777"/>
-    <text x="100" y="544" class="ah">Revenue Receiver</text>
-    <text x="100" y="564" class="am">ownerOf(NFT)</text>
-    <text x="100" y="580" class="ap">paid on claim · cashflow rights</text>
+    <rect x="40" y="672" width="340" height="76" rx="28" fill="#fdf2f8" stroke="#db2777" stroke-width="1.5"/>
+    <use href="#human" x="56" y="690" fill="#db2777"/>
+    <text x="100" y="696" class="ah">Revenue Receiver</text>
+    <text x="100" y="716" class="ap">paid on claim · cashflow rights</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="820" y="520" width="340" height="76" rx="6" fill="#334155"/>
-    <text x="836" y="546" class="h">Treasury</text>
-    <text x="836" y="566" class="p">fee sink · cashflow NFTs</text>
-    <text x="836" y="582" class="p">splits on locker claim</text>
+    <rect x="896" y="672" width="340" height="76" rx="6" fill="#334155"/>
+    <text x="912" y="698" class="h">Treasury</text>
+    <text x="912" y="718" class="p">fee sink · cashflow NFTs</text>
+    <text x="912" y="734" class="p">splits on locker claim</text>
   </g>
 
-  <line x1="820" y1="558" x2="384" y2="558" class="wire" marker-end="url(#arrow)"/>
-  <rect x="560" y="540" width="80" height="16" rx="3" fill="#f8fafc"/>
-  <text x="600" y="552" text-anchor="middle" class="chip">revshare 5%</text>
+  <line x1="896" y1="710" x2="384" y2="710" class="wire" marker-end="url(#arrow)"/>
+  <rect x="598" y="692" width="80" height="16" rx="3" fill="#f8fafc"/>
+  <text x="638" y="704" text-anchor="middle" class="chip">revshare 5%</text>
 
   <!-- ===== ROW 6: Beneficiar ===== -->
-  <line x1="990" y1="596" x2="990" y2="648" class="wire" marker-end="url(#arrow)"/>
-  <rect x="1000" y="610" width="168" height="16" rx="3" fill="#f8fafc"/>
-  <text x="1084" y="622" text-anchor="middle" class="chip">gross profit without revshare</text>
+  <line x1="1066" y1="748" x2="1066" y2="832" class="wire" marker-end="url(#arrow)"/>
+  <rect x="1076" y="778" width="168" height="16" rx="3" fill="#f8fafc"/>
+  <text x="1160" y="790" text-anchor="middle" class="chip">gross profit without revshare</text>
 
   <g filter="url(#shadow)">
-    <rect x="820" y="648" width="340" height="64" rx="6" fill="#047857"/>
-    <text x="836" y="686" class="h">Beneficiar</text>
+    <rect x="896" y="836" width="340" height="64" rx="6" fill="#047857"/>
+    <text x="912" y="874" class="h">Beneficiar</text>
   </g>
 
   <!-- ===== ROW 7: buyback% / net profit ===== -->
-  <path d="M 990 712 L 990 748 L 905 748 L 905 792" class="wire" marker-end="url(#arrow)"/>
-  <path d="M 990 712 L 990 748 L 1075 748 L 1075 792" class="wire" marker-end="url(#arrow)"/>
+  <path d="M 1066 900 L 1066 940 L 974 940 L 974 976" class="wire" marker-end="url(#arrow)"/>
+  <path d="M 1066 900 L 1066 940 L 1158 940 L 1158 976" class="wire" marker-end="url(#arrow)"/>
 
-  <rect x="820" y="792" width="170" height="48" rx="8" fill="#d1fae5" stroke="#34d399" stroke-width="1.25"/>
-  <text x="905" y="821" text-anchor="middle" class="cut">buyback%</text>
+  <rect x="896" y="980" width="156" height="48" rx="8" fill="#d1fae5" stroke="#34d399" stroke-width="1.25"/>
+  <text x="974" y="1009" text-anchor="middle" class="cut">buyback%</text>
 
-  <rect x="990" y="792" width="170" height="48" rx="8" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.25"/>
-  <text x="1075" y="821" text-anchor="middle" class="cut">net profit</text>
+  <rect x="1080" y="980" width="156" height="48" rx="8" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.25"/>
+  <text x="1158" y="1009" text-anchor="middle" class="cut">net profit</text>
 
   <!-- ===== ROW 8: GRS/ETH / Owner ===== -->
-  <line x1="905" y1="840" x2="905" y2="888" class="wire" marker-end="url(#arrow)"/>
-  <line x1="1075" y1="840" x2="1075" y2="888" class="wire" marker-end="url(#arrow)"/>
+  <line x1="974" y1="1028" x2="974" y2="1088" class="wire" marker-end="url(#arrow)"/>
+  <line x1="1158" y1="1028" x2="1158" y2="1088" class="wire" marker-end="url(#arrow)"/>
 
   <g filter="url(#shadow)">
-    <rect x="820" y="888" width="170" height="52" rx="6" fill="#065f46"/>
-    <text x="836" y="910" class="h">GRS/ETH</text>
-    <text x="836" y="926" class="p">market buy GRS</text>
+    <rect x="896" y="1092" width="156" height="52" rx="6" fill="#065f46"/>
+    <text x="912" y="1114" class="h">GRS/ETH</text>
+    <text x="912" y="1130" class="p">market buy GRS</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="990" y="888" width="170" height="52" rx="6" fill="#1e1b2e"/>
-    <text x="1006" y="910" class="h">Owner</text>
-    <text x="1006" y="926" class="p">admin income</text>
+    <rect x="1080" y="1092" width="156" height="52" rx="6" fill="#1e1b2e"/>
+    <text x="1096" y="1114" class="h">Owner</text>
+    <text x="1096" y="1130" class="p">admin income</text>
   </g>
 
   <!-- GRS revenue rewards: Beneficiar → Revenue Receiver -->
-  <path d="M 820 680 L 210 680 L 210 600" class="wireg" marker-end="url(#arrowGreen)"/>
-  <rect x="250" y="658" width="132" height="16" rx="3" fill="#f8fafc"/>
-  <text x="316" y="670" text-anchor="middle" class="flowg">GRS revenue rewards</text>
+  <path d="M 896 868 L 210 868 L 210 752" class="wireg" marker-end="url(#arrowGreen)"/>
+  <rect x="250" y="846" width="132" height="16" rx="3" fill="#f8fafc"/>
+  <text x="316" y="858" text-anchor="middle" class="flowg">GRS revenue rewards</text>
 
-  <text x="600" y="988" text-anchor="middle" class="note">Same address can be locker and voter — roles are escrow states, not separate accounts.</text>
-  <text x="600" y="1006" text-anchor="middle" class="note">bribe buys voted GRAI. poach buys the upline seat (rebind referrerOf). OTC NFT transfer moves claim pay, not the tree.</text>
+  <text x="638" y="1188" text-anchor="middle" class="note">Same address can be locker and voter — roles are escrow states, not separate accounts.</text>
+  <text x="638" y="1206" text-anchor="middle" class="note">bribe buys voted GRAI. poach buys the upline seat (rebind referrerOf). OTC NFT transfer moves claim pay, not the tree.</text>
 </svg>
