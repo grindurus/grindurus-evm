@@ -894,6 +894,10 @@ contract GRAI is
         // Max this index bump can ever pay (one holder of all `eligible`); per-locker floors
         // may leave a wei-level gap vs this, which is acceptable dust.
         uint256 reserved = (indexIncrease * eligible) / PRECISION;
+        if (reserved == 0) {
+            _withdraw(address(treasury), asset, amount);
+            return;
+        }
         AssetConfig storage div = assets[asset];
         div.accShare += indexIncrease;
         div.totalClaimable += reserved;
