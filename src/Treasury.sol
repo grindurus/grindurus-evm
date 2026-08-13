@@ -50,7 +50,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @inheritdoc ITreasury
     function initialize(address grai_) external initializer {
         if (grai_ == address(0)) revert ZeroAddress();
-        __ERC721_init("Grinders Artificial Index Treasury", "GRAI-TREASURY");
+        __ERC721_init("Treasury", "T-GRAI");
         __ERC721Enumerable_init();
         __ERC2981_init();
         __UUPSUpgradeable_init();
