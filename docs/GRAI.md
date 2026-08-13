@@ -307,7 +307,7 @@ sequenceDiagram
 | 2    | `bribe`        | Escrow reserved; full `graiAmount` → briber wallet; exact `_pay` required (`AmountZero` else) |
 | 3    | GRAI out       | Always the requested `graiAmount` (no FoT pro-rata / no leftover on voter)                    |
 | 4    | Split          | Premium: ½ premium → cuts; discount: other ½ gap → cuts; par: all to voter                    |
-| —    | Self-bribe     | Net cost ≈ half premium when scarce; under discount briber saves ½ gap, cuts take ½           |
+| —    | Self-bribe     | **Allowed** (`briber == voter` is not reverted). Same ask / split as any bribe. At half-quorum (par: premium = discount = 0) settlement round-trips to self and full escrowed GRAI returns with **no** `unlockPenaltyBps` / dust floor — intentional: voted exit is the bribe market, not `unlock`. Off-par, self-bribe still pays the premium half-cut or takes the discount half-gap to cuts. |
 
 
 To earn dividends after a bribe, the briber must `lock` the received GRAI (and leave it unvoted).
@@ -589,6 +589,8 @@ Switching requires a feed; open votes/auctions do not block. Setting `settlement
 ### 8.3 Bribe
 
 Blocked while liquidation is open.
+
+**Self-bribe is allowed** — there is no `briber != voter` check. A voter may call `bribe(self, …)` to exit voted escrow through the bribe market. That path does **not** apply `unlockPenaltyBps` or the unlock dust floor (those gate `unlock` only). At half-quorum (`voteBps ≈ quorumBps / 2`), premium and discount are both 0, so settlement asset round-trips to the caller and the full `graiAmount` returns — intentional par exit for votes, not a fee bypass bug. Away from par, self-bribe still hits the usual premium / discount cut splits.
 
 Ask tracks **vote share vs half-quorum** (`halfBps = quorumBps / 2`) continuously. `bribePremiumBps` is the slope scale (`|adj| = bribePremiumBps` at 0 votes and at quorum):
 
@@ -1192,6 +1194,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 11. `revive` does not reprice `totalValue` from leftover NAV (keeps ~$1/GRAI); zeroes book only when `supply == 0`. Deposit bootstrap when `totalValue == 0`.
 12. `address(this)` **is never a listed / redeemable / bribe asset** — escrow stays escrow.
 13. **Unlock penalty → dead GRAI** — flat `unlockPenaltyBps` (no time decay); penalty is not sent to treasury; scooped to liquidation opener (`balanceOf(this) − totalLocked`). Dust floor `ceil(BPS / unlockPenaltyBps)` applies to full-escrow exit; remainder below dust stays until lock grows, fee is 0, or liquidation redeem.
+14. **Self-bribe allowed** — `briber == voter` is valid. Voted exit uses the bribe ask (incl. at-par round-trip with 0 premium/discount); `unlockPenaltyBps` / dust floor apply only to `unlock`, not to `bribe`.
 15. **Affiliates ≠ locker cut** — claim tip / locker payout are independent of Treasury; affiliates pay from Treasury inventory sized by `revenueShareBps`.
 16. **Treasury distribute is all-or-nothing** — `bal < grossProfitShare` → no affiliate / beneficiar transfer for that claim.
 17. **Poach ask = locker** `value + l1Value` — deposits **and** every claim’s `claimedValue`; not `l2Value` / deeper tree. `rebind` shifts referrer + L1/L2 books (not the cashflow NFT); OTC moves `ownerOf` only. `redeem` does not shrink books.
