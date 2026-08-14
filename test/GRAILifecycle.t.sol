@@ -115,8 +115,12 @@ contract GRAILifecycleTest is GRAIFixture {
         assertTrue(grai.hasQuorum());
 
         vm.prank(admin);
+        grinders.confirm();
+        vm.prank(admin);
         grai.liquidate();
+        assertEq(uint8(grai.regime()), uint8(IGRAI.Regime.REDEMPTION));
         assertTrue(grai.liquidation());
+        assertTrue(grinders.confirmed(), "arm stays through open for keeper sweeps");
         assertEq(uint256(grai.liquidationAt()), block.timestamp);
 
         // ── 6. Redeem window (basket already swept onto GRAI at liquidate open) ──
@@ -164,10 +168,11 @@ contract GRAILifecycleTest is GRAIFixture {
         vm.prank(carol);
         grai.revive();
 
+        assertEq(uint8(grai.regime()), uint8(IGRAI.Regime.GRINDING));
         assertFalse(grai.liquidation());
         assertEq(uint256(grai.liquidationAt()), 0);
         assertEq(grai.totalValue(), 0);
-        assertFalse(grai.confirmed());
+        assertFalse(grinders.confirmed());
     }
 
     ////////////////////////////// HELPERS //////////////////////////////

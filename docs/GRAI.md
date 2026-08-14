@@ -30,7 +30,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty stays on GRAI as orphan/dead inventory (scooped to the liquidation opener via `balanceOf(this) − totalLocked`).
 2. `bribe` — buy out **voted** GRAI for `settlementAsset` at a dynamic ask vs half-quorum (premium / par / discount).
 3. **Secondary market** — sell free (unlocked) wallet GRAI OTC / CEX / DEX; protocol does not provide a live redeem.
-4. **Liquidation** — **2-of-2**: vote quorum **and** owner confirmation (`confirmed` / owner `liquidate` with quorum) → holders `redeem` → anyone `revive` (fund restarts). Voters alone cannot open; non-owner open needs prior `confirmed`.
+4. **Liquidation** — `Regime { GRINDING, REDEMPTION }`. Open is **2-of-2**: `hasQuorum()` on `GRAI.liquidate` **and** `Grinders.confirmed` (so the open-time sweeps succeed). Arm via `grinders.owner()` `confirm()`. Successful open → `regime = REDEMPTION` → after `liquidationPeriod` holders `redeem` → after `+ redeemPeriod` anyone `revive` → `GRINDING` (clears arm). Hard sweep failure aborts open. Voters alone cannot open. `Grinders.liquidate` itself gates only on `confirmed` (not on `grai.liquidation()`).
 
 **Yield (**`distribute`**) / bribe premium** splits per `Config` (initialize defaults **50% / 50%**):
 
@@ -93,7 +93,8 @@ Listed collateral is assumed **non-rebasing** (balance only changes via GRAI `_p
 | **Treasury**           | Yield / bribe fee sink; referrer **tree** + cashflow NFTs; claim-time affiliate + `beneficiar` split  |
 | **Referrer (upline)**  | `referrerOf(locker)` seat: L1/L2 book volume; sells that seat via `poach` (paid in GRAI)              |
 | **Poacher**            | Buys a locker’s upline link for GRAI (`poach`); rewrites the tree, not the cashflow NFT               |
-| **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS; liquidation consent via `confirmed` / `liquidate` |
+| **Owner**              | Multisig + DAO (Ownable2Step): feeds, config, UUPS on GRAI                                          |
+| **Grinders owner**     | Same or separate Ownable2Step: custodian ops; liquidation arm via `confirm`               |
 
 
 ![Protocol map: locker, voter, briber, referrer, poacher](protocol.png)
@@ -256,7 +257,7 @@ sequenceDiagram
 | 2    | Quorum             | `totalVoted / supply > quorumBps` (strict) — necessary but not sufficient for open (needs owner limb) |
 | 3a   | `unlock`           | Excess votes clamped; net GRAI returned; unlock fee stays on GRAI as dead                             |
 | 3b   | `bribe`            | Full `graiAmount` sold for exact `bribeAmount` in `settlementAsset` (non-FoT)                         |
-| 3c   | `liquidate`        | Owner: toggle `confirmed` if no quorum, else open; non-owner: open iff `confirmed && hasQuorum()`     |
+| 3c   | `liquidate`        | Anyone: `regime == GRINDING` + `hasQuorum()`; then `grinders.liquidate` (needs `confirmed`) → `REDEMPTION` |
 
 
 **Example** (Alice votes — escrow and dividend base):
@@ -704,32 +705,40 @@ Briber receives the full requested `graiAmount` GRAI to **wallet**. Voter escrow
 
 ## 9. Liquidation cycle
 
-### 9.1 Open (`liquidate`, **2-of-2**: quorum **and** owner confirmation)
+State machine on GRAI: `enum Regime { GRINDING, REDEMPTION }`. Compatibility view: `liquidation() = (regime != GRINDING)` (used by custodians / Treasury gates). There is no separate `LIQUIDATION` regime — open flips straight to `REDEMPTION`.
 
-Opening liquidation needs **both** limbs:
+### 9.1 Criteria (as coded)
 
-1. **Quorum** — `hasQuorum()`: `totalVoted * BPS > totalSupply * quorumBps` (strict `>`; default ~66.67% — exact equality fails). Voters alone cannot open.
-2. **Owner confirmation** — `confirmed` (and/or an owner `liquidate` call while quorum holds).
+| Gate | Where | Condition |
+| ---- | ----- | --------- |
+| Regime for open | `GRAI.liquidate` | `_requireRegime(GRINDING)` |
+| Vote limb | `GRAI.liquidate` | `hasQuorum()` → `totalVoted * BPS > totalSupply() * quorumBps` (strict `>`; default `quorumBps = 6667`) |
+| Grinders arm | `Grinders.liquidate` | `if (!confirmed) revert LiquidationNotConfirmed()` — **only** this check; **no** `grai.liquidation()` / regime read |
+| Arm toggle | `Grinders.confirm` | `grinders.owner()` toggles `confirmed`; also cleared on Grinders `acceptOwnership` and `GRAI.revive` → `grinders.revive()` |
+| Open clock | `GRAI.liquidate` (success) | `regime = REDEMPTION`; `liquidationAt = now` |
+| Redeem | `GRAI.redeem` / `previewRedeem` | `regime == REDEMPTION` **and** `block.timestamp ≥ liquidationAt + liquidationPeriod` |
+| Close | `GRAI.revive` | `regime == REDEMPTION` **and** `block.timestamp ≥ liquidationAt + liquidationPeriod + redeemPeriod` |
 
-Same entrypoint `liquidate()` for everyone:
+**2-of-2 for open** means both limbs must hold on the `GRAI.liquidate` path: quorum on GRAI, and `confirmed` so the nested sweeps do not revert. Voters alone cannot open; Grinders owner arm alone does **not** flip `regime`.
 
+**Sweep permission (important):** `Grinders.liquidate(fromId, toId)` is permissionless whenever `confirmed == true`, including while GRAI is still `GRINDING`. Arming does not open redemption, but it does allow anyone to page custodians / flush idle listed balances onto GRAI before (or without) a successful `GRAI.liquidate`. After open, the same entrypoint is how keepers finish late inventory during consolidation.
 
-| Caller                | Behavior                                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Owner**, no quorum  | Toggle `confirmed` (arm / disarm for a later non-owner open). Does **not** open.                     |
-| **Owner**, quorum met | This call **is** consent → open immediately (`confirmed` not required).                              |
-| **Non-owner**         | Open only if `confirmed && hasQuorum()`; else `LiquidationNotConfirmed` / `LiquidationQuorumNotMet`. |
+### 9.2 Open (`GRAI.liquidate`)
 
+| Caller | Behavior |
+| ---- | ---- |
+| **Anyone** | If `GRINDING` + `hasQuorum()`: scoop orphan/dead GRAI (`balanceOf(this) − totalLocked`) → opener; call `grinders.liquidate(0, type(uint256).max)` then `grinders.liquidate(0, 0)`; on success set `regime = REDEMPTION`, `liquidationAt = now`, emit `RegimeChange`. |
+| **`grinders.owner()`** | `confirm()` arms/disarms only — does **not** set `regime`. |
 
-Then: cancel auctions into basket; send orphan/dead GRAI (`balanceOf(this) − totalLocked`, e.g. unlock fees) to the opener (`msg.sender`) as a normal holder; sweep **all** Grinders custodians + idle listed balances onto GRAI; `liquidationAt = now`. Deposits (and other live paths) are blocked by the liquidation flag — per-asset `paused` is **not** rewritten.
+Open-time sweeps: no try/catch on GRAI. `!confirmed` or a **hard** failure of `Grinders.liquidate` aborts the whole open (regime stays `GRINDING`). Inside Grinders, per-custodian pulls are still `try/catch`’d (a single sleeve revert is skipped; idle flush / other sleeves may still succeed).
 
-While liquidation is open, `setConfig` **is fully blocked** (`LiquidationOpen`) so live `liquidationPeriod` / `redeemPeriod` clocks cannot be rewritten mid-cycle. Zero windows are rejected even when closed (`PeriodZero`). Treasury `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` are blocked the same way so in-flight `claim` payouts cannot be rerouted.
+After open, live paths gated with `_requireRegime(GRINDING)` are blocked (`deposit`, `distribute`, `lock` / `unlock` / `vote`, `bribe`, `poach`, `setGrinders` / `setTreasury`, `setConfig`, …). Per-asset `paused` is **not** rewritten. `setConfig` stays blocked in `REDEMPTION` so `liquidationPeriod` / `redeemPeriod` cannot move mid-cycle (`InvalidPeriod` rejects zero windows even when closed). Treasury payout knobs remain owner-mutable.
 
-### 9.2 Consolidation (`liquidationPeriod`, default 24h)
+### 9.3 Consolidation (`liquidationPeriod`, default 24h)
 
-`redeem` blocked (`LiquidationDelay`). Custodian + idle inventory is already pulled onto GRAI at open; keepers may still call `Grinders.liquidate` for any late balances. Deposit / bribe / lock / unlock / vote / poach blocked while liquidation is open. `claim` **/** `claimAll` **stay open** — they draw only from `totalClaimable`, which is excluded from the redeem basket.
+`regime` is already `REDEMPTION`, but `redeem` / `previewRedeem` revert `LiquidationDelay` until `liquidationAt + liquidationPeriod`. Keepers may still call `Grinders.liquidate` while `confirmed` for late balances. `claim` / `claimAll` **stay open** — they draw only from `totalClaimable`, which `_redeemable` excludes from the redeem basket.
 
-### 9.3 Redeem
+### 9.4 Redeem (`regime = REDEMPTION`, after delay)
 
 After delay: snapshot `previewRedeem` (frozen vector); burn wallet then escrow; `totalValue` book burn; pay that vector.
 Pro-rata denominator is `totalSupply` (orphan still on GRAI dilutes redeemers; live orphans are flushed to the opener at open).
@@ -758,14 +767,14 @@ State when `redeem` opens (`liquidationPeriod` elapsed):
 
 Dividend `totalClaimable` is **not** in this vector — Alice (or anyone) may still `claim` that reserve during liquidation; it never enters the redeem pro-rata.
 
-### 9.4 Close (`revive`)
+### 9.5 Close (`revive` → `GRINDING`)
 
-Permissionless after `liquidationPeriod + redeemPeriod`:
+Permissionless after `liquidationPeriod + redeemPeriod` while in `REDEMPTION`:
 
 1. Sweep `_redeemable` → Grinders (dividend `totalClaimable` stays on GRAI). No oracle pricing of leftovers.
 2. Per-asset `paused` flags are left as the owner set them (liquidation itself never toggled them).
-3. If `supply == 0`: `totalValue = 0`. If `supply > 0`: keep post-redeem `totalValue` (no NAV mark-up — mint stays ~$1/GRAI).
-4. Clear `liquidation` / `liquidationAt` / `confirmed`.
+3. Keep post-redeem `totalValue` (no NAV mark-up from leftovers — mint stays ~$1/GRAI while book tracks supply). `revive` does not rewrite `totalValue`.
+4. Set `regime = GRINDING`, clear `liquidationAt`, call `grinders.revive()` (clears `confirmed`). Votes / escrows are **not** cleared.
 
 ---
 
@@ -978,14 +987,16 @@ On `rebind(locker, newReferrer)` with seller `from = referrerOf(locker)`:
 | Who                                     | Update                                                 |
 | --------------------------------------- | ------------------------------------------------------ |
 | Referrer link                           | `lockerBooks[locker].referrer = newReferrer`         |
-| Buyer `newReferrer`                     | `l1Value += locker.value`, `l2Value += locker.l1Value` |
+| Buyer `newReferrer` (if `≠ locker`)     | `l1Value += locker.value`, `l2Value += locker.l1Value` |
 | Seller `from` (if `from ≠ locker`)      | same amounts subtracted                                |
 | Old L2 `referrerOf(from)` (if distinct) | `l2Value -= locker.value`                              |
 | New L2 `referrerOf(newReferrer)` (if distinct) | `l2Value += locker.value`                       |
 | Cashflow NFT                            | **unchanged**                                          |
 
 
-Self-slot (`from == locker`): seller keeps downline L1/L2 on the locker node; only the buyer (and optionally their upline as new L2) is credited.
+Self-slot sell (`from == locker`): seller keeps downline L1/L2 on the locker node; only the buyer (and optionally their upline as new L2) is credited.
+
+Self-root reclaim (`newReferrer == locker`): debit the old upline only — do **not** credit `own` onto the locker’s `l1Value` (that would double-count in `poachOf = value + l1Value`).
 
 `lockerBooks[locker].value` / `.l1Value` / `.l2Value` on the **locker key** are not zeroed — they still describe that depositor’s node. Upline books move as above so later asks stay consistent.
 
@@ -1119,7 +1130,7 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 | Custodian NFT      | `mint(kind, base, quote, owner)`; owner controls wallet |
 | Yield              | Custodian trades → `distribute` → `GRAI.distribute`     |
 | `deallocate`       | Custodian → Grinders reserve                            |
-| Liquidation sweeps | Permissionless while GRAI liquidation open              |
+| Liquidation sweeps | Permissionless while `Grinders.confirmed` (not gated on `grai.liquidation()`) |
 
 
 ---
@@ -1140,7 +1151,7 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 | `redeemPeriod`      | 7 days          | Window before `revive` (must be `> 0`)               |
 
 
-Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is open**. Treasury payout knobs (`setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps`) are frozen the same way.
+Cuts must sum to `BPS`. `setConfig` is **blocked entirely while liquidation is open**. Treasury payout knobs (`setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps`) remain owner-mutable.
 
 `dividendCutBps` / `treasuryCutBps` are set only at `initialize` and cannot be changed via `setConfig`. Tip, quorum, unlock fee, periods, and `REVENUE_SHARE` remain mutable via their dedicated ids.
 
@@ -1153,12 +1164,12 @@ Treasury defaults: L1/L2 `revenueShareBps = [8000, 2000]` (fixed depth 2; `setRe
 
 | Role                     | GRAI                                                                                                                                                                  |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/settlementAsset, feeds, `set` / `setFeed` / `setAssetConfig`; liquidation 2-of-2 via `confirmed` / `liquidate` |
+| **Owner** (Ownable2Step) | UUPS, config (when not liquidating), grinders/treasury/settlementAsset, feeds, `set` / `setFeed` / `setAssetConfig` |
 
 
-Grinders: `Ownable` for custodians / allocation / upgrades.
+Grinders: `Ownable2Step` for custodians / allocation / upgrades; liquidation arm via `confirm` (`confirmed`).
 
-Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` = `GRAI.owner()` when not liquidating; UUPS = `GRAI.owner()`.
+Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` = `GRAI.owner()`; UUPS = `GRAI.owner()`.
 
 ---
 
@@ -1187,7 +1198,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 3. **Past dividends are not diluted** — new locks sync debt to the live index.
 4. **No unvoted locks → dividend cut to treasury** — same for bribe premium dividend cut.
 6. **Quorum uses live supply** — deposits dilute progress until re-votes.
-7. **Liquidation is 2-of-2** — `hasQuorum()` **and** owner confirmation (`confirmed`, or owner `liquidate` while quorum holds).
+7. **Liquidation is 2-of-2 on open** — `hasQuorum()` on `GRAI.liquidate` **and** `grinders.confirmed` so nested sweeps succeed. `Grinders.liquidate` itself checks **only** `confirmed` (may run while still `GRINDING`). Arm cleared on revive / Grinders ownership accept.
 8. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
 9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; `claim` **/** `claimAll` **allowed** — dividend reserve and redeemable basket are separate (`_redeemable`).
 10. **FoT** — deposit/`distribute` size economics from credited `_pay`; `settlementAsset` is **non-FoT** (exact credit required; full `graiAmount` out).
@@ -1217,8 +1228,8 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `bribe`                    | Anyone              | Blocked                                                           |
 | `poach` / `previewPoach`   | Anyone              | `poach` blocked; preview still quotes                             |
 | `redeem`                   | Holder              | Only when open (after delay); `nonReentrant`                      |
-| `liquidate`                | Owner / anyone      | 2-of-2 open; on open send orphan GRAI to opener                   |
-| `revive`                 | Anyone              | Closes cycle; fund restarts                                       |
+| `liquidate`                | Anyone              | `GRINDING` + quorum; nested `grinders.liquidate` needs `confirmed`; then `REDEMPTION` + orphan → opener |
+| `revive`                 | Anyone              | After `liquidationPeriod + redeemPeriod`; clears arm; fund restarts                                       |
 | `setConfig`                | Owner               | Blocked while open                                                |
 | `setFeed`                  | Owner               | List / pause / replace oracle / delist (§2); delist blocked while open |
 
@@ -1234,7 +1245,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `poachOf(locker, account)`                               | Anyone (view) | Poach quote + current referrer                         |
 | `rebind(locker, newReferrer)`                             | GRAI          | After `poach` (tree + L1/L2 books; no NFT transfer)    |
 | `distribute(asset, locker, net, revenue, claimedValue)`  | GRAI          | On `claim`: books += claimed USD; payees = `ownerOf`   |
-| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner    | Blocked while liquidation open                         |
+| `setBeneficiar` / `setRoyaltyBps` / `setRevenueShareBps` | GRAI owner    | Anytime                                                |
 
 
 ### Grinders
@@ -1244,7 +1255,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | ---------------------------------- | --------- | --------------------- |
 | `allocate` / `mint` / `set`        | Owner     | Normal                |
 | `deallocate`                       | Custodian | Normal                |
-| `liquidate` / `liquidate(from,to)` | Anyone    | GRAI liquidation open |
+| `liquidate` / `liquidate(from,to)` | Anyone    | `confirmed` (pages sleeves / idle → GRAI; no regime gate) |
 
 
 ---

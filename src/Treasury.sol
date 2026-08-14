@@ -19,7 +19,7 @@ import {IWETH} from "./interfaces/IWETH.sol";
 ///      - `lockerBooks[locker].referrer` — upline link (set on first `mint`, moved only by `rebind` / `poach`).
 ///      - `lockerBooks` volumes — L1/L2 deposit books keyed by locker identity in the tree.
 ///      Claim payees = `ownerOf` of each upline locker node. UUPS; `mint`/`rebind`/`distribute` = only GRAI;
-///      payout knobs / upgrades = `GRAI.owner()` (knobs frozen while GRAI liquidation is open).
+///      payout knobs / upgrades = `GRAI.owner()`.
 ///      Interact via ERC1967Proxy only.
 contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable, UUPSUpgradeable {
     using Strings for uint256;
@@ -63,14 +63,12 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @inheritdoc ITreasury
     function setBeneficiar(address beneficiar_) public {
         _onlyGraiOwner();
-        _requireNotLiquidation();
         _beneficiar = beneficiar_;
     }
 
     /// @inheritdoc ITreasury
     function setRoyaltyBps(uint16 royaltyBps_) external {
         _onlyGraiOwner();
-        _requireNotLiquidation();
         if (royaltyBps_ > BPS) revert BpsTooHigh();
         royaltyBps = royaltyBps_;
         emit RoyaltyBpsUpdate(royaltyBps_);
@@ -79,7 +77,6 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @inheritdoc ITreasury
     function setRevenueShareBps(uint16[] memory shares) external {
         _onlyGraiOwner();
-        _requireNotLiquidation();
         uint256 len = shares.length;
         if (len != 2) revert InvalidShares();
         uint256 sum;
@@ -103,6 +100,8 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     ///      credits `locker.value` and walks up to `revenueShareBps.length` upline levels into
     ///      `l1Value` / `l2Value` (levels beyond L2 are walked for stop rules only — books only
     ///      store L1/L2). GRAI calls this on deposit (book USD); claim credits via `distribute`.
+    ///      First sticky bind also mirrors any pre-bind `locker.value` (e.g. unbound claims) onto
+    ///      the new upline’s L1/L2, matching `_creditBooks`, so later `rebind` debits stay solvent.
     function mint(address locker, address referrer, uint256 value) public returns (uint256 tokenId) {
         _onlyGrai();
         if (locker == address(0)) revert ZeroAddress();
@@ -118,6 +117,10 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
             }
             if (referrer != locker) {
                 _ensure(referrer);
+                // Unbound claims may have grown `locker.value` with no upline credit. Mirror that
+                // stock onto the new tree the same way `_creditBooks` would (without re-adding own).
+                uint256 own = lockerBooks[locker].value;
+                if (own > 0) _creditUpline(locker, referrer, own);
                 // Stub had L1 recruits before bind — those are now L2 under `referrer`.
                 if (revenueShareBps.length > 1) {
                     uint256 stubL1 = lockerBooks[locker].l1Value;
@@ -134,7 +137,13 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     function _creditBooks(address locker, uint256 value) internal {
         if (value == 0) return;
         lockerBooks[locker].value += value;
-        address ref = referrerOf(locker);
+        _creditUpline(locker, referrerOf(locker), value);
+    }
+
+    /// @dev Walk from `ref` up to `revenueShareBps.length` levels, crediting L1 then L2.
+    ///      `locker` is the originating node (stop if the walk returns to it).
+    function _creditUpline(address locker, address ref, uint256 value) internal {
+        if (value == 0) return;
         uint256 levels = revenueShareBps.length;
         for (uint256 level; level < levels;) {
             if (ref == address(0) || ref == locker) break;
@@ -169,7 +178,6 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         LockerBook storage node = lockerBooks[locker];
         uint256 own = node.value;
         uint256 direct = node.l1Value;
-        address newL2 = referrerOf(newReferrer);
         bool shiftL2 = revenueShareBps.length > 1;
 
         // Self-slot: locker was their own referrer — keep downline L1/L2 on the locker node;
@@ -185,12 +193,19 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
                 }
             }
         }
-        LockerBook storage buyer = lockerBooks[newReferrer];
-        buyer.l1Value += own;
-        if (shiftL2) {
-            buyer.l2Value += direct;
-            if (newL2 != address(0) && newL2 != newReferrer && newL2 != locker) {
-                lockerBooks[newL2].l2Value += own;
+
+        // Self-root reclaim (`newReferrer == locker`): debit old upline only. Do not credit
+        // `own` onto the locker's `l1Value` (would double-count in `poachOf = value + l1Value`)
+        // nor treat the old upline as a new L2.
+        if (newReferrer != locker) {
+            address newL2 = referrerOf(newReferrer);
+            LockerBook storage buyer = lockerBooks[newReferrer];
+            buyer.l1Value += own;
+            if (shiftL2) {
+                buyer.l2Value += direct;
+                if (newL2 != address(0) && newL2 != newReferrer && newL2 != locker) {
+                    lockerBooks[newL2].l2Value += own;
+                }
             }
         }
 
@@ -473,14 +488,6 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
     function _onlyGrai() internal view {
         if (msg.sender != address(grai)) revert NotGrai();
-    }
-
-    /// @dev Same freeze as `GRAI.setConfig`: claim still runs in liquidation, so payout routing
-    ///      (`beneficiar`, L1/L2 weights, royalty) must not move under in-flight claims.
-    function _requireNotLiquidation() internal view {
-        try grai.liquidation() returns (bool open) {
-            if (open) revert LiquidationOpen();
-        } catch {}
     }
 
     /// @dev Prefer `grai.owner()`; if `grai` has no code or the call reverts, treat `address(grai)`

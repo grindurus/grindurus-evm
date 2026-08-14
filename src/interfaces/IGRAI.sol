@@ -32,6 +32,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidRange(uint256 fromId, uint256 toId);
     /// @notice `renounceOwnership` is disabled — owner is required for 2-of-2 liquidation consent.
     error OwnershipRenounceDisabled();
+
+    /// @notice Fund lifecycle: normal ops → redeem window (after consolidation delay) → grinding.
+    enum Regime {
+        GRINDING,
+        REDEMPTION
+    }
+
     /// @notice Field selector for `setConfig`.
     /// @dev Yield cuts (`dividendCutBps` / `treasuryCutBps`) are fixed at `initialize` and cannot
     ///      be changed via `setConfig`. Still blocked while liquidation is open.
@@ -136,7 +143,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 bribeAmount,
         uint256 totalVoted
     );
-    event Liquidate(bool liquidation);
+    event RegimeChange(Regime regime);
     event Poach(address indexed buyer, address indexed locker, uint256 price);
     function config()
         external
@@ -206,13 +213,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         (`totalVoted * BPS > totalSupply * quorumBps`). Exact equality is not enough.
     function hasQuorum() external view returns (bool);
 
-    /// @notice Owner confirmation for non-owner liquidation open. Owner toggles via `liquidate` when no quorum; cleared on open.
-    function confirmed() external view returns (bool);
+    /// @notice Current fund regime (`GRINDING` / `REDEMPTION`).
+    /// @dev Open sets `REDEMPTION`; `liquidationPeriod` still gates `redeem` via `liquidationAt`.
+    function regime() external view returns (Regime);
 
-    /// @notice True after `liquidate` opens until `revive` closes it.
+    /// @notice True when `regime != GRINDING` (liquidation cycle open through redeem until `revive`).
     function liquidation() external view returns (bool);
 
-    /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
+    /// @notice Timestamp when the current liquidation opened; zero while grinding.
     function liquidationAt() external view returns (uint48);
 
     function assets(address asset)
@@ -325,10 +333,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
     function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice Liquidation 2-of-2: owner toggles `confirmed` if no quorum, else opens;
-    ///         anyone else opens when `confirmed && hasQuorum()`, otherwise reverts.
-    ///         On open: orphan/dead GRAI → `msg.sender`; sweep all Grinders custodians + idle
-    ///         listed balances onto GRAI.
+    /// @notice Liquidation 2-of-2: open when `hasQuorum()`; Grinders-owner arm is enforced
+    ///         inside `grinders.liquidate` (`confirmed`). Anyone may call; sweep reverts abort open.
+    ///         On open: orphan/dead GRAI → `msg.sender`; clear Grinders arm; sweep Grinders
+    ///         custodians + idle listed balances onto GRAI.
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →

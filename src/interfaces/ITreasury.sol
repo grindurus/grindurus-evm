@@ -17,8 +17,6 @@ interface ITreasury {
     error InvalidAmount();
     error TokenNonexistent(uint256 tokenId);
     error InvalidRange(uint256 fromId, uint256 toId);
-    /// @notice GRAI liquidation is open — payout routing knobs are frozen until `revive`.
-    error LiquidationOpen();
 
     /// @notice Claim-time payout to a referrer or `beneficiar`.
     event Distribute(address indexed asset, address indexed to, uint256 amount);
@@ -90,14 +88,13 @@ interface ITreasury {
 
     function initialize(address grai_) external;
 
-    /// @notice Retarget the protocol fee recipient. Reverts while GRAI liquidation is open.
+    /// @notice Retarget the protocol fee recipient.
     function setBeneficiar(address beneficiar_) external;
 
-    /// @notice Set ERC-2981 royalty bps. Reverts while GRAI liquidation is open.
+    /// @notice Set ERC-2981 royalty bps.
     function setRoyaltyBps(uint16 royaltyBps_) external;
 
     /// @notice Set L1/L2 revenue-share weights in bps; `shares.length == 2` and `sum == 10_000`.
-    ///         Reverts while GRAI liquidation is open.
     function setRevenueShareBps(uint16[] memory shares) external;
 
     /// @notice GRAI-only: sticky-bind `referrer`, mint cashflow NFT to `locker` on first call;

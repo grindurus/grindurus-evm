@@ -184,9 +184,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     /// @notice Reverse index: registered custodian address => NFT id.
     mapping(address custodian => uint256) public custodianIds;
 
-    /// @dev Storage gap for future upgrades (includes slots formerly used by local liquidation
-    ///      state and the removed `allocated` / `totalAllocated` issuance ledgers).
-    uint256[43] private _gap;
+    /// @notice Grinders-owner limb of GRAI 2-of-2 liquidation. Armed via `confirm`;
+    ///         required by every `liquidate` sweep; cleared by GRAI on `revive` (or ownership accept).
+    bool public confirmed;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -210,6 +210,28 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         if (grai_ == address(0)) revert GraiTokenZero();
         grai = IGRAI(grai_);
         emit GraiTokenUpdate(grai_);
+    }
+
+    /// @inheritdoc Ownable2StepUpgradeable
+    /// @dev Prior owner's liquidation arm must not survive handoff.
+    function acceptOwnership() public override {
+        super.acceptOwnership();
+        confirmed = false;
+    }
+
+    /// @notice Toggle the Grinders-owner limb of GRAI liquidation (arm / disarm).
+    /// @dev Arm stays set through open so keeper `liquidate` sweeps keep working; GRAI clears via
+    ///      `revive`.
+    function confirm() public onlyOwner {
+        confirmed = !confirmed;
+        emit Confirm(confirmed);
+    }
+
+    /// @notice Clear the liquidation arm when GRAI closes the cycle. Only linked GRAI.
+    function revive() public {
+        _onlyGrai();
+        confirmed = false;
+        emit Confirm(false);
     }
 
     receive() external payable {}
@@ -306,13 +328,13 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     /// @inheritdoc IGrinders
-    /// @dev Permissionless while `grai.liquidation()` is open. Pages custodians by registered id,
-    ///      pulls eth/base/quote into this contract, then forwards those amounts to GRAI as idle
-    ///      liquidation inventory for `liquidate`. Per-custodian `try/catch` keeps earlier pulls if one
-    ///      sleeve reverts. Return amounts are trusted: only registered custodian wallets are
-    ///      iterated, under the Grinders NFT custody model.
+    /// @dev Permissionless while `confirmed` (Grinders-owner arm). Pages custodians by registered
+    ///      id, pulls eth/base/quote into this contract, then forwards those amounts to GRAI.
+    ///      Per-custodian `try/catch` keeps earlier pulls if one sleeve reverts. Return amounts are
+    ///      trusted: only registered custodian wallets are iterated, under the Grinders NFT custody
+    ///      model.
     function liquidate(uint256 fromId, uint256 toId) public {
-        _requireLiquidation();
+        if (!confirmed) revert LiquidationNotConfirmed();
         address grai_ = address(grai);
         if (fromId >= toId) {
             fromId = type(uint256).max;
@@ -435,7 +457,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     /// @notice Registered NFT id for `account`, or `type(uint256).max` if unregistered.
-    function custodyIdOf(address account) public view returns (uint256) {
+    function custodianIdOf(address account) public view returns (uint256) {
         if (!isCustodian(account)) return type(uint256).max;
         return custodianIds[account];
     }
@@ -444,13 +466,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         if (!isCustodian(account)) revert UnknownCustodian();
     }
 
-    function _requireLiquidation() internal view {
-        if (address(grai).code.length == 0) return;
-        try grai.liquidation() returns (bool liquidation) {
-            if (!liquidation) revert NoLiquidation();
-        } catch {
-            return;
-        }
+    function _onlyGrai() internal view {
+        if (msg.sender != address(grai)) revert NotGrai();
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}

@@ -158,7 +158,7 @@ After swaps, returned token and size often differ from what was allocated — ne
 - `tokenURI(id)` — on-chain JSON via `GrinderArt` (custodian address + kind).
 - `tokenURI()` (ERC-1046) — `https://grindurus.xyz/metadata.json`.
 - NFT **owner** = custodian operator (`Custodian.owner()` reads `Grinders.ownerOf(id)`).
-- Views: `getCustodiansData(fromId, toId)`, `custodyIdOf`, `custodianKindOf`, `isCustodian`.
+- Views: `getCustodiansData(fromId, toId)`, `custodianIdOf`, `custodianKindOf`, `isCustodian`.
 
 ---
 
@@ -180,14 +180,14 @@ Analytics: `positions[msg.sender][asset].yielded` on GRAI accumulates credited d
 
 ## 6. Liquidation
 
-While `grai.liquidation()` is true:
+While `confirmed` (and typically after `GRAI.liquidate` opens the fund cycle):
 
 1. Keepers call `Grinders.liquidate(fromId, toId)` with `fromId < toId` to page custodian ids, pull each wallet’s ETH / base / quote onto Grinders, then forward those amounts to GRAI.
 2. **Idle sweep:** if `fromId >= toId`, the call treats the range as a sentinel (`type(uint256).max`) and forwards Grinders’ **own** balances of assets from `grai.getAssets()` to GRAI (no custodian pulls).
-3. Custodian `distribute` / `deallocate` revert (`LiquidationOpen`).
+3. While `grai.liquidation()` is true, custodian `distribute` / `deallocate` revert (`LiquidationOpen`).
 4. Holders `GRAI.redeem` from the redeemable basket; later `revive` can return leftovers to Grinders.
 
-Grinders does not open liquidation — that is GRAI’s 2-of-2 (`hasQuorum` ∧ owner `liquidate`). Gate: `_requireLiquidation()` reads `grai.liquidation()` (fail-open if `grai` has no code or the view reverts — keep `setGrai` correct in production).
+Grinders arms the Grinders-owner limb of GRAI’s 2-of-2 (`confirm` → `confirmed`). Anyone opens with `GRAI.liquidate` when `hasQuorum()`; each `Grinders.liquidate` requires `confirmed` only (so an unarmed open/sweep aborts). Arm stays through open for keeper sweeps; GRAI clears on `revive`.
 
 ---
 
@@ -195,9 +195,9 @@ Grinders does not open liquidation — that is GRAI’s 2-of-2 (`hasQuorum` ∧ 
 
 | Role | Powers |
 | ---- | ------ |
-| **Grinders owner** | UUPS upgrade, `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` |
+| **Grinders owner** | UUPS upgrade, `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` / `confirm` |
 | **NFT owner (Grinder)** | Custodian trades (swap / CoW / …), `toggleUpgradeable` (custodian UUPS) |
-| **Anyone** | `liquidate(fromId, toId)` when GRAI liquidation is open |
+| **Anyone** | `liquidate(fromId, toId)` when `confirmed` |
 
 Wire-up: after deploy, `GRAI.setGrinders(grinders)` requires `grinders.grai() == GRAI`.
 
@@ -219,7 +219,9 @@ Wire-up: after deploy, `GRAI.setGrinders(grinders)` requires `grinders.grai() ==
 | Function | Caller | When |
 | -------- | ------ | ---- |
 | `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` | Grinders owner | Anytime (normal ops); deallocate/distribute blocked on custodian if GRAI liquidating |
+| `confirm` | Grinders owner | Toggle arm for GRAI open / sweeps |
 | Custodian trade APIs / `toggleUpgradeable` | NFT owner | Kind-specific |
-| `liquidate(fromId, toId)` | Anyone | `grai.liquidation() == true` (`fromId < toId` = page wallets; else idle reserve sweep) |
+| `liquidate(fromId, toId)` | Anyone | `confirmed` (`fromId < toId` = page wallets; else idle reserve sweep) |
+| `revive` | GRAI only | Called on `GRAI.revive`; clears `confirmed` |
 
 ---

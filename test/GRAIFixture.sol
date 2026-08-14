@@ -241,6 +241,19 @@ abstract contract GRAIFixture is Test {
         token.mint(address(grinders), amount);
     }
 
+    /// @dev Arm Grinders-owner limb then open GRAI liquidation (requires quorum already).
+    function _openLiquidation() internal {
+        vm.startPrank(admin);
+        if (address(grai.grinders()) != address(grinders)) {
+            grai.setGrinders(address(grinders));
+        }
+        if (!grinders.confirmed()) {
+            grinders.confirm();
+        }
+        grai.liquidate();
+        vm.stopPrank();
+    }
+
     function _assertFirstVaultSnapshot(address expectedAsset, uint256 expectedSenior, uint256 expectedJunior)
         internal
         view

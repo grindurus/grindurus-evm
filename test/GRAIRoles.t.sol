@@ -80,18 +80,18 @@ contract GRAIRolesTest is Test {
     }
 
     function test_AcceptOwnershipClearsConfirmed() public {
-        // Owner toggles confirmed while quorum is unmet (no votes).
+        // Grinders owner arms liquidation while quorum is unmet (no votes).
         assertFalse(grai.hasQuorum());
-        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.liquidate, ()));
-        assertTrue(grai.confirmed());
+        _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.confirm, ()));
+        assertTrue(grinders.confirmed());
 
         address next = makeAddr("nextOwner");
-        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.transferOwnership, (next)));
+        _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.transferOwnership, (next)));
         vm.prank(next);
-        grai.acceptOwnership();
+        grinders.acceptOwnership();
 
-        assertEq(grai.owner(), next);
-        assertFalse(grai.confirmed(), "prior owner consent must not survive handoff");
+        assertEq(grinders.owner(), next);
+        assertFalse(grinders.confirmed(), "prior Grinders-owner consent must not survive handoff");
     }
 
     function test_OwnerCannotRenounceOwnership() public {

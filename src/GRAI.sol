@@ -82,17 +82,13 @@ contract GRAI is
     ///      escrowed GRAI. Owner must only set a non-FoT listed feed asset via `setSettlementAsset`.
     address public settlementAsset;
 
-    /// @notice Owner confirmation for non-owner open (2-of-2). Owner toggles via `liquidate` when no quorum;
-    ///         cleared on open. Owner with quorum opens without needing this flag.
-    bool public confirmed;
+    /// @notice Fund lifecycle regime (`GRINDING` ↔ `REDEMPTION`).
+    Regime public regime;
 
-    /// @notice True after liquidation opens until `revive` closes it.
-    bool public liquidation;
-
-    /// @notice Timestamp when the current liquidation opened; zero while liquidation is closed.
+    /// @notice Timestamp when redemption opened; zero while `GRINDING`.
     uint48 public liquidationAt;
 
-    /** SLOT end 20 + 1 + 1 + 6 */
+    /** SLOT end 20 + 1 + 6 */
 
     /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
     Config public config;
@@ -131,16 +127,10 @@ contract GRAI is
         return OwnableUpgradeable.owner();
     }
 
-    /// @dev Disabled: 2-of-2 liquidation needs a live owner to toggle `confirmed` / open with quorum.
-    ///      Transfer via Ownable2Step instead.
+    /// @dev Disabled: owner is required for feeds / config / UUPS. Liquidation consent lives on
+    ///      `Grinders.confirmed` (`grinders.owner()`). Transfer via Ownable2Step instead.
     function renounceOwnership() public view override onlyOwner {
         revert OwnershipRenounceDisabled();
-    }
-
-    /// @dev Clear prior owner’s liquidation consent — `confirmed` must not survive handoff.
-    function acceptOwnership() public override {
-        super.acceptOwnership();
-        confirmed = false;
     }
 
     /// @dev Owner feed waterfall on `feeds[asset]`:
@@ -168,7 +158,7 @@ contract GRAI is
             f.paused = feed.paused;
         } else if (feed.feedType == FeedType.NONE) {
             // remove (delist)
-            _requireNotLiquidation();
+            _requireRegime(Regime.GRINDING);
             _removeAsset(asset);
         } else {
             // replace oracle
@@ -181,7 +171,7 @@ contract GRAI is
     ///      `initialize` — only tip, quorum, unlock, periods, and `revenueShareBps` are patchable.
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/revive clocks; freeze both windows for the whole liquidation.
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
 
         Config memory cfg = config;
         // Narrowing is intentional: each ConfigId writes a fixed-width field window.
@@ -208,13 +198,13 @@ contract GRAI is
     }
 
     function setGrinders(address grinders_) external onlyOwner {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         _requireGraiMatch(grinders_);
         grinders = IGrinders(grinders_);
     }
 
     function setTreasury(address treasury_) external onlyOwner {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         _requireGraiMatch(treasury_);
         treasury = ITreasury(treasury_);
     }
@@ -264,7 +254,7 @@ contract GRAI is
     /// @dev Full basket snapshot in `assetList` order (includes zero balances). Excludes dividend
     ///      `totalClaimable` from each amount. Only while liquidation is open.
     function getRedeemables() external view returns (address[] memory assetOuts, uint256[] memory amounts) {
-        _requireLiquidation();
+        if (regime == Regime.GRINDING) revert LiquidationClosed();
         assetOuts = new address[](assetList.length);
         amounts = new uint256[](assetList.length);
         for (uint256 i; i < assetList.length;) {
@@ -296,7 +286,7 @@ contract GRAI is
 
     /// @notice Pull yield and split per `config` dividend / treasury cuts.
     function distribute(address asset, uint256 yieldAmount) public payable nonReentrant {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         _requireNotGRAI(asset);
         _requireListed(asset);
         _requireNotZeroAmount(yieldAmount);
@@ -323,7 +313,7 @@ contract GRAI is
         bool lock_,
         address referrer
     ) public payable nonReentrant returns (uint256 graiOut, uint256 value) {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         _requireNotGRAI(asset);
         _requireListed(asset);
         _requireNotZeroAmount(amount);
@@ -366,7 +356,7 @@ contract GRAI is
     /// @dev Pays `previewPoach` GRAI to the current sticky referrer, then `treasury.rebind` (tree only).
     ///      Blocked while liquidation is open (same gate as deposit / lock / bribe).
     function poach(address locker) public nonReentrant {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         address poacher = msg.sender;
         (uint256 price, address referrer) = previewPoach(locker, poacher);
         _transfer(poacher, referrer, price);
@@ -379,8 +369,8 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Escrows GRAI for dividend eligibility on the unvoted portion (`locked - voted`).
     ///      Not required before `vote` — `vote` locks any shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
-    function lock(uint256 graiAmount) public {
-        _requireNotLiquidation();
+    function lock(uint256 graiAmount) public nonReentrant {
+        _requireRegime(Regime.GRINDING);
         _requireNotZeroAmount(graiAmount);
         address locker = msg.sender;
         Escrow storage entry = escrows[locker];
@@ -405,7 +395,7 @@ contract GRAI is
     ///      full-escrow exit) lives in `previewUnlock` — intentional, not a stuck-funds exception.
     ///      Yield claims are separate (`claim` / `claimAll`).
     function unlock(uint256 graiAmount) public nonReentrant {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         address account = msg.sender;
         Escrow storage entry = escrows[account];
         _requireNotZeroAmount(graiAmount);
@@ -526,7 +516,7 @@ contract GRAI is
     ///      Voted GRAI leaves the dividend base (`locked - voted`) and is buyable via `bribe`;
     ///      exit also via `unlock` (clamps vote, unlock penalty).
     function vote(uint256 graiAmount) public {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         _requireNotZeroAmount(graiAmount);
         address voter = msg.sender;
         Escrow storage entry = escrows[voter];
@@ -557,7 +547,7 @@ contract GRAI is
     ///      full gap stays in the ask (briber saving), other half → cuts; voter keeps the rest of
     ///      `received`. Par: all to voter.
     function bribe(address voter, uint256 graiAmount) public payable nonReentrant {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
         address briber = msg.sender;
         // Snapshot ask before escrow reserve changes `totalVoted` (drives dynamic premium).
         (uint256 bribeAmount, uint256 premium, uint256 discount) = previewBribe(voter, graiAmount);
@@ -635,45 +625,15 @@ contract GRAI is
     //////////////////// LIQUIDATE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev 2-of-2 with vote quorum. Owner: toggle `confirmed` when no quorum; with
-    ///      quorum, this call is consent and opens. Non-owner: open when `confirmed &&
-    ///      hasQuorum()`, else revert. On open: send orphan/dead GRAI
-    ///      (`balanceOf(this) − totalLocked`) to `msg.sender`, then sweep all Grinders
-    ///      custodians + idle listed balances onto GRAI so redeem is not empty-basket.
-    ///
-    ///      Risk model (intentional — do not split confirm/open). Owner intent resolves against
-    ///      live `hasQuorum()` at inclusion; vote/bribe/deposit/unlock may flip the branch
-    ///      between sign and mine. Keep one `liquidate()` so insurance / cover pricing uses:
-    ///        - Risk: confirm tx mined after quorum crossed → accidental open (
-    ///          start `liquidationPeriod`, dead-GRAI scoop to opener)
-    ///          → Probability(risk): P(quorum flips false→true before inclusion)
-    ///        - Risk: open tx mined after quorum lost → silent `confirmed` toggle, no liquidation
-    ///          → Probability(risk): P(quorum flips true→false before inclusion)
-    ///        - Risk: owner meant to clear `confirmed` (toggle off) while still below quorum, but
-    ///          quorum arrives first → opens instead of disarming
-    ///          → Probability(risk): P(disarm intent ∩ quorum crossed before inclusion)
-    ///        - Risk: after a failed open (toggle armed `confirmed=true` with no quorum), a later
-    ///          non-owner open succeeds once quorum returns — opener chosen by mempool race
-    ///          → Probability(risk): P(confirmed latched ∩ quorum restored ∩ non-owner wins open)
-    ///        - Risk: near-quorum deposit dilutes vote share / bribe|unlock cuts votes and flips
-    ///          the owner branch without a dedicated “vote attack”
-    ///          → Probability(risk): P(|support − quorum| small enough for one tx to cross)
-    ///        - Risk: accidental or raced open awards `balanceOf(this)−totalLocked` dead GRAI to
-    ///          `msg.sender` (insurance/cover residual / unlock-fee inventory)
-    ///          → Probability(risk): P(open path executes) × share of dead GRAI in supply
+    /// @dev 2-of-2: vote quorum here **and** `Grinders.confirmed` inside `grinders.liquidate`
+    ///      (armed by `grinders.owner()` via `confirm`). Sweep reverts propagate so
+    ///      open is atomic. On open: orphan/dead GRAI (`balanceOf(this) − totalLocked`) →
+    ///      `msg.sender`, then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() public nonReentrant {
-        _requireNotLiquidation();
+        _requireRegime(Regime.GRINDING);
+        if (!hasQuorum()) revert LiquidationNotReady();
+
         address liquidator = msg.sender;
-        if (liquidator == owner()) {
-            if (!hasQuorum()) {
-                confirmed = !confirmed;
-                return;
-            }
-        } else {
-            if (!confirmed || !hasQuorum()) revert LiquidationNotReady();
-        }
-        liquidation = true;
-        liquidationAt = uint48(block.timestamp);
 
         // Unlock fees / stray GRAI on this contract are not escrow — send to the opener
         // (`msg.sender`) as a normal holder so they can redeem (or hold) rather than leave
@@ -681,12 +641,15 @@ contract GRAI is
         uint256 bal = balanceOf(address(this));
         if (bal > totalLocked) _transfer(address(this), liquidator, bal - totalLocked);
 
-        // Pull custodian inventories + Grinders idle into GRAI (needs `liquidation == true`).
+        // Pull custodian inventories + Grinders idle into GRAI (gated by `grinders.confirmed`).
         // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
-        try grinders.liquidate(0, type(uint256).max) {} catch {}
-        try grinders.liquidate(0, 0) {} catch {}
+        // No try/catch: `!confirmed` or a hard sweep failure reverts the whole open.
+        grinders.liquidate(0, type(uint256).max);
+        grinders.liquidate(0, 0);
 
-        emit Liquidate(liquidation);
+        regime = Regime.REDEMPTION;
+        liquidationAt = uint48(block.timestamp);
+        emit RegimeChange(regime);
     }
 
     //////////////////// REDEEM ////////////////////
@@ -700,7 +663,10 @@ contract GRAI is
     ///      snapshot (and over-claim the callback asset itself).
     function redeem(uint256 graiAmount) public nonReentrant {
         address holder = msg.sender;
-        _requireLiquidation();
+        _requireRegime(Regime.REDEMPTION);
+        if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod) {
+            revert LiquidationDelay();
+        }
 
         (address[] memory assetOuts, uint256[] memory amounts) = previewRedeem(holder, graiAmount);
         uint256 supply = totalSupply();
@@ -738,14 +704,16 @@ contract GRAI is
         address holder,
         uint256 graiAmount
     ) public view returns (address[] memory assetOuts, uint256[] memory amounts) {
-        _requireLiquidation();
+        if (regime == Regime.GRINDING) revert LiquidationClosed();
         /// @dev Consolidation window: when liquidation opens, backing is still on Grinders and
         ///      custodians, while `redeem` pays only from tokens already held here. Blocking
         ///      claims until `liquidationPeriod` elapses gives keepers time to run permissionless
         ///      `Grinders.liquidate` sweeps; without it, early redeemers could burn shares and cut
         ///      `totalValue` while `previewRedeem` returns zero assets, forfeiting backing to
         ///      later claimants.
-        if (block.timestamp < liquidationAt + config.liquidationPeriod) revert LiquidationDelay();
+        if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod) {
+            revert LiquidationDelay();
+        }
         uint256 supply = totalSupply();
         if (supply == 0) revert InvalidAmount();
         Escrow storage entry = escrows[holder];
@@ -784,13 +752,13 @@ contract GRAI is
     /// @inheritdoc IGRAI
     /// @dev Permissionless after `liquidationPeriod + redeemPeriod`: return unredeemed basket
     ///      balances to Grinders and clear the claim clock so the fund can accept deposits again
-    ///      (`_requireNotLiquidation` lifts). Per-asset `paused` flags are left as the owner set them.
+    ///      (`_requireRegime(GRINDING)` lifts). Per-asset `paused` flags are left as the owner set them.
     ///      Does **not** reprice `totalValue` from leftover NAV — book stays at the post-redeem
     ///      level so mint stays ~$1/GRAI (`graiOut ≈ usdValue` while `totalSupply == totalValue`).
     ///      If no shares remain, `totalValue = 0`. Dividend inventory in `assets[asset].totalClaimable`
     ///      is left on GRAI for post-revive `claim`.
     function revive() public nonReentrant {
-        _requireLiquidation();
+        _requireRegime(Regime.REDEMPTION);
         if (liquidationAt == 0) revert LiquidationClosed();
         if (block.timestamp < uint256(liquidationAt) + config.liquidationPeriod + config.redeemPeriod) {
             revert RedeemPeriodActive();
@@ -801,10 +769,10 @@ contract GRAI is
             _withdraw(address(grinders), asset, _redeemable(asset));
             unchecked { ++i; }
         }
-        liquidation = false;
+        regime = Regime.GRINDING;
         liquidationAt = 0;
-        confirmed = false;
-        emit Liquidate(liquidation);
+        grinders.revive();
+        emit RegimeChange(regime);
     }
 
     ////////////////////////////// INTERNAL HELPERS //////////////////////////////
@@ -813,12 +781,16 @@ contract GRAI is
         if (feeds[asset].feedType == FeedType.NONE) revert AssetUnknown();
     }
 
-    function _requireLiquidation() internal view {
-        if (!liquidation) revert LiquidationClosed();
+    /// @inheritdoc IGRAI
+    function liquidation() public view returns (bool) {
+        return regime != Regime.GRINDING;
     }
 
-    function _requireNotLiquidation() internal view {
-        if (liquidation) revert LiquidationOpen();
+    function _requireRegime(Regime expected) internal view {
+        if (regime != expected) {
+            if (expected == Regime.GRINDING) revert LiquidationOpen();
+            revert LiquidationClosed();
+        }
     }
 
     // forge-lint: disable-next-line(mixed-case-function)

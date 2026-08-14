@@ -36,4 +36,7 @@ interface ICustodian {
     function liquidate()
         external
         returns (address baseAsset, address quoteAsset, uint256 baseOut, uint256 quoteOut, uint256 ethOut);
+
+    /// @notice USD NAV of base + quote balances (`USD_DECIMALS`).
+    function nav() external view returns (uint256);
 }

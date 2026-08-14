@@ -208,6 +208,104 @@ contract TreasuryPoachTest is GRAIFixture {
         assertEq(treasury.referrerOf(carol), bob);
     }
 
+    /// Audit: reclaiming self-root must not `l1Value += own` on the locker (ask would become 2× value).
+    function test_Poach_SelfRootReclaim_DoesNotDoubleCountOwnValue() public {
+        _seedTree();
+        // Alice: value=100, l1=40 → ask 140. Dias buys the seat.
+        _fundAndPoach(dias, 140e6, alice);
+        assertEq(treasury.referrerOf(alice), dias);
+        _assertNode(alice, 100e6, 40e6, 25e6);
+        _assertNode(dias, 140e6, 100e6, 40e6);
+
+        (uint256 reclaimAsk, address seller) = treasury.poachOf(alice, alice);
+        assertEq(seller, dias);
+        assertEq(reclaimAsk, 140e6, "ask still value+l1, not yet doubled");
+
+        // Alice already holds GRAI from her deposit + dias's poach payment.
+        uint256 diasGraiBefore = grai.balanceOf(dias);
+        vm.prank(alice);
+        grai.poach(alice);
+
+        assertEq(treasury.referrerOf(alice), alice);
+        // Own deposits stay in `value`; downline books unchanged — not copied into `l1Value`.
+        _assertNode(alice, 100e6, 40e6, 25e6);
+        _assertNode(dias, 140e6, 0, 0); // lost alice seat; no bogus L2 re-credit
+
+        (uint256 nextAsk,) = treasury.poachOf(alice, dias);
+        assertEq(nextAsk, 140e6, "must not be 2 * value + l1 (240)");
+        assertEq(grai.balanceOf(dias), diasGraiBefore + reclaimAsk);
+    }
+
+    /// Audit: claim while unbound grows `locker.value` with no upline L1; first bind must backfill
+    /// so later `poach`/`rebind` does not underflow or eat sibling L1.
+    function test_ClaimBeforeBind_BackfillsL1_PoachSucceeds() public {
+        _deposit(alice, 100e6, address(0)); // Alice self-root
+        uint256 g = grai.balanceOf(alice);
+        vm.prank(alice);
+        grai.transfer(eve, g);
+
+        _lock(eve, g);
+        assertEq(treasury.referrerOf(eve), address(0));
+
+        _yield(YIELD);
+        _claimMax(eve);
+
+        (uint256 claimBook,,,) = treasury.lockerBooks(eve);
+        assertGt(claimBook, 0, "unbound claim credited value");
+        assertEq(treasury.referrerOf(eve), address(0));
+
+        _deposit(eve, 1e6, alice); // first bind under Alice
+        assertEq(treasury.referrerOf(eve), alice);
+
+        (uint256 eveValue,,,) = treasury.lockerBooks(eve);
+        (, uint256 aliceL1,,) = treasury.lockerBooks(alice);
+        assertEq(eveValue, claimBook + 1e6);
+        // Backfill claimBook + deposit 1e6 onto Alice L1 (not deposit alone).
+        assertEq(aliceL1, claimBook + 1e6, "bind must mirror pre-claim value into referrer.l1");
+
+        uint256 price = eveValue; // poachOf = value + l1 (eve has no downline)
+        uint256 aliceGraiBefore = grai.balanceOf(alice);
+        deal(address(grai), bob, price);
+        vm.prank(bob);
+        grai.poach(eve);
+
+        assertEq(treasury.referrerOf(eve), bob);
+        _assertNode(alice, 100e6, 0, 0); // lost Eve seat; L1 cleared for that own book
+        _assertNode(bob, 0, eveValue, 0); // deal-funded poacher: no own deposits, gains Eve L1
+        assertEq(grai.balanceOf(alice), aliceGraiBefore + price);
+    }
+
+    function test_ClaimBeforeBind_PoachDoesNotCannibalizeSiblingL1() public {
+        _deposit(alice, 100e6, address(0));
+        _deposit(bob, 80e6, alice);
+
+        uint256 g = grai.balanceOf(alice);
+        vm.prank(alice);
+        grai.transfer(eve, g);
+
+        _lock(eve, g);
+        _yield(YIELD);
+        _claimMax(eve);
+        (uint256 claimBook,,,) = treasury.lockerBooks(eve);
+
+        _deposit(eve, 1e6, alice);
+
+        (, uint256 aliceL1Before,,) = treasury.lockerBooks(alice);
+        (uint256 eveValue,,,) = treasury.lockerBooks(eve);
+        // Bob 80 + Eve backfill(claimBook) + Eve deposit 1
+        assertEq(aliceL1Before, 80e6 + claimBook + 1e6);
+        assertEq(eveValue, claimBook + 1e6);
+
+        uint256 price = eveValue;
+        deal(address(grai), paul, price);
+        vm.prank(paul);
+        grai.poach(eve);
+
+        (, uint256 aliceL1After,,) = treasury.lockerBooks(alice);
+        assertEq(aliceL1After, 80e6, "Bob's L1 credit must survive Eve poach");
+        assertEq(treasury.referrerOf(eve), paul);
+    }
+
     ////////////////////////////// poach non-self //////////////////////////////
 
     function test_Poach_NonSelf_PaysSeller_MovesL1L2Book() public {
@@ -523,6 +621,8 @@ contract TreasuryPoachTest is GRAIFixture {
         assertTrue(grai.hasQuorum());
 
         vm.prank(admin);
+        grinders.confirm();
+        vm.prank(admin);
         grai.liquidate();
         assertTrue(grai.liquidation());
 
@@ -532,8 +632,8 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.poach(alice);
     }
 
-    /// Claim still runs in liquidation; payout routing knobs must not move under in-flight claims.
-    function test_TreasurySetters_Revert_DuringLiquidation() public {
+    /// Admin may retarget payout knobs during liquidation (on-admin trust).
+    function test_TreasurySetters_Allowed_DuringLiquidation() public {
         _deposit(alice, 100e6, address(0));
         uint256 aliceGrai = grai.balanceOf(alice);
         vm.prank(alice);
@@ -542,21 +642,25 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.vote(aliceGrai);
 
         vm.prank(admin);
+        grinders.confirm();
+        vm.prank(admin);
         grai.liquidate();
         assertTrue(grai.liquidation());
 
+        address other = makeAddr("other");
         vm.startPrank(admin);
-        vm.expectRevert(ITreasury.LiquidationOpen.selector);
-        treasury.setBeneficiar(makeAddr("other"));
+        treasury.setBeneficiar(other);
+        assertEq(treasury.beneficiar(), other);
 
-        vm.expectRevert(ITreasury.LiquidationOpen.selector);
         treasury.setRoyaltyBps(100);
+        assertEq(treasury.royaltyBps(), 100);
 
         uint16[] memory shares = new uint16[](2);
         shares[0] = 7_000;
         shares[1] = 3_000;
-        vm.expectRevert(ITreasury.LiquidationOpen.selector);
         treasury.setRevenueShareBps(shares);
+        assertEq(treasury.revenueShareBps(0), 7_000);
+        assertEq(treasury.revenueShareBps(1), 3_000);
         vm.stopPrank();
     }
 
@@ -582,6 +686,8 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.vote(aliceGrai);
         assertTrue(grai.hasQuorum());
 
+        vm.prank(admin);
+        grinders.confirm();
         vm.prank(admin);
         grai.liquidate();
         IGRAI.Config memory cfg = _readConfig();

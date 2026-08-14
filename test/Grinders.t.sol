@@ -61,6 +61,8 @@ contract GrindersTest is GRAIFixture {
         vm.prank(alice);
         grai.vote(100e6);
         vm.prank(admin);
+        grinders.confirm();
+        vm.prank(admin);
         grai.liquidate();
 
         // GRAI.liquidate sweeps Grinders idle + all custodians onto GRAI.
@@ -70,8 +72,8 @@ contract GrindersTest is GRAIFixture {
         assertEq(weth.balanceOf(address(grai)), 2e18);
     }
 
-    function test_LiquidateIdleRevertsWhileLiquidationClosed() public {
-        vm.expectRevert(IGrinders.NoLiquidation.selector);
+    function test_LiquidateIdleRevertsWhenNotArmed() public {
+        vm.expectRevert(IGrinders.LiquidationNotConfirmed.selector);
         grinders.liquidate(0, 0);
     }
 

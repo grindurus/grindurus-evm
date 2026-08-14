@@ -23,7 +23,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error CustodianNonexistent(uint256 custodianId);
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
-    error NoLiquidation();
+    error LiquidationNotConfirmed();
+    error NotGrai();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
     error InvalidCustodianRange(uint256 fromId, uint256 toId);
 
@@ -41,6 +42,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     }
 
     event GraiTokenUpdate(address indexed graiToken);
+    event Confirm(bool confirmed);
     event Liquidate(uint256 fromId, uint256 toId);
     event CustodianImplementationUpdated(bytes32 indexed custodianKind, address implementation);
     event CustodianDeployed(
@@ -60,13 +62,23 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
 
+    /// @notice Grinders-owner limb of GRAI 2-of-2 liquidation (armed via `confirm`).
+    function confirmed() external view returns (bool);
+
+    /// @notice Toggle liquidation arm. Only `owner()`.
+    ///         Arm stays set through open/sweeps until `revive` or ownership accept.
+    function confirm() external;
+
+    /// @notice Clear the arm when GRAI closes liquidation. Only callable by the linked GRAI.
+    function revive() external;
+
     function balance(address asset) external view returns (uint256);
 
     function custodianImplementations(bytes32 custodianKind) external view returns (address);
     function custodians(uint256 custodianId) external view returns (address);
     function custodianIds(address custodian) external view returns (uint256);
     /// @notice Registered NFT id for `account`, or `type(uint256).max` if not a custodian.
-    function custodyIdOf(address account) external view returns (uint256);
+    function custodianIdOf(address account) external view returns (uint256);
 
     function isCustodian(address custodian) external view returns (bool);
 
