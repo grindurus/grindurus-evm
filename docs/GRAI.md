@@ -807,7 +807,7 @@ On every successful `deposit`, GRAI calls `treasury.mint(locker, referrer, value
 - **On `claim`**: `treasury.distribute(..., claimedValue)` where `claimedValue = usdValue(asset, claimed)` credits the same L1/L2 books so poach ask rises with realized dividend USD. Tip/affiliate payouts are unchanged.
 - Volumes are **sticky**: `GRAI.redeem` does not reverse books. Tree shifts only via `poach` / `rebind`.
 - Tree position may be purchased via `GRAI.poach` — see **§11**. Cashflow rights trade via ordinary ERC-721 transfer — see **§10.5**.
-- ERC-2981 royalty receiver is the **locker** (secondary sales of the cashflow NFT).
+- ERC-2981 royalty receiver is **`beneficiar()`** (secondary sales of the cashflow NFT; same as Solana Metaplex creator).
 
 ### 10.2 Claim-time split
 

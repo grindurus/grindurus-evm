@@ -54,7 +54,7 @@ interface ITreasury {
     /// @dev Returns the configured address, or `grai.owner()` when unset (`address(0)`).
     function beneficiar() external view returns (address);
 
-    /// @notice Secondary-sale royalty in bps (ERC-2981), paid to the locker (depositor).
+    /// @notice Secondary-sale royalty in bps (ERC-2981), paid to `beneficiar()`.
     function royaltyBps() external view returns (uint16);
 
     /// @notice Per-level split of claim-time revenue share (bps; sum must equal 10_000).

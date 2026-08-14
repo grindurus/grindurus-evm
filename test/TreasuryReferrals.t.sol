@@ -69,6 +69,20 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(shares[1], 2_000);
     }
 
+    function test_RoyaltyInfo_PaysBeneficiar() public {
+        _mintAff(alice, alice);
+        uint256 tokenId = uint256(uint160(alice));
+        (address receiver, uint256 amount) = treasury.royaltyInfo(tokenId, 100 ether);
+        assertEq(receiver, beneficiar);
+        assertEq(amount, 5 ether); // default royaltyBps = 500
+    }
+
+    function test_RoyaltyInfo_UnknownToken_Empty() public view {
+        (address receiver, uint256 amount) = treasury.royaltyInfo(uint256(uint160(alice)), 100 ether);
+        assertEq(receiver, address(0));
+        assertEq(amount, 0);
+    }
+
     function test_Mint_LoopingReferrer_FallsBackToSelfRoot() public {
         _mintAff(alice, bob);
         // bob → alice would cycle; mint binds bob to self instead of reverting

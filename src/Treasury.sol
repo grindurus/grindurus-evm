@@ -33,7 +33,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @notice Stored protocol fee recipient; use `beneficiar()` (falls back to `grai` when unset).
     address private _beneficiar;
 
-    /// @notice Shared ERC-2981 royalty fraction (bps of sale price → locker of that token).
+    /// @notice Shared ERC-2981 royalty fraction (bps of sale price → `beneficiar()`).
     uint16 public royaltyBps;
 
     /// @notice Per-level claim revenue-share weights in bps (`length == 2`, `sum == BPS`).
@@ -274,7 +274,8 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         }
     }
 
-    /// @dev Shared `royaltyBps` for all tokens; receiver is the bound locker.
+    /// @dev Shared `royaltyBps` for all tokens; receiver is `beneficiar()` (same as Solana
+    ///      Metaplex creator / `royalty_info` — not the locker).
     function royaltyInfo(uint256 tokenId, uint256 salePrice)
         public
         view
@@ -282,9 +283,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         returns (address receiver, uint256 amount)
     {
         if (_ownerOf(tokenId) == address(0)) return (address(0), 0);
-        // casting to 'uint160' is safe because tokenId is always uint256(uint160(locker)) from mint
-        // forge-lint: disable-next-line(unsafe-typecast)
-        receiver = address(uint160(tokenId));
+        receiver = beneficiar();
         amount = (salePrice * royaltyBps) / BPS;
     }
 
