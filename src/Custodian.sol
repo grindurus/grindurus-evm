@@ -16,8 +16,6 @@ import {ICustodian} from "./interfaces/ICustodian.sol";
 abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     using SafeERC20 for IERC20;
 
-    uint48 public constant DISABLE_DELAY = 24 hours;
-
     /// @notice Parent Grinders registry / NFT issuer that minted this custodian.
     IGrinders public grinders;
     
@@ -26,12 +24,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     
     /// @notice Secondary trading asset for this sleeve (ERC20; set via `setAssets`).
     address public quoteAsset;
-    
-    /// @notice When true, UUPS `upgradeTo` is blocked until re-enable completes the delay.
-    bool public isUpgradeableDisabled;
-    
-    /// @notice Timestamp after which upgrades may be re-enabled; `type(uint48).max` while locked.
-    uint48 public upgradesDisableScheduledAt;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -76,10 +68,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
 
     /// @notice Stable identifier for unambiguous custodian routing on Grinders and off-chain backends.
     /// @dev Returned as `keccak256("grindurus.custodian.<name>")` (optionally `...<name>.v2` for
-    ///      incompatible families). The kind is intentionally **not** bumped on every UUPS upgrade:
-    ///      - same kind + `set` → new default impl for future `Grinders.mint`
-    ///      - existing proxies keep their impl until the NFT owner runs `upgradeTo`
-    ///      - bump the string only when storage/API breaks (new kind = new registry entry)
+    ///      incompatible families). Proxies are not UUPS-upgradeable; a new kind + `Grinders.set`
+    ///      only changes the impl used by future `mint`. Bump the string when storage/API breaks.
     ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
     function custodianKind() public view virtual returns (bytes32);
 
@@ -181,26 +171,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
 
     //////////////////// ONLY OWNER ////////////////////
 
-    /// @notice Lock UUPS upgrades instantly, or schedule unlock after `DISABLE_DELAY` when already locked.
-    function toggleUpgradeable() public {
-        _onlyOwner();
-        if (!isUpgradeableDisabled && block.timestamp > upgradesDisableScheduledAt) {
-            isUpgradeableDisabled = true;
-            upgradesDisableScheduledAt = type(uint48).max;
-            emit UpgradesDisabled();
-            return;
-        }
-        if (isUpgradeableDisabled) {
-            isUpgradeableDisabled = false;
-            upgradesDisableScheduledAt = uint48(block.timestamp + DISABLE_DELAY);
-            emit UpgradesReenableScheduled(upgradesDisableScheduledAt);
-            return;
-        }
-        isUpgradeableDisabled = true;
-        upgradesDisableScheduledAt = type(uint48).max;
-        emit UpgradesDisabled();
-    }
-
     function _onlyOwner() internal view {
         if (msg.sender != owner()) revert NotOwner(msg.sender);
     }
@@ -220,10 +190,8 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         withdrawn = amount;
     }
 
-    function _authorizeUpgrade(address newImplementation) internal view override {
-        _onlyOwner();
-        newImplementation;
-        if (isUpgradeableDisabled) revert FeatureDisabled();
-        if (block.timestamp <= upgradesDisableScheduledAt) revert FeatureDelay();
+    /// @dev Proxies are ERC1967 for `Grinders.mint`; implementation swaps are permanently disabled.
+    function _authorizeUpgrade(address) internal pure override {
+        revert FeatureDisabled();
     }
 }

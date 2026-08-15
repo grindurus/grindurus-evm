@@ -180,62 +180,11 @@ contract CustodyCowTest is GRAIFixture {
         grinders.setAssets(address(custodyWallet), address(usdc), address(dai));
     }
 
-    function test_UpgradePreservesState() public {
-        CoWCustodian implV2 = new CoWCustodian();
-
-        vm.prank(owner);
-        custodyWallet.upgradeToAndCall(address(implV2), "");
-
-        assertEq(custodyWallet.owner(), owner);
-        assertEq(address(custodyWallet.grinders()), address(grinders));
-        assertEq(custodyWallet.baseAsset(), address(usdc));
-        assertEq(custodyWallet.quoteAsset(), address(weth));
-        assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
-    }
-
-    function test_SetUpgradesDisabled_blocksFutureUpgrade() public {
-        vm.prank(owner);
-        custodyWallet.toggleUpgradeable();
-        assertTrue(custodyWallet.isUpgradeableDisabled());
-
+    function test_Upgrade_AlwaysReverts() public {
         CoWCustodian implV2 = new CoWCustodian();
         vm.prank(owner);
         vm.expectRevert(ICustodian.FeatureDisabled.selector);
         custodyWallet.upgradeToAndCall(address(implV2), "");
-    }
-
-    function test_SetUpgradesDisabled_reenableAfterDelay() public {
-        vm.startPrank(owner);
-        custodyWallet.toggleUpgradeable();
-        custodyWallet.toggleUpgradeable();
-        vm.warp(block.timestamp + 24 hours + 1);
-        vm.stopPrank();
-
-        CoWCustodian implV2 = new CoWCustodian();
-        vm.prank(owner);
-        custodyWallet.upgradeToAndCall(address(implV2), "");
-    }
-
-    function test_SetUpgradesDisabled_revertsReenableBeforeDelay() public {
-        vm.startPrank(owner);
-        custodyWallet.toggleUpgradeable();
-        custodyWallet.toggleUpgradeable();
-
-        CoWCustodian implV2 = new CoWCustodian();
-        vm.expectRevert(ICustodian.FeatureDelay.selector);
-        custodyWallet.upgradeToAndCall(address(implV2), "");
-        vm.stopPrank();
-    }
-
-    function test_toggleUpgradeable_locksDuringPendingUnlock() public {
-        vm.startPrank(owner);
-        custodyWallet.toggleUpgradeable();
-        custodyWallet.toggleUpgradeable();
-        custodyWallet.toggleUpgradeable();
-        vm.stopPrank();
-
-        assertTrue(custodyWallet.isUpgradeableDisabled());
-        assertEq(custodyWallet.upgradesDisableScheduledAt(), type(uint48).max);
     }
 
     function test_Approve_acceptsTradingAssets() public {

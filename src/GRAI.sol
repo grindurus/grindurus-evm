@@ -388,7 +388,6 @@ contract GRAI is
         totalLocked += graiAmount;
         if (entry.locked == 0) _addAccount(locker, false);
         entry.locked += graiAmount;
-        entry.lockedAt = uint48(block.timestamp);
         _syncDividendDebts(locker);
 
         _transfer(locker, address(this), graiAmount);

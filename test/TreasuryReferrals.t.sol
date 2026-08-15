@@ -290,6 +290,152 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(usdc.balanceOf(address(treasury)), 0);
     }
 
+    /// @dev Mirrors Solana `three lockers: 2 deposit → distribute → 3rd deposit → distribute → all claim`.
+    function test_ThreeLockers_TwoDist_LateJoiner_AllClaim() public {
+        uint256 depositAmount = 100e6;
+        uint256 PRECISION = 1e18;
+
+        uint256 aliceBefore = grai.balanceOf(alice);
+        uint256 bobBefore = grai.balanceOf(bob);
+        _depositWithRef(alice, depositAmount, address(0));
+        _depositWithRef(bob, depositAmount, address(0));
+        uint256 aliceMinted = grai.balanceOf(alice) - aliceBefore;
+        uint256 bobMinted = grai.balanceOf(bob) - bobBefore;
+        assertEq(aliceMinted, bobMinted);
+        assertGt(aliceMinted, 0);
+
+        (,, uint256 accAtAliceBobLock,) = grai.assets(address(usdc));
+        _lock(alice, aliceMinted);
+        _lock(bob, bobMinted);
+
+        (,, uint256 aliceLocked,,,) = grai.escrows(alice);
+        (,, uint256 bobLocked,,,) = grai.escrows(bob);
+        assertEq(aliceLocked, aliceMinted);
+        assertEq(bobLocked, bobMinted);
+        assertEq(grai.totalLocked() - grai.totalVoted(), aliceMinted + bobMinted);
+
+        uint256 treasuryBefore = usdc.balanceOf(address(treasury));
+        (,,, uint256 claimableBefore) = grai.assets(address(usdc));
+
+        _yield(YIELD);
+        assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, GROSS_PROFIT_SHARE);
+        (,,, uint256 claimableAfter1) = grai.assets(address(usdc));
+        // Index dust (amount − reserved) may leave 1 wei on treasury instead of claimable.
+        assertApproxEqAbs(claimableAfter1 - claimableBefore, DIVIDEND, 1);
+
+        uint256 carolBeforeGrai = grai.balanceOf(carol);
+        _depositWithRef(carol, depositAmount, address(0));
+        uint256 carolMinted = grai.balanceOf(carol) - carolBeforeGrai;
+        assertEq(carolMinted, aliceMinted);
+
+        (,, uint256 accAtCarolLock,) = grai.assets(address(usdc));
+        _lock(carol, carolMinted);
+        assertEq(grai.totalLocked() - grai.totalVoted(), aliceMinted + bobMinted + carolMinted);
+
+        uint256 treasuryAfterDist1 = usdc.balanceOf(address(treasury));
+        (,,, uint256 claimableAfterDist1) = grai.assets(address(usdc));
+
+        _yield(YIELD);
+        assertApproxEqAbs(
+            usdc.balanceOf(address(treasury)) - treasuryAfterDist1, GROSS_PROFIT_SHARE, 1
+        );
+        (,,, uint256 claimableAfter2) = grai.assets(address(usdc));
+        assertApproxEqAbs(claimableAfter2 - claimableAfterDist1, DIVIDEND, 1);
+
+        (,, uint256 accFinal,) = grai.assets(address(usdc));
+        uint256 aliceExpected = (aliceMinted * accFinal) / PRECISION - (aliceMinted * accAtAliceBobLock) / PRECISION;
+        uint256 bobExpected = (bobMinted * accFinal) / PRECISION - (bobMinted * accAtAliceBobLock) / PRECISION;
+        uint256 carolExpected = (carolMinted * accFinal) / PRECISION - (carolMinted * accAtCarolLock) / PRECISION;
+        uint256 claimedTotal = aliceExpected + bobExpected + carolExpected;
+        // Dust vs full 2×DIVIDEND: distribute may send 1 wei to treasury (not claimable),
+        // and per-locker floors may leave 1 wei in totalClaimable.
+        uint256 reservedTotal = claimableAfter2 - claimableBefore;
+        uint256 indexDust = reservedTotal - claimedTotal;
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 bobUsdcBefore = usdc.balanceOf(bob);
+        uint256 carolUsdcBefore = usdc.balanceOf(carol);
+        uint256 benBefore = usdc.balanceOf(beneficiar);
+        (uint256 aliceBookBefore,,,) = treasury.lockerBooks(alice);
+        (uint256 bobBookBefore,,,) = treasury.lockerBooks(bob);
+        (uint256 carolBookBefore,,,) = treasury.lockerBooks(carol);
+
+        _claimMax(alice);
+        _claimMax(bob);
+        _claimMax(carol);
+
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, aliceExpected);
+        assertEq(usdc.balanceOf(bob) - bobUsdcBefore, bobExpected);
+        assertEq(usdc.balanceOf(carol) - carolUsdcBefore, carolExpected);
+        assertEq(aliceExpected, bobExpected);
+        assertGt(carolExpected, 0);
+        assertLt(carolExpected, aliceExpected);
+        // Self-root: gross == claimed → beneficiar.
+        assertEq(usdc.balanceOf(beneficiar) - benBefore, claimedTotal);
+        (uint256 aliceBook,,,) = treasury.lockerBooks(alice);
+        (uint256 bobBook,,,) = treasury.lockerBooks(bob);
+        (uint256 carolBook,,,) = treasury.lockerBooks(carol);
+        assertEq(aliceBook - aliceBookBefore, aliceExpected);
+        assertEq(bobBook - bobBookBefore, bobExpected);
+        assertEq(carolBook - carolBookBefore, carolExpected);
+        (,,, uint256 claimableLeft) = grai.assets(address(usdc));
+        assertEq(claimableLeft, claimableBefore + indexDust);
+        assertApproxEqAbs(reservedTotal, DIVIDEND * 2, 1);    }
+
+    /// @dev Mirrors Solana `Carol→Bob→Alice: stub bind, distribute, Alice self-root, claim affiliates`.
+    function test_CarolBobAlice_StubBind_Dist_AliceSelfRoot_ClaimAffiliates() public {
+        uint256 depositAmount = 100e6;
+        uint256 halfDividend = DIVIDEND / 2; // Carol + Bob equal locks
+        // claimed * revenueShareBps / dividendCutBps = 25e6 * 1000/5000 = 5e6
+        uint256 revenuePerClaim = (halfDividend * REVENUE_SHARE_BPS) / 5_000;
+        uint256 l1Share = (revenuePerClaim * 8_000) / 10_000; // 4e6
+        uint256 l2Share = (revenuePerClaim * 2_000) / 10_000; // 1e6
+
+        // 1) Carol → Bob (stub). 2) Bob → Alice (stub; backfills Alice.l2).
+        _depositWithRef(carol, depositAmount, bob);
+        _depositWithRef(bob, depositAmount, alice);
+
+        assertEq(treasury.referrerOf(carol), bob);
+        assertEq(treasury.referrerOf(bob), alice);
+        _assertNode(carol, depositAmount, 0, 0);
+        _assertNode(bob, depositAmount, depositAmount, 0); // Carol under Bob as L1
+        _assertNode(alice, 0, depositAmount, depositAmount); // stub: Bob L1, Carol L2
+
+        _lock(carol, grai.balanceOf(carol));
+        _lock(bob, grai.balanceOf(bob));
+        _yield(YIELD);
+
+        // 3) Alice deposits after distribute — self-root; no dist share.
+        _depositWithRef(alice, depositAmount, address(0));
+        assertEq(treasury.referrerOf(alice), alice);
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 bobUsdcBefore = usdc.balanceOf(bob);
+        uint256 carolUsdcBefore = usdc.balanceOf(carol);
+        uint256 benBefore = usdc.balanceOf(beneficiar);
+
+        // 4) All claim (Alice claimable = 0).
+        _claimMax(carol);
+        _claimMax(bob);
+        _claimMax(alice);
+
+        // Dividends: Carol & Bob split 50/50; Alice locked out of this dist.
+        assertEq(usdc.balanceOf(carol) - carolUsdcBefore, halfDividend);
+        assertEq(usdc.balanceOf(bob) - bobUsdcBefore, halfDividend + l1Share); // + Carol→Bob L1
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, l2Share + l1Share); // Carol L2 + Bob L1
+
+        // Carol: Bob L1=4e6, Alice L2=1e6, beneficiar=20e6
+        // Bob:   Alice L1=4e6, L2 skip (Alice self-root), beneficiar=21e6
+        // Alice: 0
+        uint256 bobAffiliate = l1Share;
+        uint256 aliceAffiliate = l2Share + l1Share;
+        uint256 beneficiarGot = halfDividend - bobAffiliate - l2Share // Carol claim net
+            + halfDividend - l1Share; // Bob claim net
+        assertEq(beneficiarGot, 41e6);
+        assertEq(usdc.balanceOf(beneficiar) - benBefore, beneficiarGot);
+        assertEq(bobAffiliate + aliceAffiliate + beneficiarGot, GROSS_PROFIT_SHARE);
+    }
+
     ////////////////////////////// poach //////////////////////////////
 
     function test_Poach_SelfReferrer_RewritesStickyReferrer() public {
@@ -484,6 +630,13 @@ contract TreasuryReferralsTest is GRAIFixture {
         claimed = grai.previewClaim(locker, address(usdc), type(uint256).max);
         vm.prank(locker);
         grai.claim(locker, address(usdc), type(uint256).max);
+    }
+
+    function _assertNode(address who, uint256 value, uint256 l1, uint256 l2) internal view {
+        (uint256 v, uint256 a, uint256 b,) = treasury.lockerBooks(who);
+        assertEq(v, value, "value");
+        assertEq(a, l1, "l1Value");
+        assertEq(b, l2, "l2Value");
     }
 }
 

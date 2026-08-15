@@ -78,8 +78,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         address account;
         /// @notice Index of this account in `lockers` while `locked` is non-zero.
         uint32 lockerId;
-        /// @notice Timestamp of the latest `lock`.
-        uint48 lockedAt;
         /// @notice Actively locked GRAI (dividend share; max voting capacity).
         uint256 locked;
         /// @notice GRAI counted toward liquidation quorum (≤ `locked`).
@@ -183,7 +181,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         returns (
             address account,
             uint32 lockerId,
-            uint48 lockedAt,
             uint256 locked,
             uint256 voted,
             uint32 voterId,

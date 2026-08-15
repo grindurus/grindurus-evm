@@ -85,8 +85,7 @@ library GPv2Order {
 ///   always remain on this contract.
 /// - Principal exits only through `deallocate`; yield through `distribute` — both route via GRAI accounting,
 ///   not to an arbitrary owner wallet.
-/// - Owner **cannot** `upgradeTo` while `isUpgradeableDisabled` is true or a re-enable delay is pending.
-///   `toggleUpgradeable()` locks instantly; call again while locked to schedule a 24h unlock delay.
+/// - Owner **cannot** `upgradeTo`: `_authorizeUpgrade` always reverts (`FeatureDisabled`).
 ///
 /// @dev Use the ERC1967Proxy address only, not the implementation.
 ///      VaultRelayer max-allowance for base/quote is set in `setAssets`.

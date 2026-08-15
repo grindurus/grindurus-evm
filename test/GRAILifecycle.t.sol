@@ -187,7 +187,7 @@ contract GRAILifecycleTest is GRAIFixture {
 
         assertEq(graiOut, 100e6);
         assertEq(grai.balanceOf(alice), 0);
-        (,,, uint256 locked,,,) = grai.escrows(alice);
+        (,, uint256 locked,,,) = grai.escrows(alice);
         assertEq(locked, graiOut);
         assertEq(grai.totalLocked(), graiOut);
         assertEq(grai.balanceOf(address(grai)), graiOut);
@@ -248,7 +248,7 @@ contract GRAILifecycleTest is GRAIFixture {
     }
 
     function _redeemAll(address user) internal {
-        (,,, uint256 locked,,,) = grai.escrows(user);
+        (,, uint256 locked,,,) = grai.escrows(user);
         vm.prank(user);
         grai.redeem(locked);
     }

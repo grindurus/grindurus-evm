@@ -12,7 +12,6 @@ interface ICustodian {
     error SameAsset();
     error NonZeroBalance();
     error FeatureDisabled();
-    error FeatureDelay();
     error NotGrinders(address caller);
     error EthTransferFailed();
     error LiquidationOpen();
@@ -21,9 +20,6 @@ interface ICustodian {
     event Deallocate(address indexed asset, uint256 amount);
     event Distribute(address indexed asset, uint256 amount);
     event Liquidate(uint256 ethOut, uint256 baseOut, uint256 quoteOut);
-    event UpgradesReenableScheduled(uint48 reenableAt);
-    event UpgradesDisabled();
-    event UpgradesReenabled();
 
     function initialize(address grinders_) external;
     function custodianKind() external view returns (bytes32);
