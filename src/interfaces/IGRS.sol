@@ -6,12 +6,16 @@ interface IGRS {
     error InvalidRecipient();
     error NotHome();
     error BucketExceeded();
-    error VoteGated();
+    error ProprietorGated();
     error InvalidSchedule();
     error ZeroAmount();
     error NothingToRelease();
     error UnknownVesting();
     error InstantNotVest();
+    error SaleClosed();
+    error InvalidPayment();
+    error PaymentFailed();
+    error UnknownSale();
 
     enum Bucket {
         TokenSales,
@@ -53,7 +57,7 @@ interface IGRS {
         uint32 linearMonths;
     }
 
-    struct VestingRec {
+    struct Vesting {
         uint256 id;
         Bucket bucket;
         address funder;
@@ -65,11 +69,22 @@ interface IGRS {
         uint64 end;
     }
 
+    struct Sale {
+        /// @dev `address(0)` = native ETH.
+        address quote;
+        /// @dev Quote units per 1 GRS (`1e18`). Zero closes this sale.
+        uint256 price;
+        /// @dev Proceeds; `address(0)` → `owner()` at purchase time.
+        address recipient;
+    }
+
     event Granted(Bucket indexed bucket, address indexed to, uint256 amount, uint256 vestingId);
     event Vested(address indexed from, address indexed to, uint256 amount, uint256 vestingId);
     event Released(uint256 indexed vestingId, address indexed to, uint256 amount);
     event ProprietorSet(address indexed proprietor);
     event VeGRSSet(address indexed veGRS);
+    event SaleSet(uint256 indexed id, address indexed quote, uint256 price, address indexed recipient);
+    event Bought(uint256 indexed id, address indexed buyer, address indexed to, uint256 amount, uint256 cost);
 
     function home() external view returns (bool);
 
@@ -78,6 +93,10 @@ interface IGRS {
     function proprietor() external view returns (address);
 
     function veGRS() external view returns (address);
+
+    function saleCount() external view returns (uint256);
+
+    function getSales(uint256 offset, uint256 limit) external view returns (Sale[] memory);
 
     function spent(Bucket bucket) external view returns (uint256);
 
@@ -95,13 +114,22 @@ interface IGRS {
 
     function releasable(uint256 id) external view returns (uint256);
 
-    function getVestings() external view returns (VestingRec[] memory);
+    function getVestings(uint256 offset, uint256 limit) external view returns (Vesting[] memory);
 
     function getPeers() external view returns (Peer[] memory);
 
     function setProprietor(address proprietor_) external;
 
     function setVeGRS(address veGRS_) external;
+
+    /// @notice Create (`id == 0`) or update sale `id`. Returns the id used.
+    function setSale(uint256 id, address quote, uint256 price, address recipient) external returns (uint256);
+
+    function quoteSale(uint256 id, uint256 amount) external view returns (uint256 cost);
+
+    /// @notice Buy `amount` from `TokenSales` via sale `id` (instant). Quote `address(0)` is ETH
+    ///         (`msg.value` must equal the cost); otherwise ERC-20 `transferFrom`.
+    function buy(uint256 id, uint256 amount, address to) external payable returns (uint256 cost);
 
     /// @notice Assign `amount` from `bucket`. Instant if `cliffSeconds` and `durationSeconds` are 0
     ///         (returns 0). Otherwise a non-revocable in-token vest (id ≥ 1). Vote-gated buckets

@@ -7,6 +7,9 @@ import {OFTMsgCodec} from "@layerzerolabs/oft-evm/contracts/libs/OFTMsgCodec.sol
 import {IOAppMsgInspector} from "@layerzerolabs/oapp-evm/contracts/oapp/interfaces/IOAppMsgInspector.sol";
 import {MessagingFee, MessagingReceipt} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IERC1046} from "./interfaces/IERC1046.sol";
 import {IGRS} from "./interfaces/IGRS.sol";
@@ -16,6 +19,8 @@ import {IGRS} from "./interfaces/IGRS.sol";
 ///         (`docs/grs.svg`); delegate `grant`s vesting / instant payouts. Any holder may `vest`
 ///         their own GRS (home or spoke). Spokes mint/burn via OFT.
 contract GRS is OFT, IERC1046, IGRS {
+    using SafeERC20 for IERC20;
+
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
     uint256 public constant MONTH = 30 days;
     uint64 public constant MAX_CLIFF = 365 days;
@@ -25,10 +30,10 @@ contract GRS is OFT, IERC1046, IGRS {
     bool public immutable home;
     address public proprietor;
     address public veGRS;
-
     mapping(Bucket bucket => uint256) public spent;
-    uint256 public vestingCount;
-    mapping(uint256 id => VestingRec) internal _vestings;
+
+    Sale[] internal _sales;
+    Vesting[] internal _vestings;
 
     uint32[] public peerEids;
     mapping(uint32 eid => uint256 indexPlusOne) internal peerEidIndex;
@@ -47,6 +52,62 @@ contract GRS is OFT, IERC1046, IGRS {
             _mint(address(this), MAX_SUPPLY);
         }
     }
+
+    function setProprietor(address proprietor_) public onlyOwner {
+        if (!home) revert NotHome();
+        proprietor = proprietor_;
+        emit ProprietorSet(proprietor_);
+    }
+
+    function setVeGRS(address veGRS_) public onlyOwner {
+        if (!home) revert NotHome();
+        veGRS = veGRS_;
+        emit VeGRSSet(veGRS_);
+    }
+
+    /// @notice Create (`id == 0`) or update a sale. `price == 0` closes that id. Home / owner only.
+    function setSale(uint256 id, address quote, uint256 price, address recipient) public onlyOwner returns (uint256) {
+        if (!home) revert NotHome();
+        if (recipient == address(this)) revert InvalidRecipient();
+        Sale memory row = Sale({quote: quote, price: price, recipient: recipient});
+        if (id == 0) {
+            _sales.push(row);
+            id = _sales.length;
+        } else {
+            if (id > _sales.length) revert UnknownSale();
+            _sales[id - 1] = row;
+        }
+        emit SaleSet(id, quote, price, recipient);
+        return id;
+    }
+
+    function grant(
+        Bucket bucket,
+        address to,
+        uint256 amount,
+        uint64 start,
+        uint64 cliffSeconds,
+        uint64 durationSeconds
+    ) public returns (uint256 vestingId) {
+        if (!home) revert NotHome();
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert ZeroAmount();
+        _authorizeGrant(bucket);
+        _takeBucket(bucket, amount);
+
+        if (cliffSeconds == 0 && durationSeconds == 0) {
+            _transfer(address(this), to, amount);
+            emit Granted(bucket, to, amount, 0);
+            return 0;
+        }
+
+        vestingId = _openVesting(bucket, address(this), to, amount, start, cliffSeconds, durationSeconds);
+        emit Granted(bucket, to, amount, vestingId);
+    }
+
+    // -------------------------------------------------------------------------
+    // Views
+    // -------------------------------------------------------------------------
 
     function tokenURI() public pure returns (string memory) {
         return "https://grindurus.xyz/grs.json";
@@ -120,126 +181,64 @@ contract GRS is OFT, IERC1046, IGRS {
         }
     }
 
-    function getVestings() public view returns (VestingRec[] memory listed) {
-        uint256 n = vestingCount;
-        listed = new VestingRec[](n);
-        for (uint256 i; i < n; ++i) {
-            listed[i] = _vestings[i + 1];
+    function vestingCount() public view returns (uint256) {
+        return _vestings.length;
+    }
+
+    /// @notice Page of vestings. `offset` is 0-based into the array (id `offset + 1`).
+    function getVestings(uint256 offset, uint256 limit) public view returns (Vesting[] memory listed) {
+        uint256 n = _vestings.length;
+        if (offset >= n || limit == 0) {
+            return listed;
+        }
+        uint256 end = offset + limit;
+        if (end < offset || end > n) end = n;
+        uint256 len = end - offset;
+        listed = new Vesting[](len);
+        for (uint256 i; i < len; ++i) {
+            listed[i] = _vestings[offset + i];
         }
     }
 
     function vested(uint256 id, uint256 timestamp) public view returns (uint256) {
-        VestingRec storage v = _vesting(id);
+        Vesting storage v = _vesting(id);
         if (timestamp < v.cliffEnd) return 0;
         if (v.end <= v.cliffEnd || timestamp >= v.end) return v.allocation;
         return v.allocation * (timestamp - v.cliffEnd) / (v.end - v.cliffEnd);
     }
 
     function releasable(uint256 id) public view returns (uint256) {
-        VestingRec storage v = _vesting(id);
+        Vesting storage v = _vesting(id);
         uint256 due = vested(id, block.timestamp);
         return due > v.released ? due - v.released : 0;
     }
 
-    function release(uint256 id) public {
-        uint256 amount = releasable(id);
-        if (amount == 0) revert NothingToRelease();
-        VestingRec storage v = _vestings[id];
-        v.released += amount;
-        _transfer(address(this), v.beneficiary, amount);
-        emit Released(id, v.beneficiary, amount);
+    function saleCount() public view returns (uint256) {
+        return _sales.length;
     }
 
-    function setProprietor(address proprietor_) public onlyOwner {
-        if (!home) revert NotHome();
-        proprietor = proprietor_;
-        emit ProprietorSet(proprietor_);
-    }
-
-    function setVeGRS(address veGRS_) public onlyOwner {
-        if (!home) revert NotHome();
-        veGRS = veGRS_;
-        emit VeGRSSet(veGRS_);
-    }
-
-    function grant(
-        Bucket bucket,
-        address to,
-        uint256 amount,
-        uint64 start,
-        uint64 cliffSeconds,
-        uint64 durationSeconds
-    ) public returns (uint256 vestingId) {
-        if (!home) revert NotHome();
-        if (to == address(0)) revert InvalidRecipient();
-        if (amount == 0) revert ZeroAmount();
-        _authorizeGrant(bucket);
-        uint256 next = spent[bucket] + amount;
-        if (next > capOf(bucket)) revert BucketExceeded();
-        spent[bucket] = next;
-
-        if (cliffSeconds == 0 && durationSeconds == 0) {
-            _transfer(address(this), to, amount);
-            emit Granted(bucket, to, amount, 0);
-            return 0;
+    /// @notice Page of sales. `offset` is 0-based into the array (id `offset + 1`).
+    function getSales(uint256 offset, uint256 limit) public view returns (Sale[] memory listed) {
+        uint256 n = _sales.length;
+        if (offset >= n || limit == 0) {
+            return listed;
         }
-
-        vestingId = _openVesting(bucket, address(this), to, amount, start, cliffSeconds, durationSeconds);
-        emit Granted(bucket, to, amount, vestingId);
-    }
-
-    function vest(address to, uint256 amount, uint64 start, uint64 cliffSeconds, uint64 durationSeconds)
-        public
-        returns (uint256 vestingId)
-    {
-        if (to == address(0)) revert InvalidRecipient();
-        if (amount == 0) revert ZeroAmount();
-        if (cliffSeconds == 0 && durationSeconds == 0) revert InstantNotVest();
-        if (cliffSeconds > MAX_CLIFF || durationSeconds > MAX_DURATION) revert InvalidSchedule();
-        _transfer(msg.sender, address(this), amount);
-        vestingId = _openVesting(Bucket.Holder, msg.sender, to, amount, start, cliffSeconds, durationSeconds);
-        emit Vested(msg.sender, to, amount, vestingId);
-    }
-
-    function _openVesting(
-        Bucket bucket,
-        address funder,
-        address to,
-        uint256 amount,
-        uint64 start,
-        uint64 cliffSeconds,
-        uint64 durationSeconds
-    ) internal returns (uint256 vestingId) {
-        uint64 start_ = start == 0 ? uint64(block.timestamp) : start;
-        uint64 cliffEnd = start_ + cliffSeconds;
-        uint64 end_ = cliffEnd + durationSeconds;
-        if (cliffEnd < start_ || end_ < cliffEnd) revert InvalidSchedule();
-
-        vestingId = ++vestingCount;
-        _vestings[vestingId] = VestingRec({
-            id: vestingId,
-            bucket: bucket,
-            funder: funder,
-            beneficiary: to,
-            allocation: amount,
-            released: 0,
-            start: start_,
-            cliffEnd: cliffEnd,
-            end: end_
-        });
-    }
-
-    function _vesting(uint256 id) internal view returns (VestingRec storage v) {
-        if (id == 0 || id > vestingCount) revert UnknownVesting();
-        return _vestings[id];
-    }
-
-    function _authorizeGrant(Bucket bucket) internal view {
-        if (gateOf(bucket) == Gate.VoteGated && proprietor != address(0)) {
-            if (msg.sender != proprietor) revert VoteGated();
-            return;
+        uint256 end = offset + limit;
+        if (end < offset || end > n) end = n;
+        uint256 len = end - offset;
+        listed = new Sale[](len);
+        for (uint256 i; i < len; ++i) {
+            listed[i] = _sales[offset + i];
         }
-        if (msg.sender != owner()) revert OwnableUnauthorizedAccount(msg.sender);
+    }
+
+    /// @notice Quote units due for `amount` GRS at that sale's `price` (rounded up).
+    function quoteSale(uint256 id, uint256 amount) public view returns (uint256 cost) {
+        Sale storage s = _sale(id);
+        if (s.price == 0) revert SaleClosed();
+        if (amount == 0) revert ZeroAmount();
+        cost = Math.mulDiv(amount, s.price, 1e18, Math.Rounding.Ceil);
+        if (cost == 0) revert ZeroAmount();
     }
 
     function getPeers() public view returns (Peer[] memory listed) {
@@ -255,6 +254,54 @@ contract GRS is OFT, IERC1046, IGRS {
         nativeFee = this.quoteSend(_bridgeParam(dstEid, to, amountLD), false).nativeFee;
     }
 
+    // -------------------------------------------------------------------------
+    // Transactions
+    // -------------------------------------------------------------------------
+
+    /// @notice Buy `amount` GRS from `TokenSales` via sale `id`. Instant, no vest. Home only.
+    function buy(uint256 id, uint256 amount, address to) public payable returns (uint256 cost) {
+        if (!home) revert NotHome();
+        if (to == address(0)) revert InvalidRecipient();
+        cost = quoteSale(id, amount);
+        Sale storage s = _sales[id - 1];
+        _takeBucket(Bucket.TokenSales, amount);
+
+        address payee = s.recipient == address(0) ? owner() : s.recipient;
+        if (s.quote == address(0)) {
+            if (msg.value != cost) revert InvalidPayment();
+            (bool ok,) = payable(payee).call{value: cost}("");
+            if (!ok) revert PaymentFailed();
+        } else {
+            if (msg.value != 0) revert InvalidPayment();
+            IERC20(s.quote).safeTransferFrom(msg.sender, payee, cost);
+        }
+
+        _transfer(address(this), to, amount);
+        emit Bought(id, msg.sender, to, amount, cost);
+    }
+
+    function vest(address to, uint256 amount, uint64 start, uint64 cliffSeconds, uint64 durationSeconds)
+        public
+        returns (uint256 vestingId)
+    {
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert ZeroAmount();
+        if (cliffSeconds == 0 && durationSeconds == 0) revert InstantNotVest();
+        if (cliffSeconds > MAX_CLIFF || durationSeconds > MAX_DURATION) revert InvalidSchedule();
+        _transfer(msg.sender, address(this), amount);
+        vestingId = _openVesting(Bucket.Holder, msg.sender, to, amount, start, cliffSeconds, durationSeconds);
+        emit Vested(msg.sender, to, amount, vestingId);
+    }
+
+    function release(uint256 id) public {
+        uint256 amount = releasable(id);
+        if (amount == 0) revert NothingToRelease();
+        Vesting storage v = _vesting(id);
+        v.released += amount;
+        _transfer(address(this), v.beneficiary, amount);
+        emit Released(id, v.beneficiary, amount);
+    }
+
     function bridge(uint32 dstEid, bytes32 to, uint256 amountLD) public payable {
         SendParam memory p = _bridgeParam(dstEid, to, amountLD);
         (uint256 amountSentLD, uint256 amountReceivedLD) =
@@ -268,6 +315,28 @@ contract GRS is OFT, IERC1046, IGRS {
         MessagingReceipt memory msgReceipt =
             _lzSend(p.dstEid, message, options, MessagingFee(msg.value, 0), msg.sender);
         emit OFTSent(msgReceipt.guid, p.dstEid, msg.sender, amountSentLD, amountReceivedLD);
+    }
+
+    // -------------------------------------------------------------------------
+    // Internals
+    // -------------------------------------------------------------------------
+
+    function _sale(uint256 id) internal view returns (Sale storage s) {
+        if (id == 0 || id > _sales.length) revert UnknownSale();
+        return _sales[id - 1];
+    }
+
+    function _vesting(uint256 id) internal view returns (Vesting storage v) {
+        if (id == 0 || id > _vestings.length) revert UnknownVesting();
+        return _vestings[id - 1];
+    }
+
+    function _authorizeGrant(Bucket bucket) internal view {
+        if (gateOf(bucket) == Gate.VoteGated && proprietor != address(0)) {
+            if (msg.sender != proprietor) revert ProprietorGated();
+            return;
+        }
+        if (msg.sender != owner()) revert OwnableUnauthorizedAccount(msg.sender);
     }
 
     function _bridgeParam(uint32 dstEid, bytes32 to, uint256 amountLD)
@@ -287,6 +356,42 @@ contract GRS is OFT, IERC1046, IGRS {
             composeMsg: "",
             oftCmd: ""
         });
+    }
+
+    function _takeBucket(Bucket bucket, uint256 amount) internal {
+        uint256 next = spent[bucket] + amount;
+        if (next > capOf(bucket)) revert BucketExceeded();
+        spent[bucket] = next;
+    }
+
+    function _openVesting(
+        Bucket bucket,
+        address funder,
+        address to,
+        uint256 amount,
+        uint64 start,
+        uint64 cliffSeconds,
+        uint64 durationSeconds
+    ) internal returns (uint256 vestingId) {
+        uint64 start_ = start == 0 ? uint64(block.timestamp) : start;
+        uint64 cliffEnd = start_ + cliffSeconds;
+        uint64 end_ = cliffEnd + durationSeconds;
+        if (cliffEnd < start_ || end_ < cliffEnd) revert InvalidSchedule();
+
+        vestingId = _vestings.length + 1;
+        _vestings.push(
+            Vesting({
+                id: vestingId,
+                bucket: bucket,
+                funder: funder,
+                beneficiary: to,
+                allocation: amount,
+                released: 0,
+                start: start_,
+                cliffEnd: cliffEnd,
+                end: end_
+            })
+        );
     }
 
     function _setPeer(uint32 eid, bytes32 peer) internal override {

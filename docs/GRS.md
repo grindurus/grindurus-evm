@@ -301,7 +301,7 @@ Linear buckets use **in-token vesting** on home `GRS` (`grant` + public `release
 
 ### 3.5 Home-chain `grant`
 
-Cap-table inventory lives only on **home** `GRS`. The constructor mints the full **1B** to `address(this)` — not to the delegate. `grant` does not mint; it spends that inventory and either transfers GRS out or records an in-token vest. Spokes revert `NotHome`. Solana has no `grant` / buckets.
+Cap-table inventory lives only on **home** `GRS`. The constructor mints the full **1B** to `address(this)` — not to the delegate. `grant` does not mint; it spends that inventory and either transfers GRS out or records an in-token vest. Spokes revert `NotHome`. Solana has no `grant` / buckets other than the 50M TokenSales spend in `buy`.
 
 ```
 grant(bucket, to, amount, start, cliffSeconds, durationSeconds) → vestingId
@@ -333,7 +333,18 @@ Constructor sets `proprietor = delegate` (same address as `owner`). Later `setPr
 
 **`release(id)`** is permissionless. It pulls `releasable` GRS from the contract to `beneficiary`. Unreleased GRS is still in the 1B lockbox invariant (§2.2) and cannot be bridged until released.
 
-`getAllocations()` is home-only (13 rows). `getVestings()` lists every open vest (protocol `grant` and holder `vest`).
+`getAllocations()` is home-only (13 rows). `getVestings(offset, limit)` pages vestings (`offset` 0-based; `vestingCount()` is the total). On Solana, vest PDAs use the same 1-based sequential ids (`vest` requires `id == vesting_count + 1`); `get_vestings` remaining accounts must be those PDAs for the page.
+
+Public **token sales** also spend `TokenSales` (same `spent` / cap as `grant`). Each sale is a `{quote, price, recipient}` row; several may run at once (ETH + USDC, different recipients):
+
+```
+setSale(0, quote, price, recipient) → id   // create; `id > 0` updates
+quoteSale(id, amount) → cost
+buy(id, amount, to)                    // anyone; instant GRS, no vest
+getSales(offset, limit)
+```
+
+`price` is quote units per **1 GRS**; `price = 0` closes **that** id. EVM: divide by `1e18` (18 local decimals); `quote = address(0)` is native ETH (`msg.value` must equal `quoteSale`). Otherwise ERC-20 `transferFrom` to `recipient` (`address(0)` → `owner()`). Solana home: divide by `10^9`; `quote = Pubkey::default()` is native SOL (system transfer of the exact cost); otherwise SPL `transfer_checked`. `recipient = default` → `admin`. Cost rounds **up**. Inventory is `sale_escrow` (admin funds it after genesis). Home only; spokes have no inventory. All sales and EVM `grant` share the 50M cap. Solana has no `grant`, so `buy` is the only spender of `token_sales_spent`.
 
 ### 3.6 Foundation — use of funds
 
@@ -551,7 +562,8 @@ Exact dates depend on TGE; vesting contracts are source of truth post-deploy.
 | ------------ | -------------------------------------------- | ----------- | ------------------------------------------------------------------------------ |
 | **GRS**      | `delegate` / `delegateBySig`                 | Holder      | Governance voting (hub)                                                        |
 | **GRS**      | `getAllocations` / `grant` / `setProprietor` / `setVeGRS` | Owner / proprietor | Home cap-table inventory; `veGRS` registry                       |
-| **GRS**      | `vest`                                       | Any GRS holder | Lock own GRS (EVM home/spoke; Solana PDA vest, no cap table)                   |
+| **GRS**      | `setSale` / `quoteSale` / `buy` / `getSales` | Owner / anyone | Fixed-price `TokenSales` rows (ETH/SOL or ERC-20/SPL), paged `getSales`        |
+| **GRS**      | `vest`                                       | Any GRS holder | Lock own GRS (EVM home/spoke; Solana sequential PDA vest, no cap table)        |
 | **GRS**      | `bridge` / `quoteBridge`                     | Holder      | Burn here, mint on dest — `dstEid` + recipient + amount (`msg.value` = LZ fee) |
 | **GRS**      | `transfer`                                   | Holder      | Secondary liquidity                                                            |
 | **GRS**      | `release`                                    | Anyone      | Pull vested tokens (protocol `grant` or holder `vest`)                         |
