@@ -74,7 +74,8 @@ contract GRAILifecycleTest is GRAIFixture {
 
         IGRAI.Config memory cfg = _readConfig();
         uint256 dividendCut = (YIELD_USDC * cfg.dividendCutBps) / BPS;
-        uint256 treasuryCut = (YIELD_USDC * cfg.treasuryCutBps) / BPS;
+        uint256 treasuryCut = YIELD_USDC - dividendCut;
+        // + index dust from `_distribute` (amount − reserved) can bump treasury by 1 wei.
         assertApproxEqAbs(
             usdc.balanceOf(address(treasury)) - treasuryBefore, treasuryCut, 1, "treasury cut"
         );
@@ -173,6 +174,53 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(uint256(grai.liquidationAt()), 0);
         assertEq(grai.totalValue(), 0);
         assertFalse(grinders.confirmed());
+    }
+
+    /// @dev `deposit(..., lock_=true)` must call internal `_lock` — nested public `lock`
+    ///      would hit OZ `nonReentrant` and permanently revert the documented path.
+    function test_DepositWithLock_AtomicEscrow() public {
+        uint256 amount = 100e6;
+        vm.startPrank(alice);
+        usdc.approve(address(grai), amount);
+        (uint256 graiOut,) = grai.deposit(address(usdc), amount, true, address(0));
+        vm.stopPrank();
+
+        assertEq(graiOut, 100e6);
+        assertEq(grai.balanceOf(alice), 0);
+        (,,, uint256 locked,,,) = grai.escrows(alice);
+        assertEq(locked, graiOut);
+        assertEq(grai.totalLocked(), graiOut);
+        assertEq(grai.balanceOf(address(grai)), graiOut);
+    }
+
+    /// @dev Odd wei yield: floor dividends, remainder → treasury so full claim gross ≤ balance.
+    function test_Distribute_OddYield_TreasuryCoversClaimGross() public {
+        _depositUsdc(alice, 100e6);
+        _lock(alice, grai.balanceOf(alice));
+
+        // `101e6` is even under 50/50; need odd wei for a 1-wei remainder.
+        uint256 yieldAmount = 101;
+        uint256 treasuryBefore = usdc.balanceOf(address(treasury));
+        usdc.mint(address(this), yieldAmount);
+        usdc.approve(address(grai), yieldAmount);
+        grai.distribute(address(usdc), yieldAmount);
+
+        IGRAI.Config memory cfg = _readConfig();
+        uint256 dividendCut = (yieldAmount * cfg.dividendCutBps) / BPS;
+        uint256 treasuryCut = yieldAmount - dividendCut;
+        assertEq(dividendCut, 50);
+        assertEq(treasuryCut, 51);
+        // Treasury gets the cut remainder (+ any index dust from `_distribute`).
+        assertGe(usdc.balanceOf(address(treasury)) - treasuryBefore, treasuryCut);
+
+        uint256 claimed = grai.previewClaim(alice, address(usdc), type(uint256).max);
+        assertEq(claimed, dividendCut);
+        uint256 gross = (claimed * cfg.treasuryCutBps) / cfg.dividendCutBps;
+        assertLe(gross, usdc.balanceOf(address(treasury)));
+
+        vm.prank(alice);
+        grai.claimAll(alice);
+        assertEq(usdc.balanceOf(address(treasury)), treasuryBefore + treasuryCut - gross);
     }
 
     ////////////////////////////// HELPERS //////////////////////////////

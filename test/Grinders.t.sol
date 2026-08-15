@@ -77,6 +77,39 @@ contract GrindersTest is GRAIFixture {
         grinders.liquidate(0, 0);
     }
 
+    function test_LiquidateIdleRevertsWhenArmedButStillGrinding() public {
+        vm.prank(admin);
+        grai.setGrinders(address(grinders));
+        _deposit(alice, usdc, 100e6);
+        _fundGrinders(weth, 2e18);
+
+        vm.prank(admin);
+        grinders.confirm();
+        assertTrue(grinders.confirmed());
+        assertFalse(grai.liquidation());
+        assertFalse(grinders.liquidation());
+
+        uint256 grindersUsdcBefore = usdc.balanceOf(address(grinders));
+        uint256 grindersWethBefore = weth.balanceOf(address(grinders));
+        uint256 graiUsdcBefore = usdc.balanceOf(address(grai));
+        uint256 graiWethBefore = weth.balanceOf(address(grai));
+
+        vm.expectRevert(IGrinders.LiquidationNotOpen.selector);
+        grinders.liquidate(0, 0);
+
+        assertEq(usdc.balanceOf(address(grinders)), grindersUsdcBefore);
+        assertEq(weth.balanceOf(address(grinders)), grindersWethBefore);
+        assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore);
+        assertEq(weth.balanceOf(address(grai)), graiWethBefore);
+    }
+
+    function test_Liquidation_OpenWhenGraiHasNoCode() public {
+        address eoa = makeAddr("notGrai");
+        vm.prank(admin);
+        grinders.setGrai(eoa);
+        assertTrue(grinders.liquidation());
+    }
+
     function test_MintCoWCustodian() public {
         vm.prank(admin);
         CoWCustodian custodyWallet =

@@ -234,6 +234,18 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         emit Confirm(false);
     }
 
+    /// @inheritdoc IGrinders
+    /// @dev Empty `grai` code or missing / reverting `liquidation()` → open (no external
+    ///      gate). Otherwise forward GRAI's flag.
+    function liquidation() public view returns (bool) {
+        if (address(grai).code.length == 0) return true;
+        try grai.liquidation() returns (bool open) {
+            return open;
+        } catch {
+            return true;
+        }
+    }
+
     receive() external payable {}
 
     function set(bytes32 custodianKind, address implementation) public onlyOwner {
@@ -328,13 +340,14 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     /// @inheritdoc IGrinders
-    /// @dev Permissionless while `confirmed` (Grinders-owner arm). Pages custodians by registered
-    ///      id, pulls eth/base/quote into this contract, then forwards those amounts to GRAI.
-    ///      Per-custodian `try/catch` keeps earlier pulls if one sleeve reverts. Return amounts are
-    ///      trusted: only registered custodian wallets are iterated, under the Grinders NFT custody
-    ///      model.
+    /// @dev Permissionless while `confirmed` **and** `liquidation()` (GRAI flips to REDEMPTION
+    ///      before its open-time sweeps). Pages custodians by registered id, pulls eth/base/quote
+    ///      into this contract, then forwards those amounts to GRAI. Per-custodian `try/catch` keeps
+    ///      earlier pulls if one sleeve reverts. Return amounts are trusted: only registered
+    ///      custodian wallets are iterated, under the Grinders NFT custody model.
     function liquidate(uint256 fromId, uint256 toId) public {
         if (!confirmed) revert LiquidationNotConfirmed();
+        if (!liquidation()) revert LiquidationNotOpen();
         address grai_ = address(grai);
         if (fromId >= toId) {
             fromId = type(uint256).max;

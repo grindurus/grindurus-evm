@@ -139,7 +139,7 @@ sequenceDiagram
 | `allocate(custodian, asset, amount)` | Owner | Reserve → custodian; requires `balance(asset) ≥ amount`; emits `Allocate` |
 | `deallocate(custodian, asset, amount)` | Owner | Custodian → reserve via `Custodian.deallocate`; emits `Deallocate` |
 | `distribute(custodian, asset, amount)` | Owner | Custodian → `GRAI.distribute` via `Custodian.distribute` |
-| `liquidate(fromId, toId)` | Anyone | While `grai.liquidation()` open — see §6 |
+| `liquidate(fromId, toId)` | Anyone | While `confirmed` **and** `grai.liquidation()` — see §6 |
 
 ### 4.2 Off-chain issuance accounting
 
@@ -167,9 +167,8 @@ After swaps, returned token and size often differ from what was allocated — ne
 When Grinders owner routes yield through `Custodian.distribute` → `GRAI.distribute(asset, amount)`:
 
 ```text
-treasuryCut  = received * treasuryCutBps / BPS
-dividendCut  = received * dividendCutBps / BPS
-dividendCut  = received - treasuryCut
+dividendCut  = received * dividendCutBps / BPS   // floor first
+treasuryCut  = received - dividendCut            // remainder → treasury
 ```
 
 Defaults **50% / 50%** → unvoted-locker dividends / treasury. Full cut rules and claims: [`GRAI.md`](GRAI.md) §5.
@@ -180,14 +179,14 @@ Analytics: `positions[msg.sender][asset].yielded` on GRAI accumulates credited d
 
 ## 6. Liquidation
 
-While `confirmed` (and typically after `GRAI.liquidate` opens the fund cycle):
+While `confirmed` **and** `grai.liquidation()` (after `GRAI.liquidate` opens the fund cycle):
 
 1. Keepers call `Grinders.liquidate(fromId, toId)` with `fromId < toId` to page custodian ids, pull each wallet’s ETH / base / quote onto Grinders, then forward those amounts to GRAI.
 2. **Idle sweep:** if `fromId >= toId`, the call treats the range as a sentinel (`type(uint256).max`) and forwards Grinders’ **own** balances of assets from `grai.getAssets()` to GRAI (no custodian pulls).
 3. While `grai.liquidation()` is true, custodian `distribute` / `deallocate` revert (`LiquidationOpen`).
 4. Holders `GRAI.redeem` from the redeemable basket; later `revive` can return leftovers to Grinders.
 
-Grinders arms the Grinders-owner limb of GRAI’s 2-of-2 (`confirm` → `confirmed`). Anyone opens with `GRAI.liquidate` when `hasQuorum()`; each `Grinders.liquidate` requires `confirmed` only (so an unarmed open/sweep aborts). Arm stays through open for keeper sweeps; GRAI clears on `revive`.
+Grinders arms the Grinders-owner limb of GRAI’s 2-of-2 (`confirm` → `confirmed`). Anyone opens with `GRAI.liquidate` when `hasQuorum()`; GRAI flips to `REDEMPTION` before nested sweeps. Each `Grinders.liquidate` requires `confirmed` **and** `grai.liquidation()` (arm alone cannot sweep while still `GRINDING`). Arm stays through open for keeper sweeps; GRAI clears on `revive`.
 
 ---
 
@@ -197,7 +196,7 @@ Grinders arms the Grinders-owner limb of GRAI’s 2-of-2 (`confirm` → `confirm
 | ---- | ------ |
 | **Grinders owner** | UUPS upgrade, `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` / `confirm` |
 | **NFT owner (Grinder)** | Custodian trades (swap / CoW / …), `toggleUpgradeable` (custodian UUPS) |
-| **Anyone** | `liquidate(fromId, toId)` when `confirmed` |
+| **Anyone** | `liquidate(fromId, toId)` when `confirmed` **and** `grai.liquidation()` |
 
 Wire-up: after deploy, `GRAI.setGrinders(grinders)` requires `grinders.grai() == GRAI`.
 
@@ -221,7 +220,7 @@ Wire-up: after deploy, `GRAI.setGrinders(grinders)` requires `grinders.grai() ==
 | `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` | Grinders owner | Anytime (normal ops); deallocate/distribute blocked on custodian if GRAI liquidating |
 | `confirm` | Grinders owner | Toggle arm for GRAI open / sweeps |
 | Custodian trade APIs / `toggleUpgradeable` | NFT owner | Kind-specific |
-| `liquidate(fromId, toId)` | Anyone | `confirmed` (`fromId < toId` = page wallets; else idle reserve sweep) |
+| `liquidate(fromId, toId)` | Anyone | `confirmed` **and** `grai.liquidation()` (`fromId < toId` = page wallets; else idle reserve sweep) |
 | `revive` | GRAI only | Called on `GRAI.revive`; clears `confirmed` |
 
 ---

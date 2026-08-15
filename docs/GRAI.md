@@ -30,7 +30,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 1. `unlock` — return locked GRAI to the wallet (clamps `voted ≤ amount`); early unlock penalty stays on GRAI as orphan/dead inventory (scooped to the liquidation opener via `balanceOf(this) − totalLocked`).
 2. `bribe` — buy out **voted** GRAI for `settlementAsset` at a dynamic ask vs half-quorum (premium / par / discount).
 3. **Secondary market** — sell free (unlocked) wallet GRAI OTC / CEX / DEX; protocol does not provide a live redeem.
-4. **Liquidation** — `Regime { GRINDING, REDEMPTION }`. Open is **2-of-2**: `hasQuorum()` on `GRAI.liquidate` **and** `Grinders.confirmed` (so the open-time sweeps succeed). Arm via `grinders.owner()` `confirm()`. Successful open → `regime = REDEMPTION` → after `liquidationPeriod` holders `redeem` → after `+ redeemPeriod` anyone `revive` → `GRINDING` (clears arm). Hard sweep failure aborts open. Voters alone cannot open. `Grinders.liquidate` itself gates only on `confirmed` (not on `grai.liquidation()`).
+4. **Liquidation** — `Regime { GRINDING, REDEMPTION }`. Open is **2-of-2**: `hasQuorum()` on `GRAI.liquidate` **and** `Grinders.confirmed`. Arm via `grinders.owner()` `confirm()`. Open flips `regime = REDEMPTION` **before** nested sweeps so `Grinders.liquidate` can require `grai.liquidation()` (no GRINDING-time sweeps). After `liquidationPeriod` holders `redeem` → after `+ redeemPeriod` anyone `revive` → `GRINDING` (clears arm). Hard sweep failure aborts open (rolls regime back). Voters alone cannot open.
 
 **Yield (**`distribute`**) / bribe premium** splits per `Config` (initialize defaults **50% / 50%**):
 
@@ -257,7 +257,7 @@ sequenceDiagram
 | 2    | Quorum             | `totalVoted / supply > quorumBps` (strict) — necessary but not sufficient for open (needs owner limb) |
 | 3a   | `unlock`           | Excess votes clamped; net GRAI returned; unlock fee stays on GRAI as dead                             |
 | 3b   | `bribe`            | Full `graiAmount` sold for exact `bribeAmount` in `settlementAsset` (non-FoT)                         |
-| 3c   | `liquidate`        | Anyone: `regime == GRINDING` + `hasQuorum()`; then `grinders.liquidate` (needs `confirmed`) → `REDEMPTION` |
+| 3c   | `liquidate`        | Anyone: `regime == GRINDING` + `hasQuorum()`; flip `REDEMPTION` then `grinders.liquidate` (`confirmed` + regime) |
 
 
 **Example** (Alice votes — escrow and dividend base):
@@ -526,8 +526,8 @@ Liquid wallet GRAI never earns yield. Fully voted escrow (`locked == voted`) ear
 
 ```
 received     = tokens pulled to GRAI
-treasuryCut  = received * treasuryCutBps / BPS
-dividendCut  = received - treasuryCut
+dividendCut  = received * dividendCutBps / BPS   // floor first
+treasuryCut  = received - dividendCut            // remainder → treasury (claim asks stay ≤ inventory)
 ```
 
 Initialize defaults: **50% dividend / 50% treasury** (must sum to `BPS`). Yield cuts are fixed at `initialize` (not patchable via `setConfig`).
@@ -713,22 +713,22 @@ State machine on GRAI: `enum Regime { GRINDING, REDEMPTION }`. Compatibility vie
 | ---- | ----- | --------- |
 | Regime for open | `GRAI.liquidate` | `_requireRegime(GRINDING)` |
 | Vote limb | `GRAI.liquidate` | `hasQuorum()` → `totalVoted * BPS > totalSupply() * quorumBps` (strict `>`; default `quorumBps = 6667`) |
-| Grinders arm | `Grinders.liquidate` | `if (!confirmed) revert LiquidationNotConfirmed()` — **only** this check; **no** `grai.liquidation()` / regime read |
+| Grinders arm | `Grinders.liquidate` | `confirmed` **and** `grai.liquidation()` (`LiquidationNotConfirmed` / `LiquidationNotOpen`) |
 | Arm toggle | `Grinders.confirm` | `grinders.owner()` toggles `confirmed`; also cleared on Grinders `acceptOwnership` and `GRAI.revive` → `grinders.revive()` |
-| Open clock | `GRAI.liquidate` (success) | `regime = REDEMPTION`; `liquidationAt = now` |
+| Open clock | `GRAI.liquidate` | Sets `regime = REDEMPTION` + `liquidationAt = now` **before** nested sweeps (revert rolls both back) |
 | Redeem | `GRAI.redeem` / `previewRedeem` | `regime == REDEMPTION` **and** `block.timestamp ≥ liquidationAt + liquidationPeriod` |
 | Close | `GRAI.revive` | `regime == REDEMPTION` **and** `block.timestamp ≥ liquidationAt + liquidationPeriod + redeemPeriod` |
 
-**2-of-2 for open** means both limbs must hold on the `GRAI.liquidate` path: quorum on GRAI, and `confirmed` so the nested sweeps do not revert. Voters alone cannot open; Grinders owner arm alone does **not** flip `regime`.
+**2-of-2 for open** means both limbs must hold on the `GRAI.liquidate` path: quorum on GRAI, and `confirmed` so the nested sweeps do not revert. Voters alone cannot open; Grinders owner arm alone does **not** flip `regime` and cannot move inventory (sweeps also need `grai.liquidation()`).
 
-**Sweep permission (important):** `Grinders.liquidate(fromId, toId)` is permissionless whenever `confirmed == true`, including while GRAI is still `GRINDING`. Arming does not open redemption, but it does allow anyone to page custodians / flush idle listed balances onto GRAI before (or without) a successful `GRAI.liquidate`. After open, the same entrypoint is how keepers finish late inventory during consolidation.
+**Sweep permission:** `Grinders.liquidate(fromId, toId)` is permissionless when `confirmed && grai.liquidation()`. GRAI flips to `REDEMPTION` before its open-time calls so those sweeps pass the regime gate; keepers re-page during consolidation under the same gates. Arming while still `GRINDING` does **not** allow inventory to leave Grinders.
 
 ### 9.2 Open (`GRAI.liquidate`)
 
 | Caller | Behavior |
 | ---- | ---- |
-| **Anyone** | If `GRINDING` + `hasQuorum()`: scoop orphan/dead GRAI (`balanceOf(this) − totalLocked`) → opener; call `grinders.liquidate(0, type(uint256).max)` then `grinders.liquidate(0, 0)`; on success set `regime = REDEMPTION`, `liquidationAt = now`, emit `RegimeChange`. |
-| **`grinders.owner()`** | `confirm()` arms/disarms only — does **not** set `regime`. |
+| **Anyone** | If `GRINDING` + `hasQuorum()`: scoop orphan/dead GRAI → opener; set `REDEMPTION` + `liquidationAt`; then `grinders.liquidate(0, max)` + `(0, 0)`. Sweep hard-fail rolls the regime flip back. |
+| **`grinders.owner()`** | `confirm()` arms/disarms only — does **not** set `regime` and cannot sweep until open. |
 
 Open-time sweeps: no try/catch on GRAI. `!confirmed` or a **hard** failure of `Grinders.liquidate` aborts the whole open (regime stays `GRINDING`). Inside Grinders, per-custodian pulls are still `try/catch`’d (a single sleeve revert is skipped; idle flush / other sleeves may still succeed).
 
@@ -736,7 +736,7 @@ After open, live paths gated with `_requireRegime(GRINDING)` are blocked (`depos
 
 ### 9.3 Consolidation (`liquidationPeriod`, default 24h)
 
-`regime` is already `REDEMPTION`, but `redeem` / `previewRedeem` revert `LiquidationDelay` until `liquidationAt + liquidationPeriod`. Keepers may still call `Grinders.liquidate` while `confirmed` for late balances. `claim` / `claimAll` **stay open** — they draw only from `totalClaimable`, which `_redeemable` excludes from the redeem basket.
+`regime` is already `REDEMPTION`, but `redeem` / `previewRedeem` revert `LiquidationDelay` until `liquidationAt + liquidationPeriod`. Keepers may still call `Grinders.liquidate` while `confirmed && grai.liquidation()` for late balances. `claim` / `claimAll` **stay open** — they draw only from `totalClaimable`, which `_redeemable` excludes from the redeem basket.
 
 ### 9.4 Redeem (`regime = REDEMPTION`, after delay)
 
@@ -847,9 +847,9 @@ revenueShare = claimed * revenueShareBps / dividendCutBps   // affiliate pool (�
 Fix one `distribute` of yield `Y` (same cuts apply to bribe-premium carve-outs). By definition:
 
 ```
-T = Y · treasuryCutBps  / BPS     // sent to Treasury now
-D = Y · dividendCutBps  / BPS     // reserved for unvoted lockers
-R = Y · revenueShareBps / BPS     // affiliate budget (config: R ≤ T)
+D = Y · dividendCutBps / BPS     // floor; reserved for unvoted lockers
+T = Y − D                        // remainder → Treasury (not independently floored)
+R = Y · revenueShareBps / BPS    // affiliate budget (config: R ≤ treasuryCutBps share)
 ```
 
 Eliminate `Y` and `BPS`:
@@ -1130,7 +1130,7 @@ Full write-up: `[GRINDERS.md](GRINDERS.md)`.
 | Custodian NFT      | `mint(kind, base, quote, owner)`; owner controls wallet |
 | Yield              | Custodian trades → `distribute` → `GRAI.distribute`     |
 | `deallocate`       | Custodian → Grinders reserve                            |
-| Liquidation sweeps | Permissionless while `Grinders.confirmed` (not gated on `grai.liquidation()`) |
+| Liquidation sweeps | Permissionless while `confirmed` **and** `grai.liquidation()` |
 
 
 ---
@@ -1198,7 +1198,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 3. **Past dividends are not diluted** — new locks sync debt to the live index.
 4. **No unvoted locks → dividend cut to treasury** — same for bribe premium dividend cut.
 6. **Quorum uses live supply** — deposits dilute progress until re-votes.
-7. **Liquidation is 2-of-2 on open** — `hasQuorum()` on `GRAI.liquidate` **and** `grinders.confirmed` so nested sweeps succeed. `Grinders.liquidate` itself checks **only** `confirmed` (may run while still `GRINDING`). Arm cleared on revive / Grinders ownership accept.
+7. **Liquidation is 2-of-2 on open** — `hasQuorum()` on `GRAI.liquidate` **and** `grinders.confirmed` so nested sweeps succeed. GRAI sets `REDEMPTION` before sweeps; `Grinders.liquidate` requires `confirmed` **and** `grai.liquidation()`. Arm cleared on revive / Grinders ownership accept.
 8. **Liquidation basket ≠ book** — pro-rata of redeemable GRAI balances after sweeps; `totalClaimable` reserved.
 9. **Bribe / mint / lock / unlock / vote blocked in liquidation**; `claim` **/** `claimAll` **allowed** — dividend reserve and redeemable basket are separate (`_redeemable`).
 10. **FoT** — deposit/`distribute` size economics from credited `_pay`; `settlementAsset` is **non-FoT** (exact credit required; full `graiAmount` out).
@@ -1228,7 +1228,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | `bribe`                    | Anyone              | Blocked                                                           |
 | `poach` / `previewPoach`   | Anyone              | `poach` blocked; preview still quotes                             |
 | `redeem`                   | Holder              | Only when open (after delay); `nonReentrant`                      |
-| `liquidate`                | Anyone              | `GRINDING` + quorum; nested `grinders.liquidate` needs `confirmed`; then `REDEMPTION` + orphan → opener |
+| `liquidate`                | Anyone              | `GRINDING` + quorum → flip `REDEMPTION` then `grinders.liquidate` (`confirmed` + regime); orphan → opener |
 | `revive`                 | Anyone              | After `liquidationPeriod + redeemPeriod`; clears arm; fund restarts                                       |
 | `setConfig`                | Owner               | Blocked while open                                                |
 | `setFeed`                  | Owner               | List / pause / replace oracle / delist (§2); delist blocked while open |
@@ -1255,7 +1255,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | ---------------------------------- | --------- | --------------------- |
 | `allocate` / `mint` / `set`        | Owner     | Normal                |
 | `deallocate`                       | Custodian | Normal                |
-| `liquidate` / `liquidate(from,to)` | Anyone    | `confirmed` (pages sleeves / idle → GRAI; no regime gate) |
+| `liquidate` / `liquidate(from,to)` | Anyone    | `confirmed` **and** `grai.liquidation()` |
 
 
 ---

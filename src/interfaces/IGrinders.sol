@@ -24,6 +24,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
     error LiquidationNotConfirmed();
+    error LiquidationNotOpen();
     error NotGrai();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
     error InvalidCustodianRange(uint256 fromId, uint256 toId);
@@ -65,6 +66,10 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice Grinders-owner limb of GRAI 2-of-2 liquidation (armed via `confirm`).
     function confirmed() external view returns (bool);
 
+    /// @notice Whether linked GRAI reports open liquidation. Empty `grai` code or missing /
+    ///         reverting `liquidation()` → `true` (no external gate). Else GRAI's flag.
+    function liquidation() external view returns (bool);
+
     /// @notice Toggle liquidation arm. Only `owner()`.
     ///         Arm stays set through open/sweeps until `revive` or ownership accept.
     function confirm() external;
@@ -103,6 +108,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice Protocol owner forwards yield `amount` of `asset` from `custodian` to GRAI.
     function distribute(address custodian, address asset, uint256 amount) external;
 
-    /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and transfer swept amounts to GRAI.
+    /// @notice Permissionless while `confirmed` and `grai.liquidation()`: liquidate custodians
+    ///         `[fromId, toId)` and transfer swept amounts to GRAI. GRAI opens by flipping
+    ///         REDEMPTION before calling this; keepers re-page during consolidation under the same gates.
     function liquidate(uint256 fromId, uint256 toId) external;
 }

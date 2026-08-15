@@ -294,8 +294,10 @@ contract GRAI is
         (uint256 received, uint256 refund) = _pay(msg.sender, address(this), asset, yieldAmount, false);
         positions[msg.sender][asset].yielded += received;
 
-        uint256 treasuryCut = (received * config.treasuryCutBps) / BPS;
-        uint256 dividendCut = received - treasuryCut;
+        // Floor the dividend slice; remainder → treasury so claim asks
+        // `claimed * treasuryCutBps / dividendCutBps` stay ≤ funded inventory.
+        uint256 dividendCut = (received * config.dividendCutBps) / BPS;
+        uint256 treasuryCut = received - dividendCut;
 
         _distribute(asset, dividendCut);
         _withdraw(address(treasury), asset, treasuryCut);
@@ -327,7 +329,8 @@ contract GRAI is
         totalValue += value;
         _mint(msg.sender, graiOut);
         treasury.mint(msg.sender, referrer, value);
-        if (lock_) lock(graiOut);
+        // Internal `_lock` — public `lock` is also `nonReentrant`; nested call would revert.
+        if (lock_) _lock(msg.sender, graiOut);
         _sendEth(msg.sender, refund);
         emit Deposit(msg.sender, graiOut, asset, received, value);
     }
@@ -371,8 +374,13 @@ contract GRAI is
     ///      Not required before `vote` — `vote` locks any shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
     function lock(uint256 graiAmount) public nonReentrant {
         _requireRegime(Regime.GRINDING);
+        _lock(msg.sender, graiAmount);
+    }
+
+    /// @dev Shared by public `lock`, `deposit(..., lock_=true)`, and `vote` shortfall. No
+    ///      `nonReentrant` — callers that already hold the guard must use this path.
+    function _lock(address locker, uint256 graiAmount) internal {
         _requireNotZeroAmount(graiAmount);
-        address locker = msg.sender;
         Escrow storage entry = escrows[locker];
 
         if (graiAmount > balanceOf(locker)) revert InvalidAmount();
@@ -522,7 +530,7 @@ contract GRAI is
         Escrow storage entry = escrows[voter];
 
         uint256 needLocked = entry.voted + graiAmount;
-        if (entry.locked < needLocked) lock(needLocked - entry.locked);
+        if (entry.locked < needLocked) _lock(voter, needLocked - entry.locked);
 
         _accrueDividends(voter);
         if (entry.voted == 0) _addAccount(voter, true);
@@ -577,8 +585,9 @@ contract GRAI is
             cutPool = (received * discount) / bribeAmount;
         }
         uint256 voterCut = received - cutPool;
-        uint256 treasuryCut = (cutPool * config.treasuryCutBps) / BPS;
-        uint256 dividendCut = cutPool - treasuryCut;
+        // Same remainder rule as `distribute`: floor dividends, rest → treasury.
+        uint256 dividendCut = (cutPool * config.dividendCutBps) / BPS;
+        uint256 treasuryCut = cutPool - dividendCut;
         _distribute(settlementAsset, dividendCut);
         _withdraw(address(treasury), settlementAsset, treasuryCut);
         _withdraw(voter, settlementAsset, voterCut);
@@ -626,9 +635,11 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev 2-of-2: vote quorum here **and** `Grinders.confirmed` inside `grinders.liquidate`
-    ///      (armed by `grinders.owner()` via `confirm`). Sweep reverts propagate so
-    ///      open is atomic. On open: orphan/dead GRAI (`balanceOf(this) − totalLocked`) →
-    ///      `msg.sender`, then sweep Grinders custodians + idle listed balances onto GRAI.
+    ///      (armed by `grinders.owner()` via `confirm`). Flip to `REDEMPTION` **before** sweeps so
+    ///      `Grinders.liquidate` can require `grai.liquidation()` (blocks premature GRINDING sweeps).
+    ///      Sweep reverts propagate and roll back the regime flip — open stays atomic. On open:
+    ///      orphan/dead GRAI (`balanceOf(this) − totalLocked`) → `msg.sender`, then sweep Grinders
+    ///      custodians + idle listed balances onto GRAI.
     function liquidate() public nonReentrant {
         _requireRegime(Regime.GRINDING);
         if (!hasQuorum()) revert LiquidationNotReady();
@@ -641,15 +652,16 @@ contract GRAI is
         uint256 bal = balanceOf(address(this));
         if (bal > totalLocked) _transfer(address(this), liquidator, bal - totalLocked);
 
-        // Pull custodian inventories + Grinders idle into GRAI (gated by `grinders.confirmed`).
-        // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
-        // No try/catch: `!confirmed` or a hard sweep failure reverts the whole open.
-        grinders.liquidate(0, type(uint256).max);
-        grinders.liquidate(0, 0);
-
+        // Regime first: keepers and `Grinders.liquidate` gate on `liquidation()`. Hard sweep
+        // failure reverts this tx and rolls the flip back (no try/catch).
         regime = Regime.REDEMPTION;
         liquidationAt = uint48(block.timestamp);
         emit RegimeChange(regime);
+
+        // Pull custodian inventories + Grinders idle into GRAI (gated by `confirmed` + regime).
+        // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
+        grinders.liquidate(0, type(uint256).max);
+        grinders.liquidate(0, 0);
     }
 
     //////////////////// REDEEM ////////////////////

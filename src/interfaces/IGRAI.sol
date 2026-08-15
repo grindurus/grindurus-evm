@@ -334,9 +334,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function bribe(address voter, uint256 graiAmount) external payable;
 
     /// @notice Liquidation 2-of-2: open when `hasQuorum()`; Grinders-owner arm is enforced
-    ///         inside `grinders.liquidate` (`confirmed`). Anyone may call; sweep reverts abort open.
-    ///         On open: orphan/dead GRAI → `msg.sender`; clear Grinders arm; sweep Grinders
-    ///         custodians + idle listed balances onto GRAI.
+    ///         inside `grinders.liquidate` (`confirmed` + `liquidation()`). Anyone may call;
+    ///         sweep reverts abort open. On open: orphan/dead GRAI → `msg.sender`; flip to
+    ///         `REDEMPTION`; then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
