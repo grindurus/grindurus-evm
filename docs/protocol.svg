@@ -76,7 +76,6 @@
     <rect x="468" y="196" width="340" height="80" rx="6" fill="#db2777"/>
     <text x="484" y="222" class="h">GRAI</text>
     <text x="484" y="242" class="p">fund share · lock / vote / bribe</text>
-    <text x="484" y="258" class="p">book NAV · quorum</text>
   </g>
 
   <g filter="url(#shadow)">
@@ -175,8 +174,8 @@
   </g>
 
   <line x1="896" y1="710" x2="384" y2="710" class="wire" marker-end="url(#arrow)"/>
-  <rect x="598" y="692" width="80" height="16" rx="3" fill="#f8fafc"/>
-  <text x="638" y="704" text-anchor="middle" class="chip">revshare 5%</text>
+  <rect x="566" y="692" width="144" height="16" rx="3" fill="#f8fafc"/>
+  <text x="638" y="704" text-anchor="middle" class="chip">revshare 5% on 3. claim()</text>
 
   <!-- ===== ROW 6: Beneficiar ===== -->
   <line x1="1066" y1="748" x2="1066" y2="832" class="wire" marker-end="url(#arrow)"/>
