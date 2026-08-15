@@ -106,7 +106,8 @@
     <text x="713.6" y="110" class="meta light">Strategic treasury &amp;</text>
     <text x="713.6" y="126" class="meta light">future ecosystem needs</text>
     <rect x="697.6" y="238" width="174.4" height="37" fill="#42405f" rx="4"/>
-    <text x="713.6" y="262" class="pct light">Audits 3% / 30M</text>
+    <text x="713.6" y="254" class="label light">Audits &amp; Bug Bounty</text>
+    <text x="713.6" y="268" class="pct light">3% / 30M GRS</text>
     <rect x="697.6" y="275" width="174.4" height="25" fill="#585879" rx="4"/>
     <text x="713.6" y="292" class="pct light">Legal 2% / 20M</text>
   </g>

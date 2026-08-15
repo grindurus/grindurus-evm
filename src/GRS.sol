@@ -1,0 +1,320 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.30;
+
+import {OFT} from "@layerzerolabs/oft-evm/contracts/OFT.sol";
+import {IOFT, SendParam} from "@layerzerolabs/oft-evm/contracts/interfaces/IOFT.sol";
+import {OFTMsgCodec} from "@layerzerolabs/oft-evm/contracts/libs/OFTMsgCodec.sol";
+import {IOAppMsgInspector} from "@layerzerolabs/oapp-evm/contracts/oapp/interfaces/IOAppMsgInspector.sol";
+import {MessagingFee, MessagingReceipt} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+
+import {IERC1046} from "./interfaces/IERC1046.sol";
+import {IGRS} from "./interfaces/IGRS.sol";
+
+/// @title GRS (Grindurus Token)
+/// @notice Fixed-supply LayerZero OFT. Home chain mints the 1B genesis into per-bucket inventory
+///         (`docs/grs.svg`); delegate `grant`s vesting / instant payouts. Any holder may `vest`
+///         their own GRS (home or spoke). Spokes mint/burn via OFT.
+contract GRS is OFT, IERC1046, IGRS {
+    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
+    uint256 public constant MONTH = 30 days;
+    uint64 public constant MAX_CLIFF = 365 days;
+    uint64 public constant MAX_DURATION = 4 * 365 days;
+    uint8 public constant BUCKET_COUNT = 13;
+
+    bool public immutable home;
+    address public proprietor;
+    address public veGRS;
+
+    mapping(Bucket bucket => uint256) public spent;
+    uint256 public vestingCount;
+    mapping(uint256 id => VestingRec) internal _vestings;
+
+    uint32[] public peerEids;
+    mapping(uint32 eid => uint256 indexPlusOne) internal peerEidIndex;
+
+    /// @param lzEndpoint Local LayerZero V2 endpoint.
+    /// @param delegate   OFT owner / endpoint delegate. On home, does **not** receive the 1B —
+    ///                   inventory stays here until `grant` / `vest` / `release`.
+    /// @param home_      If true, mint `MAX_SUPPLY` to this contract (canonical chain).
+    constructor(address lzEndpoint, address delegate, bool home_)
+        OFT("Grindurus Token", "GRS", lzEndpoint, delegate)
+        Ownable(delegate)
+    {
+        home = home_;
+        proprietor = delegate;
+        if (home_) {
+            _mint(address(this), MAX_SUPPLY);
+        }
+    }
+
+    function tokenURI() public pure returns (string memory) {
+        return "https://grindurus.xyz/grs.json";
+    }
+
+    function capOf(Bucket bucket) public pure returns (uint256) {
+        if (bucket == Bucket.TokenSales) return 50_000_000e18;
+        if (bucket == Bucket.PreSeed) return 50_000_000e18;
+        if (bucket == Bucket.Seed) return 50_000_000e18;
+        if (bucket == Bucket.Series) return 50_000_000e18;
+        if (bucket == Bucket.RevenueShare) return 180_000_000e18;
+        if (bucket == Bucket.Airdrops) return 20_000_000e18;
+        if (bucket == Bucket.CoreTeam) return 150_000_000e18;
+        if (bucket == Bucket.Advisors) return 50_000_000e18;
+        if (bucket == Bucket.GrowthFund) return 120_000_000e18;
+        if (bucket == Bucket.LpMm) return 80_000_000e18;
+        if (bucket == Bucket.LongTermReserve) return 150_000_000e18;
+        if (bucket == Bucket.Audits) return 30_000_000e18;
+        if (bucket == Bucket.Legal) return 20_000_000e18;
+        return 0; // Holder — not a cap-table row
+    }
+
+    function gateOf(Bucket bucket) public pure returns (Gate) {
+        if (bucket == Bucket.TokenSales) return Gate.Instant;
+        if (
+            bucket == Bucket.PreSeed || bucket == Bucket.Seed || bucket == Bucket.Series
+                || bucket == Bucket.CoreTeam || bucket == Bucket.Advisors
+        ) {
+            return Gate.Linear;
+        }
+        if (bucket == Bucket.RevenueShare || bucket == Bucket.Airdrops || bucket == Bucket.LpMm) {
+            return Gate.Proprietary;
+        }
+        if (bucket == Bucket.Holder) return Gate.Linear;
+        return Gate.VoteGated;
+    }
+
+    /// @notice Default cliff / linear months from `docs/grs.svg`. Delegate may still pick other
+    ///         `grant` timestamps; vote-gated / proprietary rows have 0/0 (release is gated, not calendar).
+    function scheduleOf(Bucket bucket) public pure returns (uint32 cliffMonths, uint32 linearMonths) {
+        if (bucket == Bucket.PreSeed) return (0, 24);
+        if (bucket == Bucket.Seed) return (3, 24);
+        if (bucket == Bucket.Series) return (6, 24);
+        if (bucket == Bucket.CoreTeam) return (12, 60);
+        if (bucket == Bucket.Advisors) return (6, 66);
+        if (bucket == Bucket.Airdrops) return (0, 67);
+        return (0, 0);
+    }
+
+    function remaining(Bucket bucket) public view returns (uint256) {
+        return capOf(bucket) - spent[bucket];
+    }
+
+    function getAllocations() public view returns (Allocation[] memory listed) {
+        if (!home) revert NotHome();
+        listed = new Allocation[](BUCKET_COUNT);
+        for (uint8 i; i < BUCKET_COUNT; ++i) {
+            Bucket b = Bucket(i);
+            (uint32 cliffMonths, uint32 linearMonths) = scheduleOf(b);
+            uint256 cap = capOf(b);
+            uint256 used = spent[b];
+            listed[i] = Allocation({
+                bucket: b,
+                cap: cap,
+                spent: used,
+                remaining: cap - used,
+                gate: gateOf(b),
+                cliffMonths: cliffMonths,
+                linearMonths: linearMonths
+            });
+        }
+    }
+
+    function getVestings() public view returns (VestingRec[] memory listed) {
+        uint256 n = vestingCount;
+        listed = new VestingRec[](n);
+        for (uint256 i; i < n; ++i) {
+            listed[i] = _vestings[i + 1];
+        }
+    }
+
+    function vested(uint256 id, uint256 timestamp) public view returns (uint256) {
+        VestingRec storage v = _vesting(id);
+        if (timestamp < v.cliffEnd) return 0;
+        if (v.end <= v.cliffEnd || timestamp >= v.end) return v.allocation;
+        return v.allocation * (timestamp - v.cliffEnd) / (v.end - v.cliffEnd);
+    }
+
+    function releasable(uint256 id) public view returns (uint256) {
+        VestingRec storage v = _vesting(id);
+        uint256 due = vested(id, block.timestamp);
+        return due > v.released ? due - v.released : 0;
+    }
+
+    function release(uint256 id) public {
+        uint256 amount = releasable(id);
+        if (amount == 0) revert NothingToRelease();
+        VestingRec storage v = _vestings[id];
+        v.released += amount;
+        _transfer(address(this), v.beneficiary, amount);
+        emit Released(id, v.beneficiary, amount);
+    }
+
+    function setProprietor(address proprietor_) public onlyOwner {
+        if (!home) revert NotHome();
+        proprietor = proprietor_;
+        emit ProprietorSet(proprietor_);
+    }
+
+    function setVeGRS(address veGRS_) public onlyOwner {
+        if (!home) revert NotHome();
+        veGRS = veGRS_;
+        emit VeGRSSet(veGRS_);
+    }
+
+    function grant(
+        Bucket bucket,
+        address to,
+        uint256 amount,
+        uint64 start,
+        uint64 cliffSeconds,
+        uint64 durationSeconds
+    ) public returns (uint256 vestingId) {
+        if (!home) revert NotHome();
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert ZeroAmount();
+        _authorizeGrant(bucket);
+        uint256 next = spent[bucket] + amount;
+        if (next > capOf(bucket)) revert BucketExceeded();
+        spent[bucket] = next;
+
+        if (cliffSeconds == 0 && durationSeconds == 0) {
+            _transfer(address(this), to, amount);
+            emit Granted(bucket, to, amount, 0);
+            return 0;
+        }
+
+        vestingId = _openVesting(bucket, address(this), to, amount, start, cliffSeconds, durationSeconds);
+        emit Granted(bucket, to, amount, vestingId);
+    }
+
+    function vest(address to, uint256 amount, uint64 start, uint64 cliffSeconds, uint64 durationSeconds)
+        public
+        returns (uint256 vestingId)
+    {
+        if (to == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert ZeroAmount();
+        if (cliffSeconds == 0 && durationSeconds == 0) revert InstantNotVest();
+        if (cliffSeconds > MAX_CLIFF || durationSeconds > MAX_DURATION) revert InvalidSchedule();
+        _transfer(msg.sender, address(this), amount);
+        vestingId = _openVesting(Bucket.Holder, msg.sender, to, amount, start, cliffSeconds, durationSeconds);
+        emit Vested(msg.sender, to, amount, vestingId);
+    }
+
+    function _openVesting(
+        Bucket bucket,
+        address funder,
+        address to,
+        uint256 amount,
+        uint64 start,
+        uint64 cliffSeconds,
+        uint64 durationSeconds
+    ) internal returns (uint256 vestingId) {
+        uint64 start_ = start == 0 ? uint64(block.timestamp) : start;
+        uint64 cliffEnd = start_ + cliffSeconds;
+        uint64 end_ = cliffEnd + durationSeconds;
+        if (cliffEnd < start_ || end_ < cliffEnd) revert InvalidSchedule();
+
+        vestingId = ++vestingCount;
+        _vestings[vestingId] = VestingRec({
+            id: vestingId,
+            bucket: bucket,
+            funder: funder,
+            beneficiary: to,
+            allocation: amount,
+            released: 0,
+            start: start_,
+            cliffEnd: cliffEnd,
+            end: end_
+        });
+    }
+
+    function _vesting(uint256 id) internal view returns (VestingRec storage v) {
+        if (id == 0 || id > vestingCount) revert UnknownVesting();
+        return _vestings[id];
+    }
+
+    function _authorizeGrant(Bucket bucket) internal view {
+        if (gateOf(bucket) == Gate.VoteGated && proprietor != address(0)) {
+            if (msg.sender != proprietor) revert VoteGated();
+            return;
+        }
+        if (msg.sender != owner()) revert OwnableUnauthorizedAccount(msg.sender);
+    }
+
+    function getPeers() public view returns (Peer[] memory listed) {
+        uint256 n = peerEids.length;
+        listed = new Peer[](n);
+        for (uint256 i; i < n; ++i) {
+            uint32 eid = peerEids[i];
+            listed[i] = Peer({eid: eid, peer: peers[eid]});
+        }
+    }
+
+    function quoteBridge(uint32 dstEid, bytes32 to, uint256 amountLD) public view returns (uint256 nativeFee) {
+        nativeFee = this.quoteSend(_bridgeParam(dstEid, to, amountLD), false).nativeFee;
+    }
+
+    function bridge(uint32 dstEid, bytes32 to, uint256 amountLD) public payable {
+        SendParam memory p = _bridgeParam(dstEid, to, amountLD);
+        (uint256 amountSentLD, uint256 amountReceivedLD) =
+            _debit(msg.sender, p.amountLD, p.minAmountLD, p.dstEid);
+
+        (bytes memory message, bool hasCompose) = OFTMsgCodec.encode(p.to, _toSD(amountReceivedLD), p.composeMsg);
+        bytes memory options = this.combineOptions(p.dstEid, hasCompose ? SEND_AND_CALL : SEND, "");
+        address inspector = msgInspector;
+        if (inspector != address(0)) IOAppMsgInspector(inspector).inspect(message, options);
+
+        MessagingReceipt memory msgReceipt =
+            _lzSend(p.dstEid, message, options, MessagingFee(msg.value, 0), msg.sender);
+        emit OFTSent(msgReceipt.guid, p.dstEid, msg.sender, amountSentLD, amountReceivedLD);
+    }
+
+    function _bridgeParam(uint32 dstEid, bytes32 to, uint256 amountLD)
+        internal
+        view
+        returns (SendParam memory param)
+    {
+        if (to == bytes32(0)) revert InvalidRecipient();
+        uint256 amount = _removeDust(amountLD);
+        if (amount == 0) revert IOFT.SlippageExceeded(0, amountLD);
+        param = SendParam({
+            dstEid: dstEid,
+            to: to,
+            amountLD: amountLD,
+            minAmountLD: amount,
+            extraOptions: "",
+            composeMsg: "",
+            oftCmd: ""
+        });
+    }
+
+    function _setPeer(uint32 eid, bytes32 peer) internal override {
+        bytes32 prev = peers[eid];
+        super._setPeer(eid, peer);
+        if (peer == bytes32(0)) {
+            uint256 idx = peerEidIndex[eid];
+            if (idx == 0) return;
+            uint256 last = peerEids.length;
+            if (idx != last) {
+                uint32 moved = peerEids[last - 1];
+                peerEids[idx - 1] = moved;
+                peerEidIndex[moved] = idx;
+            }
+            peerEids.pop();
+            delete peerEidIndex[eid];
+        } else if (prev == bytes32(0)) {
+            peerEids.push(eid);
+            peerEidIndex[eid] = peerEids.length;
+        }
+    }
+
+    function _credit(address _to, uint256 _amountLD, uint32 _srcEid)
+        internal
+        override
+        returns (uint256 amountReceivedLD)
+    {
+        if (totalSupply() + _amountLD > MAX_SUPPLY) revert CapExceeded();
+        return super._credit(_to, _amountLD, _srcEid);
+    }
+}

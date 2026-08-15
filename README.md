@@ -41,6 +41,7 @@ bribe(voter)               [permissionless]
 | `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
 | `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
 | `PriceOracleRouter` | Base of `GRAI`. Chainlink / Pyth / custom feeds per asset. |
+| `GRS` | Non-upgradeable LayerZero **OFT**. Home mints 1B into bucket inventory (`getAllocations` / `grant` / `vest` / `release`). `quoteBridge` / `bridge`. Spec: [`docs/GRS.md`](docs/GRS.md). |
 
 Native ETH is `address(0)`. WETH is the fallback when a native ETH push is rejected.
 

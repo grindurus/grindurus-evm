@@ -12,6 +12,11 @@ remappings = [
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",
+    "@layerzerolabs/oft-evm/=lib/devtools/packages/oft-evm/",
+    "@layerzerolabs/oapp-evm/=lib/devtools/packages/oapp-evm/",
+    "@layerzerolabs/lz-evm-protocol-v2/=lib/LayerZero-v2/packages/layerzero-v2/evm/protocol/",
+    "@layerzerolabs/lz-evm-messagelib-v2/=lib/LayerZero-v2/packages/layerzero-v2/evm/messagelib/",
+    "solidity-bytes-utils/=lib/solidity-bytes-utils/",
 ]
 # Broken relative imports in archived v1 sources — keep out of compile set.
 # Legacy GRAI suite (settlementAsset/fill API) lives under test/archive.

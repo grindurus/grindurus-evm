@@ -11,7 +11,7 @@ contract DeployCreate3Test is Test {
     address internal constant ADMIN = address(0xA11CE);
     address internal constant WETH = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
 
-    function test_PlanIsStableAcrossRuns() public {
+    function test_PlanIsStableAcrossRuns() public pure {
         DeployPlanLib.Plan memory first = DeployPlanLib.build(ADMIN, WETH, "v1");
         DeployPlanLib.Plan memory second = DeployPlanLib.build(ADMIN, WETH, "v1");
 
@@ -20,7 +20,7 @@ contract DeployCreate3Test is Test {
         assertEq(first.grindersProxy, second.grindersProxy);
     }
 
-    function test_AddressIndependentOfAdminAndWeth() public {
+    function test_AddressIndependentOfAdminAndWeth() public pure {
         DeployPlanLib.Plan memory a = DeployPlanLib.build(ADMIN, WETH, "v1");
         DeployPlanLib.Plan memory b = DeployPlanLib.build(address(0xB0B), address(0xBEEF), "v1");
 
@@ -30,7 +30,7 @@ contract DeployCreate3Test is Test {
         assertEq(a.grindersProxy, b.grindersProxy);
     }
 
-    function test_SaltTagChangesAddresses() public {
+    function test_SaltTagChangesAddresses() public pure {
         DeployPlanLib.Plan memory v1 = DeployPlanLib.build(ADMIN, WETH, "v1");
         DeployPlanLib.Plan memory v2 = DeployPlanLib.build(ADMIN, WETH, "v2");
 
@@ -38,7 +38,7 @@ contract DeployCreate3Test is Test {
         assertTrue(v1.grindersProxy != v2.grindersProxy);
     }
 
-    function test_GraiProxyIsNonZero() public {
+    function test_GraiProxyIsNonZero() public pure {
         DeployPlanLib.Plan memory plan = DeployPlanLib.build(ADMIN, WETH, "v1");
 
         assertTrue(plan.graiProxy != address(0));
