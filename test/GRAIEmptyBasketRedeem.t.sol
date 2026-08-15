@@ -2,7 +2,6 @@
 pragma solidity ^0.8.30;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
-import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IGrinders} from "../src/interfaces/IGrinders.sol";
 
 /// @dev Mock Grinders that satisfies `grai()` / `confirmed()` for the open gate, but always

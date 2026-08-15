@@ -242,7 +242,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _deposit(alice, 100e6, address(0)); // Alice self-root
         uint256 g = grai.balanceOf(alice);
         vm.prank(alice);
-        grai.transfer(eve, g);
+        assertTrue(grai.transfer(eve, g));
 
         _lock(eve, g);
         assertEq(treasury.referrerOf(eve), address(0));
@@ -281,7 +281,7 @@ contract TreasuryPoachTest is GRAIFixture {
 
         uint256 g = grai.balanceOf(alice);
         vm.prank(alice);
-        grai.transfer(eve, g);
+        assertTrue(grai.transfer(eve, g));
 
         _lock(eve, g);
         _yield(YIELD);

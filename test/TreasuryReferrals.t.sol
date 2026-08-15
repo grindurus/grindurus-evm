@@ -293,7 +293,7 @@ contract TreasuryReferralsTest is GRAIFixture {
     /// @dev Mirrors Solana `three lockers: 2 deposit → distribute → 3rd deposit → distribute → all claim`.
     function test_ThreeLockers_TwoDist_LateJoiner_AllClaim() public {
         uint256 depositAmount = 100e6;
-        uint256 PRECISION = 1e18;
+        uint256 precision = 1e18;
 
         uint256 aliceBefore = grai.balanceOf(alice);
         uint256 bobBefore = grai.balanceOf(bob);
@@ -343,9 +343,9 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertApproxEqAbs(claimableAfter2 - claimableAfterDist1, DIVIDEND, 1);
 
         (,, uint256 accFinal,) = grai.assets(address(usdc));
-        uint256 aliceExpected = (aliceMinted * accFinal) / PRECISION - (aliceMinted * accAtAliceBobLock) / PRECISION;
-        uint256 bobExpected = (bobMinted * accFinal) / PRECISION - (bobMinted * accAtAliceBobLock) / PRECISION;
-        uint256 carolExpected = (carolMinted * accFinal) / PRECISION - (carolMinted * accAtCarolLock) / PRECISION;
+        uint256 aliceExpected = (aliceMinted * accFinal) / precision - (aliceMinted * accAtAliceBobLock) / precision;
+        uint256 bobExpected = (bobMinted * accFinal) / precision - (bobMinted * accAtAliceBobLock) / precision;
+        uint256 carolExpected = (carolMinted * accFinal) / precision - (carolMinted * accAtCarolLock) / precision;
         uint256 claimedTotal = aliceExpected + bobExpected + carolExpected;
         // Dust vs full 2×DIVIDEND: distribute may send 1 wei to treasury (not claimable),
         // and per-locker floors may leave 1 wei in totalClaimable.

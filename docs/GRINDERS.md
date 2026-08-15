@@ -81,7 +81,7 @@ Example (happy path):
 
 ## 3. Custodian kinds (how they trade)
 
-Each kind is a UUPS implementation registered on Grinders under `keccak256("grindurus.custodian.<name>")`. `mint` deploys a fresh proxy; existing proxies keep their impl until the NFT owner upgrades.
+Each kind is an implementation registered on Grinders under `keccak256("grindurus.custodian.<name>")`. `mint` deploys a fresh ERC1967 proxy; `_authorizeUpgrade` always reverts — existing wallets keep that impl.
 
 | Kind string | Contract | How it earns |
 | ----------- | -------- | ------------ |
@@ -95,7 +95,7 @@ Common base (`Custodian`):
 - `nav()` — USD value of base+quote via GRAI oracles (ops / UI).
 - `deallocate` / `distribute` — **only Grinders** (`msg.sender == grinders`); blocked while GRAI liquidation is open.
 - `liquidate()` — only Grinders; sweeps ETH / base / quote to Grinders during protocol liquidation.
-- NFT owner: trading APIs + `toggleUpgradeable` (UUPS lock / delayed re-enable).
+- NFT owner: trading APIs only (custodian UUPS is disabled).
 
 `Custodian.distribute` try/catch: if `grai.distribute` fails, tokens are still forwarded raw to GRAI (or back to Grinders if `grai()` itself fails) and `Distribute` is emitted — funds are not left stranded on the wallet, but may bypass GRAI cut accounting.
 
@@ -195,7 +195,7 @@ Grinders arms the Grinders-owner limb of GRAI’s 2-of-2 (`confirm` → `confirm
 | Role | Powers |
 | ---- | ------ |
 | **Grinders owner** | UUPS upgrade, `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` / `confirm` |
-| **NFT owner (Grinder)** | Custodian trades (swap / CoW / …), `toggleUpgradeable` (custodian UUPS) |
+| **NFT owner (Grinder)** | Custodian trades (swap / CoW / …) |
 | **Anyone** | `liquidate(fromId, toId)` when `confirmed` **and** `grai.liquidation()` |
 
 Wire-up: after deploy, `GRAI.setGrinders(grinders)` requires `grinders.grai() == GRAI`.
@@ -219,7 +219,7 @@ Wire-up: after deploy, `GRAI.setGrinders(grinders)` requires `grinders.grai() ==
 | -------- | ------ | ---- |
 | `set` / `setGrai` / `mint` / `register` / `setAssets` / `allocate` / `deallocate` / `distribute` | Grinders owner | Anytime (normal ops); deallocate/distribute blocked on custodian if GRAI liquidating |
 | `confirm` | Grinders owner | Toggle arm for GRAI open / sweeps |
-| Custodian trade APIs / `toggleUpgradeable` | NFT owner | Kind-specific |
+| Custodian trade APIs | NFT owner | Kind-specific |
 | `liquidate(fromId, toId)` | Anyone | `confirmed` **and** `grai.liquidation()` (`fromId < toId` = page wallets; else idle reserve sweep) |
 | `revive` | GRAI only | Called on `GRAI.revive`; clears `confirmed` |
 

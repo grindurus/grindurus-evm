@@ -131,7 +131,7 @@ sequenceDiagram
 | Step | Action                          | Effect                                                                                                                                           |
 | ---- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1    | `deposit(asset, amount, lock)`  | Asset → Grinders; mint at book; optional escrow                                                                                                  |
-| 2    | Or later `lock(graiAmount)`     | Escrow wallet GRAI; dividend-eligible while unvoted; **resets** `lockedAt` on the whole escrow (fee is flat — reset does not change unlock cost) |
+| 2    | Or later `lock(graiAmount)`     | Escrow wallet GRAI; dividend-eligible while unvoted (flat unlock fee — lock time does not change cost) |
 | 3    | Accrue / `claim(holder, asset)` | Receive yield-asset dividends (allowed in liquidation — reserve ≠ redeem basket)                                                                 |
 | 4    | `unlock(graiAmount)`            | Accrue, flat unlock fee stays on GRAI (dead), clamp votes, return net                                                                            |
 | 5    | Optional `vote`                 | See Voter — voted share stops earning dividends                                                                                                  |
@@ -575,7 +575,7 @@ Switching requires a feed; open votes/auctions do not block. Setting `settlement
 
 ### 8.1 Lock / unlock
 
-- `lock` — escrow GRAI; dividend eligibility on the unvoted portion; `lockedAt = now` **on every top-up** (including vote shortfall). `lockedAt` is informational / legacy; unlock fee no longer depends on it.
+- `lock` — escrow GRAI; dividend eligibility on the unvoted portion (including vote shortfall). Unlock fee is flat and does not depend on lock time.
 - `unlock(graiAmount)` — accrue dividends, **flat** unlock fee stays on GRAI as orphan/dead (`balanceOf(this) − totalLocked`, scooped at liquidation open), clamp `voted ≤ amount`, return net GRAI. Yield claims are separate (`claim` / `claimAll`).
 - Unlock penalty: always `unlockPenaltyBps` (default **10%**) of `graiAmount` — no time decay (`penalty = ceil(graiAmount * unlockPenaltyBps / BPS)` in `previewUnlock`).
 - Dust floor (intentional, matches `previewUnlock`): while penalty > 0, **every** unlock — including full-escrow exit (`graiAmount == locked`) — must be ≥ `graiDust = ceil(BPS / unlockPenaltyBps)` (e.g. 10 GRAI wei at 10%, 100 wei at 1%). A legal partial unlock may leave `locked < graiDust`; that remainder cannot `unlock` until the locker tops up, `unlockPenaltyBps` is set to 0, or they exit via liquidation `redeem`. Not a stuck-funds bug.
