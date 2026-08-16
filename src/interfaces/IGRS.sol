@@ -38,8 +38,7 @@ interface IGRS {
     enum Gate {
         Instant,
         Linear,
-        Proprietary,
-        VoteGated
+        Proprietary
     }
 
     struct Peer {
@@ -82,7 +81,7 @@ interface IGRS {
         bytes32 recipient;
     }
 
-    event Granted(Bucket indexed bucket, address indexed to, uint256 amount, uint256 vestingId);
+    event Granted(Bucket indexed bucket, bytes32 indexed to, uint256 amount, uint256 vestingId);
     event Vested(address indexed from, address indexed to, uint256 amount, uint256 vestingId);
     event Released(uint256 indexed vestingId, address indexed to, uint256 amount);
     event ProprietorSet(address indexed proprietor);
@@ -128,8 +127,8 @@ interface IGRS {
 
     function setVeGRS(address veGRS_) external;
 
-    /// @notice Home: append a sale. Id is `saleCount() + 1`. `dstEid == 0` is local only; else LZ-publish
-    ///         so the spoke `lzReceive` upserts the row.
+    /// @notice Home: append a sale. Id is `saleCount() + 1`. `dstEid == 0` is local only; else burns
+    ///         `grsAmount` from TokenSales and LZ-publishes so the spoke mints that GRS into escrow.
     function sale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
         external
         payable
@@ -142,7 +141,7 @@ interface IGRS {
         returns (uint256 nativeFee);
 
     /// @notice Asset units due for `grsAmount` GRS from that sale's remaining `assetAmount`.
-    function quoteSale(uint256 id, uint256 grsAmount) external view returns (uint256 cost);
+    function previewBuy(uint256 id, uint256 grsAmount) external view returns (uint256 cost);
 
     /// @notice Buy `amount` from `TokenSales` via sale `id` (instant). Home or spoke. Asset
     ///         `bytes32(0)` is ETH (`msg.value` must equal the cost); otherwise ERC-20 `transferFrom`
@@ -151,10 +150,11 @@ interface IGRS {
 
     /// @notice Assign `amount` from `bucket`. Instant if `cliffSeconds` and `durationSeconds` are 0
     ///         (returns 0). Otherwise a non-revocable in-token vest on home (id ≥ 1). `dstEid == 0`
-    ///         pays locally; else instant OFT to `to` on that chain. Vote-gated buckets need `proprietor`.
+    ///         pays locally (`to` must be an EVM address, high 12 bytes 0). Else instant OFT to
+    ///         `to` on that chain (Solana pubkey / left-padded EVM). Cap-table `grant` is `owner`.
     function grant(
         Bucket bucket,
-        address to,
+        bytes32 to,
         uint256 amount,
         uint64 start,
         uint64 cliffSeconds,
@@ -162,7 +162,7 @@ interface IGRS {
         uint32 dstEid
     ) external payable returns (uint256 vestingId);
 
-    function quoteGrant(address to, uint256 amount, uint32 dstEid) external view returns (uint256 nativeFee);
+    function quoteGrant(bytes32 to, uint256 amount, uint32 dstEid) external view returns (uint256 nativeFee);
 
     /// @notice Lock `amount` of the caller's GRS into a non-revocable vest for `to`.
     ///         `cliffSeconds` or `durationSeconds` must be non-zero (use `transfer` for instant).

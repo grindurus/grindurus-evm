@@ -58,7 +58,7 @@ contract GRSTest is Test {
         grs = new GRS(address(endpoint), admin, true);
         vm.startPrank(admin);
         grs.setPeer(DST_EID, bytes32(uint256(2)));
-        grs.grant(IGRS.Bucket.TokenSales, admin, 10e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, bytes32(uint256(uint160(admin))), 10e18, 0, 0, 0, 0);
         vm.stopPrank();
     }
 
@@ -95,7 +95,7 @@ contract GRSTest is Test {
         address bob = address(0xB0B);
 
         vm.startPrank(admin);
-        grs.grant(IGRS.Bucket.TokenSales, admin, 1e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, bytes32(uint256(uint160(admin))), 1e18, 0, 0, 0, 0);
         assertTrue(grs.transfer(bob, 1e18));
         vm.stopPrank();
         assertEq(grs.balanceOf(bob), 1e18);

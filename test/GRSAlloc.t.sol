@@ -13,6 +13,7 @@ import {
 import {GRS} from "../src/GRS.sol";
 import {IGRS} from "../src/interfaces/IGRS.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 uint32 constant HOME_EID = 30101;
 uint32 constant SPOKE_EID = 30110;
@@ -21,6 +22,7 @@ uint256 constant MOCK_LZ_FEE = 0.01 ether;
 contract MockLzEndpoint {
     mapping(address => address) public delegates;
     uint256 public constant quoteNative = MOCK_LZ_FEE;
+    bytes public lastMessage;
 
     function setDelegate(address delegate) external {
         delegates[msg.sender] = delegate;
@@ -30,7 +32,8 @@ contract MockLzEndpoint {
         return MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0});
     }
 
-    function send(MessagingParams calldata, address refund) external payable returns (MessagingReceipt memory) {
+    function send(MessagingParams calldata params, address refund) external payable returns (MessagingReceipt memory) {
+        lastMessage = params.message;
         MessagingFee memory fee = MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0});
         if (msg.value < fee.nativeFee) revert();
         uint256 extra = msg.value - fee.nativeFee;
@@ -74,7 +77,7 @@ contract GRSAllocTest is Test {
 
     function test_GrantInstantDebitsBucket() public {
         vm.prank(admin);
-        grs.grant(IGRS.Bucket.TokenSales, admin, 150_000_000e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, _q(admin), 150_000_000e18, 0, 0, 0, 0);
 
         assertEq(grs.spent(IGRS.Bucket.TokenSales), 150_000_000e18);
         assertEq(grs.remaining(IGRS.Bucket.TokenSales), 0);
@@ -83,7 +86,7 @@ contract GRSAllocTest is Test {
 
         vm.prank(admin);
         vm.expectRevert(IGRS.BucketExceeded.selector);
-        grs.grant(IGRS.Bucket.TokenSales, admin, 1, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, _q(admin), 1, 0, 0, 0, 0);
     }
 
     function test_GrantVestingCliffThenLinear() public {
@@ -91,7 +94,7 @@ contract GRSAllocTest is Test {
         uint64 month = 30 days;
         uint64 start = uint64(block.timestamp);
         vm.prank(admin);
-        uint256 id = grs.grant(IGRS.Bucket.CoreTeam, alice, 12e18, start, 12 * month, 60 * month, 0);
+        uint256 id = grs.grant(IGRS.Bucket.CoreTeam, _q(alice), 12e18, start, 12 * month, 60 * month, 0);
 
         assertEq(id, 1);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);
@@ -120,9 +123,9 @@ contract GRSAllocTest is Test {
 
     function test_GetVestingsPaginates() public {
         vm.startPrank(admin);
-        grs.grant(IGRS.Bucket.CoreTeam, admin, 1e18, uint64(block.timestamp), 0, 30 days, 0);
-        grs.grant(IGRS.Bucket.CoreTeam, admin, 2e18, uint64(block.timestamp), 0, 30 days, 0);
-        grs.grant(IGRS.Bucket.CoreTeam, admin, 3e18, uint64(block.timestamp), 0, 30 days, 0);
+        grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 1e18, uint64(block.timestamp), 0, 30 days, 0);
+        grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 2e18, uint64(block.timestamp), 0, 30 days, 0);
+        grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 3e18, uint64(block.timestamp), 0, 30 days, 0);
         vm.stopPrank();
 
         IGRS.Vesting[] memory page = grs.getVestings(1, 1);
@@ -139,28 +142,28 @@ contract GRSAllocTest is Test {
         assertEq(grs.vestingCount(), 3);
     }
 
-    function test_VoteGatedNeedsProprietorOnceSet() public {
+    function test_OwnerGrantsProprietaryAfterProprietorSet() public {
         vm.prank(admin);
-        grs.grant(IGRS.Bucket.GrowthFund, admin, 1e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.GrowthFund, _q(admin), 1e18, 0, 0, 0, 0);
 
         address prop = address(0x60);
         vm.prank(admin);
         grs.setProprietor(prop);
 
         vm.prank(admin);
-        vm.expectRevert(IGRS.ProprietorGated.selector);
-        grs.grant(IGRS.Bucket.GrowthFund, admin, 1e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.GrowthFund, _q(admin), 1e18, 0, 0, 0, 0);
 
         vm.prank(prop);
-        grs.grant(IGRS.Bucket.Audits, admin, 2e18, 0, 0, 0, 0);
-        assertEq(grs.spent(IGRS.Bucket.Audits), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, prop));
+        grs.grant(IGRS.Bucket.Audits, _q(admin), 2e18, 0, 0, 0, 0);
+        assertEq(grs.spent(IGRS.Bucket.GrowthFund), 2e18);
     }
 
     function test_SpokeCannotGrant() public {
         GRS spoke = new GRS(address(endpoint), admin, false);
         vm.prank(admin);
         vm.expectRevert(IGRS.NotHome.selector);
-        spoke.grant(IGRS.Bucket.TokenSales, admin, 1e18, 0, 0, 0, 0);
+        spoke.grant(IGRS.Bucket.TokenSales, _q(admin), 1e18, 0, 0, 0, 0);
         vm.expectRevert(IGRS.NotHome.selector);
         spoke.getAllocations();
     }
@@ -168,7 +171,7 @@ contract GRSAllocTest is Test {
     function test_HolderCanVestOwnTokens() public {
         address bob = address(0xB0B);
         vm.prank(admin);
-        grs.grant(IGRS.Bucket.TokenSales, bob, 10e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, _q(bob), 10e18, 0, 0, 0, 0);
 
         uint64 start = uint64(block.timestamp);
         vm.prank(bob);
@@ -186,7 +189,7 @@ contract GRSAllocTest is Test {
 
     function test_VestRejectsInstant() public {
         vm.prank(admin);
-        grs.grant(IGRS.Bucket.TokenSales, admin, 1e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, _q(admin), 1e18, 0, 0, 0, 0);
         vm.prank(admin);
         vm.expectRevert(IGRS.InstantNotVest.selector);
         grs.vest(admin, 1e18, 0, 0, 0);
@@ -194,7 +197,7 @@ contract GRSAllocTest is Test {
 
     function test_VestRejectsTooLongCliffOrUnlock() public {
         vm.prank(admin);
-        grs.grant(IGRS.Bucket.TokenSales, admin, 2e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, _q(admin), 2e18, 0, 0, 0, 0);
         vm.prank(admin);
         vm.expectRevert(IGRS.InvalidSchedule.selector);
         grs.vest(admin, 1e18, 0, 365 days + 1, 0);
@@ -219,7 +222,7 @@ contract GRSAllocTest is Test {
     function test_GrantCannotUseHolderBucket() public {
         vm.prank(admin);
         vm.expectRevert(IGRS.BucketExceeded.selector);
-        grs.grant(IGRS.Bucket.Holder, admin, 1e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.Holder, _q(admin), 1e18, 0, 0, 0, 0);
     }
 
     function test_SetVeGRS() public {
@@ -242,7 +245,8 @@ contract GRSAllocTest is Test {
         assertEq(c, 6);
         assertEq(d, 66);
         assertEq(uint8(grs.gateOf(IGRS.Bucket.LpMm)), uint8(IGRS.Gate.Proprietary));
-        assertEq(uint8(grs.gateOf(IGRS.Bucket.Legal)), uint8(IGRS.Gate.VoteGated));
+        assertEq(uint8(grs.gateOf(IGRS.Bucket.Legal)), uint8(IGRS.Gate.Proprietary));
+        assertEq(uint8(grs.gateOf(IGRS.Bucket.GrowthFund)), uint8(IGRS.Gate.Proprietary));
     }
 
     function test_BuyEthFromTokenSales() public {
@@ -252,7 +256,7 @@ contract GRSAllocTest is Test {
 
         address buyer = address(0xB1E);
         uint256 amount = 10e18;
-        uint256 cost = grs.quoteSale(id, amount);
+        uint256 cost = grs.previewBuy(id, amount);
         assertEq(cost, assetAmount);
         deal(buyer, cost);
 
@@ -276,7 +280,7 @@ contract GRSAllocTest is Test {
 
         address buyer = address(0xB1E);
         uint256 amount = 100e18;
-        assertEq(grs.quoteSale(id, amount), assetAmount);
+        assertEq(grs.previewBuy(id, amount), assetAmount);
         usdc.mint(buyer, assetAmount);
         vm.prank(buyer);
         usdc.approve(address(grs), assetAmount);
@@ -303,7 +307,7 @@ contract GRSAllocTest is Test {
         vm.prank(admin);
         uint256 id = grs.sale(bytes32(0), 2 ether, 2e18, bytes32(0), 0);
         vm.prank(admin);
-        grs.grant(IGRS.Bucket.TokenSales, admin, 150_000_000e18 - 1e18, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.TokenSales, _q(admin), 150_000_000e18 - 1e18, 0, 0, 0, 0);
 
         deal(address(this), 2 ether);
         grs.buy{value: 1 ether}(id, 1e18, address(this));
@@ -354,7 +358,7 @@ contract GRSAllocTest is Test {
             id,
             asset,
             assetAmount,
-            grsAmount,
+            grsAmount / 1e12,
             recipient
         );
     }
@@ -373,6 +377,9 @@ contract GRSAllocTest is Test {
         vm.stopPrank();
 
         assertEq(id, 1);
+        assertEq(grs.spent(IGRS.Bucket.TokenSales), 3e18);
+        assertEq(grs.totalSupply(), 1_000_000_000e18 - 3e18);
+        assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18 - 3e18);
 
         vm.prank(address(endpoint));
         spoke.lzReceive(
@@ -389,11 +396,12 @@ contract GRSAllocTest is Test {
         assertEq(row.assetAmount, 0.03 ether);
         assertEq(row.recipient, _q(admin));
         assertEq(row.grsAmount, 3e18);
+        assertEq(spoke.totalSupply(), 3e18);
+        assertEq(spoke.balanceOf(address(spoke)), 3e18);
 
         uint256 amount = 3e18;
-        deal(address(spoke), address(spoke), amount);
         address buyer = address(0xB1E);
-        uint256 cost = spoke.quoteSale(id, amount);
+        uint256 cost = spoke.previewBuy(id, amount);
         assertEq(cost, 0.03 ether);
         deal(buyer, cost);
         vm.prank(buyer);
@@ -473,15 +481,15 @@ contract GRSAllocTest is Test {
         grs.setPeer(SPOKE_EID, spokePeer);
         spoke.setPeer(HOME_EID, homePeer);
         deal(admin, MOCK_LZ_FEE);
-        assertEq(grs.quoteGrant(bob, amount, SPOKE_EID), MOCK_LZ_FEE);
-        uint256 vestingId = grs.grant{value: MOCK_LZ_FEE}(IGRS.Bucket.CoreTeam, bob, amount, 0, 0, 0, SPOKE_EID);
+        assertEq(grs.quoteGrant(_q(bob), amount, SPOKE_EID), MOCK_LZ_FEE);
+        uint256 vestingId = grs.grant{value: MOCK_LZ_FEE}(IGRS.Bucket.CoreTeam, _q(bob), amount, 0, 0, 0, SPOKE_EID);
         vm.stopPrank();
 
         assertEq(vestingId, 0);
         assertEq(grs.spent(IGRS.Bucket.CoreTeam), amount);
         assertEq(grs.balanceOf(bob), 0);
         assertEq(grs.totalSupply(), 1_000_000_000e18 - amount);
-        assertEq(grs.quoteGrant(bob, amount, 0), 0);
+        assertEq(grs.quoteGrant(_q(bob), amount, 0), 0);
 
         vm.prank(address(endpoint));
         spoke.lzReceive(
@@ -495,18 +503,36 @@ contract GRSAllocTest is Test {
         assertEq(spoke.totalSupply(), amount);
     }
 
+    function test_GrantInstantToSolanaPubkeyEncodesFullDest() public {
+        bytes32 solanaTo = keccak256("solana-wallet");
+        uint256 amount = 5e18;
+
+        vm.startPrank(admin);
+        grs.setPeer(SPOKE_EID, bytes32(uint256(2)));
+        deal(admin, MOCK_LZ_FEE);
+        assertEq(grs.quoteGrant(solanaTo, amount, SPOKE_EID), MOCK_LZ_FEE);
+        uint256 vestingId = grs.grant{value: MOCK_LZ_FEE}(IGRS.Bucket.CoreTeam, solanaTo, amount, 0, 0, 0, SPOKE_EID);
+        vm.stopPrank();
+
+        assertEq(vestingId, 0);
+        assertEq(grs.spent(IGRS.Bucket.CoreTeam), amount);
+        assertEq(grs.totalSupply(), 1_000_000_000e18 - amount);
+        bytes memory payload = endpoint.lastMessage();
+        assertEq(payload, abi.encodePacked(solanaTo, uint64(amount / 1e12)));
+    }
+
     function test_GrantVestToSpokeReverts() public {
         vm.prank(admin);
         grs.setPeer(SPOKE_EID, bytes32(uint256(2)));
         vm.prank(admin);
         vm.expectRevert(IGRS.InvalidSchedule.selector);
-        grs.grant(IGRS.Bucket.CoreTeam, admin, 1e18, 0, 30 days, 0, SPOKE_EID);
+        grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 1e18, 0, 30 days, 0, SPOKE_EID);
     }
 
     function test_GrantLocalRejectsValue() public {
         deal(admin, 1);
         vm.prank(admin);
         vm.expectRevert(IGRS.InvalidPayment.selector);
-        grs.grant{value: 1}(IGRS.Bucket.TokenSales, admin, 1e18, 0, 0, 0, 0);
+        grs.grant{value: 1}(IGRS.Bucket.TokenSales, _q(admin), 1e18, 0, 0, 0, 0);
     }
 }
