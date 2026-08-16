@@ -167,7 +167,7 @@ Ids are **1-based**, assigned on `sale` (`saleCount + 1`). Rows are append-only 
 
 `recipient` must not be the GRS contract itself (`InvalidRecipient`). Solana also rejects the program id, OFT store, and `sale_escrow`. EVM `buy` pays the low 20 bytes and reverts if the high 12 bytes are set (a Solana pubkey is the spoke payee after LZ, not an ETH / ERC-20 destination).
 
-Home **lists** with `sale` (id auto; `dstEid = 0` is local, no burn). `dstEid ≠ 0` burns `grsAmount` (dust-free, TokenSales) then LZ-publishes. Spoke **lzReceive** writes the row and mints `grsAmount` into escrow (once per id). `sale` on a spoke reverts `NotHome`; a sale payload on home `lzReceive` reverts `NotSpoke`. `sale` is `onlyOwner` / admin on home. Solana: `sale` appends; `publish_sale` burns from `sale_escrow` and is the LZ hop. A row closes when remaining `assetAmount` / `grsAmount` hits 0 (full `buy`, or a listing already at 0).
+Home **lists** with `sale` (id auto; `dstEid = 0` is local, no burn). `dstEid ≠ 0` burns `grsAmount` (dust-free, TokenSales) then LZ-publishes **and zeros remaining on home** so home `buy` is `SaleClosed`. Spoke **lzReceive** writes the row and mints `grsAmount` into escrow (once per id). `sale` on a spoke reverts `NotHome`; a sale payload on home `lzReceive` reverts `NotSpoke`. `sale` is `onlyOwner` / admin on home. Solana: `sale` appends; `publish_sale` burns from `sale_escrow`, LZ-sends, and closes the home row. A row closes when remaining `assetAmount` / `grsAmount` hits 0 (full `buy`, dest-publish, or a listing already at 0).
 
 #### `buy`
 
