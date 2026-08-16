@@ -5,6 +5,7 @@ interface IGRS {
     error CapExceeded();
     error InvalidRecipient();
     error NotHome();
+    error NotSpoke();
     error BucketExceeded();
     error ProprietorGated();
     error InvalidSchedule();
@@ -13,6 +14,7 @@ interface IGRS {
     error UnknownVesting();
     error InstantNotVest();
     error SaleClosed();
+    error SaleExceeded();
     error InvalidPayment();
     error PaymentFailed();
     error UnknownSale();
@@ -20,8 +22,6 @@ interface IGRS {
     enum Bucket {
         TokenSales,
         PreSeed,
-        Seed,
-        Series,
         RevenueShare,
         Airdrops,
         CoreTeam,
@@ -70,12 +70,14 @@ interface IGRS {
     }
 
     struct Sale {
-        /// @dev `address(0)` = native ETH.
-        address quote;
-        /// @dev Quote units per 1 GRS (`1e18`). Zero closes this sale.
-        uint256 price;
-        /// @dev Proceeds; `address(0)` → `owner()` at purchase time.
+        /// @dev `bytes32(0)` = native ETH / SOL. Else the payment mint as 32 bytes (EVM address left-padded).
+        bytes32 asset;
+        /// @dev Remaining `asset` units the seller still wants for remaining `grsAmount`. Zero closes the id.
+        uint256 assetAmount;
+        /// @dev Quote payee; `address(0)` → `owner()` at purchase time.
         address recipient;
+        /// @dev Remaining GRS for sale at this id.
+        uint256 grsAmount;
     }
 
     event Granted(Bucket indexed bucket, address indexed to, uint256 amount, uint256 vestingId);
@@ -83,7 +85,9 @@ interface IGRS {
     event Released(uint256 indexed vestingId, address indexed to, uint256 amount);
     event ProprietorSet(address indexed proprietor);
     event VeGRSSet(address indexed veGRS);
-    event SaleSet(uint256 indexed id, address indexed quote, uint256 price, address indexed recipient);
+    event SaleSet(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, address indexed recipient, uint256 grsAmount);
+    event SaleAccepted(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, address indexed recipient, uint256 grsAmount);
+    event SalePublished(uint256 indexed id, uint32 dstEid, bytes32 guid);
     event Bought(uint256 indexed id, address indexed buyer, address indexed to, uint256 amount, uint256 cost);
 
     function home() external view returns (bool);
@@ -122,26 +126,41 @@ interface IGRS {
 
     function setVeGRS(address veGRS_) external;
 
-    /// @notice Create (`id == 0`) or update sale `id`. Returns the id used.
-    function setSale(uint256 id, address quote, uint256 price, address recipient) external returns (uint256);
+    /// @notice Home: append a sale. Id is `saleCount() + 1`. `dstEid == 0` is local only; else LZ-publish
+    ///         so the spoke `lzReceive` upserts the row.
+    function sale(bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount, uint32 dstEid)
+        external
+        payable
+        returns (uint256 id);
 
-    function quoteSale(uint256 id, uint256 amount) external view returns (uint256 cost);
+    /// @notice Native LZ fee for `sale(..., dstEid)` (next id). `dstEid == 0` is 0.
+    function quoteSale(bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount, uint32 dstEid)
+        external
+        view
+        returns (uint256 nativeFee);
 
-    /// @notice Buy `amount` from `TokenSales` via sale `id` (instant). Quote `address(0)` is ETH
-    ///         (`msg.value` must equal the cost); otherwise ERC-20 `transferFrom`.
+    /// @notice Asset units due for `grsAmount` GRS from that sale's remaining `assetAmount`.
+    function quoteSale(uint256 id, uint256 grsAmount) external view returns (uint256 cost);
+
+    /// @notice Buy `amount` from `TokenSales` via sale `id` (instant). Home or spoke. Asset
+    ///         `bytes32(0)` is ETH (`msg.value` must equal the cost); otherwise ERC-20 `transferFrom`
+    ///         from the address in the low 20 bytes of `asset`.
     function buy(uint256 id, uint256 amount, address to) external payable returns (uint256 cost);
 
     /// @notice Assign `amount` from `bucket`. Instant if `cliffSeconds` and `durationSeconds` are 0
-    ///         (returns 0). Otherwise a non-revocable in-token vest (id ≥ 1). Vote-gated buckets
-    ///         need `proprietor`.
+    ///         (returns 0). Otherwise a non-revocable in-token vest on home (id ≥ 1). `dstEid == 0`
+    ///         pays locally; else instant OFT to `to` on that chain. Vote-gated buckets need `proprietor`.
     function grant(
         Bucket bucket,
         address to,
         uint256 amount,
         uint64 start,
         uint64 cliffSeconds,
-        uint64 durationSeconds
-    ) external returns (uint256 vestingId);
+        uint64 durationSeconds,
+        uint32 dstEid
+    ) external payable returns (uint256 vestingId);
+
+    function quoteGrant(address to, uint256 amount, uint32 dstEid) external view returns (uint256 nativeFee);
 
     /// @notice Lock `amount` of the caller's GRS into a non-revocable vest for `to`.
     ///         `cliffSeconds` or `durationSeconds` must be non-zero (use `transfer` for instant).
