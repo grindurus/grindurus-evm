@@ -1240,7 +1240,7 @@ Treasury: `mint` / `distribute` = linked GRAI only; `setBeneficiar` / `setRoyalt
 | Function                                                 | Caller        | When                                                   |
 | -------------------------------------------------------- | ------------- | ------------------------------------------------------ |
 | `mint(locker, referrer, value)`                          | GRAI          | Every deposit (referrer tree + cashflow NFT to locker) |
-| `getReferralsData(fromId, toId)`                          | Anyone (view) | Paginate lockers + books (`tokenByIndex`)              |
+| `getLockersData(fromId, toId)`                            | Anyone (view) | Paginate lockers + books (`tokenByIndex`)              |
 | `referrerOf(locker)`                                     | Anyone (view) | Upline (`lockerBooks.referrer`)                      |
 | `poachOf(locker, account)`                               | Anyone (view) | Poach quote + current referrer                         |
 | `rebind(locker, newReferrer)`                             | GRAI          | After `poach` (tree + L1/L2 books; no NFT transfer)    |

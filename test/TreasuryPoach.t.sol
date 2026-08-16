@@ -568,7 +568,7 @@ contract TreasuryPoachTest is GRAIFixture {
         _seedTree();
         assertEq(treasury.totalSupply(), 3);
 
-        ITreasury.LockerData[] memory all_ = treasury.getReferralsData(0, 100);
+        ITreasury.LockerData[] memory all_ = treasury.getLockersData(0, 100);
         assertEq(all_.length, 3);
 
         bool sawAlice;
@@ -603,12 +603,56 @@ contract TreasuryPoachTest is GRAIFixture {
         }
         assertTrue(sawAlice && sawBob && sawCarol);
 
-        assertEq(treasury.getReferralsData(0, 2).length, 2);
-        assertEq(treasury.getReferralsData(2, 99).length, 1);
-        assertEq(treasury.getReferralsData(3, 5).length, 0);
+        assertEq(treasury.getLockersData(0, 2).length, 2);
+        assertEq(treasury.getLockersData(2, 99).length, 1);
+        assertEq(treasury.getLockersData(3, 5).length, 0);
 
         vm.expectRevert(abi.encodeWithSelector(ITreasury.InvalidRange.selector, 1, 1));
-        treasury.getReferralsData(1, 1);
+        treasury.getLockersData(1, 1);
+    }
+
+    function test_GetReferral_TreeBookOwnerAndClaimable() public {
+        _seedTree();
+
+        IGRAI.LockerData[] memory page = grai.getLockersData(0, 100);
+        assertEq(page.length, 3);
+
+        IGRAI.LockerData memory aliceRow = _referralOf(page, alice);
+        assertEq(aliceRow.locker, alice);
+        assertEq(aliceRow.referrer, alice);
+        assertEq(aliceRow.ownerOf, alice);
+        assertEq(aliceRow.book.value, 100e6);
+        assertEq(aliceRow.book.l1Value, 40e6);
+        assertEq(aliceRow.book.l2Value, 25e6);
+        assertEq(aliceRow.book.referrer, alice);
+
+        IGRAI.LockerData memory bobRow = _referralOf(page, bob);
+        assertEq(bobRow.locker, bob);
+        assertEq(bobRow.referrer, alice);
+        assertEq(bobRow.ownerOf, bob);
+        assertEq(bobRow.book.value, 40e6);
+        assertEq(bobRow.book.l1Value, 25e6);
+
+        IGRAI.LockerData memory carolRow = _referralOf(page, carol);
+        assertEq(carolRow.referrer, bob);
+        assertEq(carolRow.ownerOf, carol);
+
+        _lock(alice, grai.balanceOf(alice));
+        _yield(20e6);
+        uint256 pending = grai.previewClaim(alice, address(usdc), type(uint256).max);
+        assertGt(pending, 0);
+        aliceRow = _referralOf(grai.getLockersData(0, 100), alice);
+        bool sawUsdc;
+        for (uint256 i; i < aliceRow.assets.length; ++i) {
+            if (aliceRow.assets[i] == address(usdc)) {
+                assertEq(aliceRow.claimable[i], pending);
+                sawUsdc = true;
+            }
+        }
+        assertTrue(sawUsdc);
+
+        vm.expectRevert(abi.encodeWithSelector(ITreasury.InvalidRange.selector, 1, 1));
+        grai.getLockersData(1, 1);
     }
 
     function test_Poach_Reverts_DuringLiquidation() public {
@@ -703,6 +747,17 @@ contract TreasuryPoachTest is GRAIFixture {
     }
 
     ////////////////////////////// helpers //////////////////////////////
+
+    function _referralOf(IGRAI.LockerData[] memory page, address locker)
+        internal
+        pure
+        returns (IGRAI.LockerData memory row)
+    {
+        for (uint256 i; i < page.length; ++i) {
+            if (page[i].locker == locker) return page[i];
+        }
+        revert("missing locker");
+    }
 
     function _seedTree() internal {
         _deposit(alice, 100e6, address(0));

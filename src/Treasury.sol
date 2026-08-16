@@ -330,7 +330,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
     /// @inheritdoc ITreasury
     /// @dev Pages `_allTokens` via `tokenByIndex`. Empty page if `fromId >= totalSupply`.
-    function getReferralsData(uint256 fromId, uint256 toId) public view returns (LockerData[] memory list) {
+    function getLockersData(uint256 fromId, uint256 toId) public view returns (LockerData[] memory list) {
         if (fromId >= toId) revert InvalidRange(fromId, toId);
         uint256 n = totalSupply();
         if (fromId >= n) return list;

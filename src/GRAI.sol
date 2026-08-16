@@ -251,6 +251,24 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
+    /// @dev Page is `treasury.getLockersData`; `claimable` is GRAI dividend pending
+    ///      (`positions.claimable` plus unrealized `accShare` vs `debt`) via `previewClaimAll`.
+    function getLockersData(uint256 fromId, uint256 toId) public view returns (LockerData[] memory list) {
+        ITreasury.LockerData[] memory raw = treasury.getLockersData(fromId, toId);
+        uint256 len = raw.length;
+        list = new LockerData[](len);
+        for (uint256 i; i < len;) {
+            ITreasury.LockerData memory node = raw[i];
+            list[i].locker = node.locker;
+            list[i].referrer = node.book.referrer;
+            list[i].ownerOf = node.ownerOf;
+            list[i].book = node.book;
+            (list[i].assets, list[i].claimable) = previewClaimAll(node.locker);
+            unchecked { ++i; }
+        }
+    }
+
+    /// @inheritdoc IGRAI
     /// @dev Full basket snapshot in `assetList` order (includes zero balances). Excludes dividend
     ///      `totalClaimable` from each amount. Only while liquidation is open.
     function getRedeemables() external view returns (address[] memory assetOuts, uint256[] memory amounts) {

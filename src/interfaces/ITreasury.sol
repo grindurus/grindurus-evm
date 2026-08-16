@@ -69,7 +69,7 @@ interface ITreasury {
 
     /// @notice Bound lockers in ERC-721 enumerable order for `[fromId, toId)` (`totalSupply` clipped).
     /// @dev `tokenByIndex` → `locker = address(uint160(tokenId))`, cashflow `ownerOf`, plus `lockerBooks`.
-    function getReferralsData(uint256 fromId, uint256 toId) external view returns (LockerData[] memory list);
+    function getLockersData(uint256 fromId, uint256 toId) external view returns (LockerData[] memory list);
 
     /// @notice Poach quote for `locker`: `value + l1Value` ask and current sticky referrer.
     /// @dev Reverts if unbound or `account` is already the referrer.

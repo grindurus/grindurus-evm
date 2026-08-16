@@ -189,11 +189,27 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function lockers(uint256 index) external view returns (address);
 
+    /// @notice Bound locker + sticky tree + cashflow NFT + pending locker dividends.
+    /// @dev `treasury.getLockersData` row plus `previewClaimAll`. `referrer` is `book.referrer`.
+    ///      `ownerOf` is the cashflow NFT holder (`tokenId = uint160(locker)`).
+    ///      `assets` / `claimable` match `previewClaimAll` (`assetList` order, amount may be 0).
+    struct LockerData {
+        address locker;
+        address referrer;
+        address ownerOf;
+        ITreasury.LockerBook book;
+        address[] assets;
+        uint256[] claimable;
+    }
+
     /// @notice Escrows for `lockers` (`voters_ == false`) or `voters` (`true`) in `[fromId, toId)`.
     function getEscrows(bool voters_, uint256 fromId, uint256 toId)
         external
         view
         returns (Escrow[] memory escrowList);
+
+    /// @notice Same rows as `treasury.getLockersData(fromId, toId)` plus `previewClaimAll`.
+    function getLockersData(uint256 fromId, uint256 toId) external view returns (LockerData[] memory list);
 
     function totalLocked() external view returns (uint256);
 
