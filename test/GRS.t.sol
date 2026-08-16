@@ -75,10 +75,26 @@ contract GRSTest is Test {
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);
         assertEq(grs.balanceOf(admin), 0);
         assertEq(grs.owner(), admin);
+        assertEq(grs.pendingOwner(), address(0));
         assertEq(grs.tokenURI(), "https://grindurus.xyz/grs.json");
         assertEq(endpoint.delegates(address(grs)), admin);
         assertFalse(grs.approvalRequired());
         assertEq(grs.token(), address(grs));
+    }
+
+    function test_Ownable2Step() public {
+        GRS grs = new GRS(address(endpoint), admin, false);
+        address next = address(0xB0B);
+
+        vm.prank(admin);
+        grs.transferOwnership(next);
+        assertEq(grs.owner(), admin);
+        assertEq(grs.pendingOwner(), next);
+
+        vm.prank(next);
+        grs.acceptOwnership();
+        assertEq(grs.owner(), next);
+        assertEq(grs.pendingOwner(), address(0));
     }
 
     function test_SpokeStartsAtZero() public {

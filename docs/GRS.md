@@ -34,7 +34,7 @@ Metadata: `https://grindurus.xyz/grs.json` (ERC-1046).
 | Cap-table decimals | **18** (`1 GRS = 10¹⁸`)                                                                                                          |
 | EVM local          | 18                                                                                                                               |
 | Solana local       | **9** (`1 GRS = 10⁹`, fits `u64`); shared decimals **6** on both. Bridge is 1:1 in GRS units, no dust mint/burn of whole tokens. |
-| Upgrade            | Token non-upgradeable; gov via timelock on GRAI / Grinders / Treasury                                                            |
+| Upgrade            | Token non-upgradeable; **Ownable2Step** owner; gov via timelock on GRAI / Grinders / Treasury                                                            |
 
 
 ### Home vs spokes

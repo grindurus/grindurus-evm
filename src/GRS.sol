@@ -7,6 +7,7 @@ import {OFTMsgCodec} from "@layerzerolabs/oft-evm/contracts/libs/OFTMsgCodec.sol
 import {IOAppMsgInspector} from "@layerzerolabs/oapp-evm/contracts/oapp/interfaces/IOAppMsgInspector.sol";
 import {MessagingFee, MessagingReceipt, Origin} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -17,8 +18,8 @@ import {IGRS} from "./interfaces/IGRS.sol";
 /// @title GRS (Grindurus Token)
 /// @notice Fixed-supply LayerZero OFT. Home chain mints the 1B genesis into per-bucket inventory
 ///         (`docs/grs.svg`); delegate `grant`s vesting / instant payouts. Any holder may `vest`
-///         their own GRS (home or spoke). Spokes mint/burn via OFT.
-contract GRS is OFT, IERC1046, IGRS {
+///         their own GRS (home or spoke). Spokes mint/burn via OFT. Admin is Ownable2Step.
+contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     using SafeERC20 for IERC20;
 
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
@@ -55,6 +56,10 @@ contract GRS is OFT, IERC1046, IGRS {
         if (home_) {
             _mint(address(this), MAX_SUPPLY);
         }
+    }
+
+    function transferOwnership(address newOwner) public override(Ownable, Ownable2Step) onlyOwner {
+        Ownable2Step.transferOwnership(newOwner);
     }
 
     function setProprietor(address proprietor_) public onlyOwner {
@@ -335,6 +340,10 @@ contract GRS is OFT, IERC1046, IGRS {
     // Internals
     // -------------------------------------------------------------------------
 
+    function _transferOwnership(address newOwner) internal override(Ownable, Ownable2Step) {
+        Ownable2Step._transferOwnership(newOwner);
+    }
+
     function _lzReceive(
         Origin calldata origin,
         bytes32 guid,
@@ -383,17 +392,6 @@ contract GRS is OFT, IERC1046, IGRS {
         if (shared > type(uint64).max) revert CapExceeded();
         grsAmount = _toLD(uint64(shared));
         recipient = bytes32(message[160:192]);
-    }
-
-    function _sale(uint256 id, uint32 dstEid) internal {
-        Sale storage s = _sales[id - 1];
-        bytes memory message = _encodeSale(id, s.asset, s.assetAmount, s.grsAmount, s.recipient);
-        bytes memory options = _saleOptions(dstEid);
-        address inspector = msgInspector;
-        if (inspector != address(0)) IOAppMsgInspector(inspector).inspect(message, options);
-        MessagingReceipt memory receipt =
-            _lzSend(dstEid, message, options, MessagingFee({nativeFee: msg.value, lzTokenFee: 0}), msg.sender);
-        emit SalePublished(id, dstEid, receipt.guid);
     }
 
     function _saleAt(uint256 id) internal view returns (Sale storage s) {
@@ -449,6 +447,17 @@ contract GRS is OFT, IERC1046, IGRS {
     function _vesting(uint256 id) internal view returns (Vesting storage v) {
         if (id == 0 || id > _vestings.length) revert UnknownVesting();
         return _vestings[id - 1];
+    }
+
+    function _sale(uint256 id, uint32 dstEid) internal {
+        Sale storage s = _sales[id - 1];
+        bytes memory message = _encodeSale(id, s.asset, s.assetAmount, s.grsAmount, s.recipient);
+        bytes memory options = _saleOptions(dstEid);
+        address inspector = msgInspector;
+        if (inspector != address(0)) IOAppMsgInspector(inspector).inspect(message, options);
+        MessagingReceipt memory receipt =
+            _lzSend(dstEid, message, options, MessagingFee({nativeFee: msg.value, lzTokenFee: 0}), msg.sender);
+        emit SalePublished(id, dstEid, receipt.guid);
     }
 
     function _grant(
