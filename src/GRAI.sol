@@ -522,7 +522,7 @@ contract GRAI is
     /// @dev No prior `lock` needed: locks any shortfall from the wallet, then commits toward quorum.
     ///      Voted GRAI leaves the dividend base (`locked - voted`) and is buyable via `bribe`;
     ///      exit also via `unlock` (clamps vote, unlock penalty).
-    function vote(uint256 graiAmount) public {
+    function vote(uint256 graiAmount) public nonReentrant {
         _requireRegime(Regime.GRINDING);
         _requireNotZeroAmount(graiAmount);
         address voter = msg.sender;

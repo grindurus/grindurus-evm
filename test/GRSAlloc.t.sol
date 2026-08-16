@@ -380,6 +380,11 @@ contract GRSAllocTest is Test {
         assertEq(grs.spent(IGRS.Bucket.TokenSales), 3e18);
         assertEq(grs.totalSupply(), 1_000_000_000e18 - 3e18);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18 - 3e18);
+        IGRS.Sale memory homeRow = grs.getSales(0, 1)[0];
+        assertEq(homeRow.grsAmount, 0);
+        assertEq(homeRow.assetAmount, 0);
+        vm.expectRevert(IGRS.SaleClosed.selector);
+        grs.buy(id, 3e18, address(this));
 
         vm.prank(address(endpoint));
         spoke.lzReceive(
@@ -407,6 +412,50 @@ contract GRSAllocTest is Test {
         vm.prank(buyer);
         spoke.buy{value: cost}(id, amount, buyer);
         assertEq(spoke.balanceOf(buyer), amount);
+    }
+
+    function test_HomePublishSaleDoesNotDoubleSpendTokenSales() public {
+        GRS spoke = new GRS(address(endpoint), admin, false);
+        bytes32 homePeer = bytes32(uint256(uint160(address(grs))));
+        bytes32 spokePeer = bytes32(uint256(uint160(address(spoke))));
+        uint256 lot = 3e18;
+        uint256 quote = 0.03 ether;
+
+        vm.startPrank(admin);
+        grs.setPeer(SPOKE_EID, spokePeer);
+        spoke.setPeer(HOME_EID, homePeer);
+        deal(admin, MOCK_LZ_FEE);
+        uint256 id = grs.sale{value: MOCK_LZ_FEE}(bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        vm.stopPrank();
+
+        assertEq(grs.spent(IGRS.Bucket.TokenSales), lot);
+        assertEq(spoke.spent(IGRS.Bucket.TokenSales), 0);
+
+        vm.prank(address(endpoint));
+        spoke.lzReceive(
+            Origin({srcEid: HOME_EID, sender: homePeer, nonce: 1}),
+            bytes32(uint256(1)),
+            _salePayload(id, bytes32(0), quote, lot, _q(admin)),
+            address(0),
+            ""
+        );
+        assertEq(grs.spent(IGRS.Bucket.TokenSales), lot);
+        assertEq(spoke.spent(IGRS.Bucket.TokenSales), 0);
+
+        address buyer = address(0xB1E);
+        deal(buyer, quote);
+        vm.prank(buyer);
+        spoke.buy{value: quote}(id, lot, buyer);
+
+        assertEq(spoke.balanceOf(buyer), lot);
+        assertEq(grs.spent(IGRS.Bucket.TokenSales), lot);
+        assertEq(spoke.spent(IGRS.Bucket.TokenSales), lot);
+        assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18 - lot);
+
+        vm.expectRevert(IGRS.SaleClosed.selector);
+        vm.prank(buyer);
+        grs.buy(id, lot, buyer);
+        assertEq(grs.spent(IGRS.Bucket.TokenSales), lot);
     }
 
     function test_HomeLzReceiveSaleRevertsNotSpoke() public {

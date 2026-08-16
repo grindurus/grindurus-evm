@@ -77,7 +77,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     /// @notice Home: append a sale. Id is `saleCount() + 1`. `asset = 0` is native ETH. `recipient = 0`
     ///         pays `owner()` at buy. `recipient` is 32 bytes (EVM address left-padded; Solana pubkey as-is).
     ///         `dstEid == 0` is local only (`msg.value` must be 0). Else burns `grsAmount` from TokenSales
-    ///         inventory and LZ-publishes so the spoke mints that GRS into escrow.
+    ///         inventory and LZ-publishes so the spoke mints that GRS into escrow. The home row is
+    ///         then closed (`grsAmount` / `assetAmount` = 0) so home `buy` cannot fill the same lot.
     function sale(
         bytes32 asset,
         uint256 assetAmount,
@@ -97,7 +98,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             }
         }
         id = _upsertSale(0, asset, assetAmount, grsAmount, recipient, false);
-        if (dstEid != 0) _sale(id, dstEid);
+        if (dstEid != 0) {
+            _sale(id, dstEid);
+            Sale storage published = _sales[id - 1];
+            published.grsAmount = 0;
+            published.assetAmount = 0;
+        }
     }
 
     /// @notice Native LZ fee for `sale(..., dstEid)` (next id). `dstEid == 0` is 0.

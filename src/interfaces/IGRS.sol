@@ -128,7 +128,8 @@ interface IGRS {
     function setVeGRS(address veGRS_) external;
 
     /// @notice Home: append a sale. Id is `saleCount() + 1`. `dstEid == 0` is local only; else burns
-    ///         `grsAmount` from TokenSales and LZ-publishes so the spoke mints that GRS into escrow.
+    ///         `grsAmount` from TokenSales, LZ-publishes so the spoke mints that GRS into escrow, and
+    ///         closes the home row so home `buy` cannot fill the same lot.
     function sale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
         external
         payable
