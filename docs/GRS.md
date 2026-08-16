@@ -141,10 +141,10 @@ Any holder, home or spoke (EVM / Solana). Instant (cliff = duration = 0) reverts
 
 Public TGE float from bucket **TokenSales** (150M, Instant, no vest). The book can hold many rows: each is remaining GRS (`grsAmount`) and remaining asset (`assetAmount`). `buy` pays a share of `assetAmount` and receives GRS immediately. Home may also `grant(TokenSales, …)` (EVM only); that spend **shares** the same 150M as `buy` on that OFT. Listing does not reserve the bucket.
 
-Home **LZ-publishes** the row with `sale(..., dstEid)`; the spoke `lzReceive` writes it (`SaleAccepted`). Native `asset = 0` copies as native on every chain. Asset is `bytes32` (EVM address left-padded; Solana mint is already 32 bytes).
+Home **LZ-publishes** the row with `sale(..., dstEid)`; the spoke `lzReceive` writes it (`SaleAccepted`). Native `asset = 0` copies as native on every chain. `asset` and `recipient` are `bytes32` (EVM address left-padded; Solana mint / pubkey is already 32 bytes).
 
 ```
-home owner          sale(asset, assetAmount, recipient, grsAmount, dstEid)
+home owner          sale(asset, assetAmount, grsAmount, recipient, dstEid)
                       → id = saleCount+1; SaleSet; dstEid ≠ 0 also SalePublished
 spoke               lzReceive(sale payload)                           → SaleAccepted
 anyone              quoteSale(...) / quoteSale(id, grsAmount)
@@ -152,7 +152,7 @@ anyone              buy(id, amount, to)   → quote in, GRS out
 anyone              getSales(offset, limit) / saleCount
 ```
 
-LZ sale payload is 192 bytes: `keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount`.
+LZ sale payload is 192 bytes: `keccak256("GRS.sale") || id || asset || assetAmount || grsAmount || recipient`.
 
 #### Book
 
@@ -162,11 +162,11 @@ Ids are **1-based**, assigned on `sale` (`saleCount + 1`). Rows are append-only 
 | ------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `asset`       | `bytes32(0)` / `Pubkey::default()`                        | Native ETH (EVM) or SOL (Solana). Else the ERC-20 / SPL mint as 32 bytes. |
 | `assetAmount` | `0`                                                       | Remaining `asset` for remaining `grsAmount`. Zero **closes** (`SaleClosed`). |
-| `recipient`   | `address(0)` / default                                    | Quote payee. Empty → `owner()` (EVM) / `oft_store.admin` (Solana).    |
 | `grsAmount`   | `0`                                                       | Remaining GRS at this id.                                               |
+| `recipient`   | `bytes32(0)` / `Pubkey::default()`                        | Quote payee. Empty → `owner()` (EVM) / `oft_store.admin` (Solana). EVM address left-padded; Solana pubkey as-is. |
 
 
-`recipient` must not be the GRS contract itself (EVM `InvalidRecipient`). Solana also rejects the program id, OFT store, and `sale_escrow`.
+`recipient` must not be the GRS contract itself (`InvalidRecipient`). Solana also rejects the program id, OFT store, and `sale_escrow`. EVM `buy` pays the low 20 bytes and reverts if the high 12 bytes are set (a Solana pubkey is the spoke payee after LZ, not an ETH / ERC-20 destination).
 
 Home **lists** with `sale` (id auto; `dstEid = 0` is local). Spoke **lzReceive** writes the row. `sale` on a spoke reverts `NotHome`; a sale payload on home `lzReceive` reverts `NotSpoke`. `sale` is `onlyOwner` / admin on home. Solana: `sale` appends; `publish_sale` is the LZ hop. A row closes when remaining `assetAmount` / `grsAmount` hits 0 (full `buy`, or a listing already at 0).
 

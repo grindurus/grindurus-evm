@@ -248,7 +248,7 @@ contract GRSAllocTest is Test {
     function test_BuyEthFromTokenSales() public {
         uint256 assetAmount = 0.1 ether;
         vm.prank(admin);
-        uint256 id = grs.sale(bytes32(0), assetAmount, address(0), 10e18, 0);
+        uint256 id = grs.sale(bytes32(0), assetAmount, 10e18, bytes32(0), 0);
 
         address buyer = address(0xB1E);
         uint256 amount = 10e18;
@@ -272,7 +272,7 @@ contract GRSAllocTest is Test {
         MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
         uint256 assetAmount = 10e6; // $10 for 100 GRS
         vm.prank(admin);
-        uint256 id = grs.sale(_q(address(usdc)), assetAmount, admin, 100e18, 0);
+        uint256 id = grs.sale(_q(address(usdc)), assetAmount, 100e18, _q(admin), 0);
 
         address buyer = address(0xB1E);
         uint256 amount = 100e18;
@@ -294,14 +294,14 @@ contract GRSAllocTest is Test {
         vm.expectRevert(IGRS.UnknownSale.selector);
         grs.buy(1, 1e18, admin);
         vm.prank(admin);
-        uint256 id = grs.sale(bytes32(0), 0, address(0), 1e18, 0);
+        uint256 id = grs.sale(bytes32(0), 0, 1e18, bytes32(0), 0);
         vm.expectRevert(IGRS.SaleClosed.selector);
         grs.buy(id, 1e18, admin);
     }
 
     function test_BuyAndGrantShareTokenSalesCap() public {
         vm.prank(admin);
-        uint256 id = grs.sale(bytes32(0), 2 ether, address(0), 2e18, 0);
+        uint256 id = grs.sale(bytes32(0), 2 ether, 2e18, bytes32(0), 0);
         vm.prank(admin);
         grs.grant(IGRS.Bucket.TokenSales, admin, 150_000_000e18 - 1e18, 0, 0, 0, 0);
 
@@ -314,8 +314,8 @@ contract GRSAllocTest is Test {
     function test_TwoSalesDifferentQuotes() public {
         MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
         vm.startPrank(admin);
-        uint256 ethId = grs.sale(bytes32(0), 1 ether, address(0), 1e18, 0);
-        uint256 usdId = grs.sale(_q(address(usdc)), 2e6, admin, 1e18, 0);
+        uint256 ethId = grs.sale(bytes32(0), 1 ether, 1e18, bytes32(0), 0);
+        uint256 usdId = grs.sale(_q(address(usdc)), 2e6, 1e18, _q(admin), 0);
         vm.stopPrank();
 
         address alice = address(0xA1);
@@ -341,10 +341,10 @@ contract GRSAllocTest is Test {
         GRS spoke = new GRS(address(endpoint), admin, false);
         vm.prank(admin);
         vm.expectRevert(IGRS.NotHome.selector);
-        spoke.sale(bytes32(0), 1 ether, address(0), 1e18, 0);
+        spoke.sale(bytes32(0), 1 ether, 1e18, bytes32(0), 0);
     }
 
-    function _salePayload(uint256 id, bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount)
+    function _salePayload(uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
         internal
         pure
         returns (bytes memory)
@@ -354,8 +354,8 @@ contract GRSAllocTest is Test {
             id,
             asset,
             assetAmount,
-            bytes32(uint256(uint160(recipient))),
-            grsAmount
+            grsAmount,
+            recipient
         );
     }
 
@@ -368,8 +368,8 @@ contract GRSAllocTest is Test {
         grs.setPeer(SPOKE_EID, spokePeer);
         spoke.setPeer(HOME_EID, homePeer);
         deal(admin, MOCK_LZ_FEE);
-        assertEq(grs.quoteSale(bytes32(0), 0.03 ether, admin, 3e18, SPOKE_EID), MOCK_LZ_FEE);
-        uint256 id = grs.sale{value: MOCK_LZ_FEE}(bytes32(0), 0.03 ether, admin, 3e18, SPOKE_EID);
+        assertEq(grs.quoteSale(bytes32(0), 0.03 ether, 3e18, _q(admin), SPOKE_EID), MOCK_LZ_FEE);
+        uint256 id = grs.sale{value: MOCK_LZ_FEE}(bytes32(0), 0.03 ether, 3e18, _q(admin), SPOKE_EID);
         vm.stopPrank();
 
         assertEq(id, 1);
@@ -378,7 +378,7 @@ contract GRSAllocTest is Test {
         spoke.lzReceive(
             Origin({srcEid: HOME_EID, sender: homePeer, nonce: 1}),
             bytes32(uint256(1)),
-            _salePayload(id, bytes32(0), 0.03 ether, admin, 3e18),
+            _salePayload(id, bytes32(0), 0.03 ether, 3e18, _q(admin)),
             address(0),
             ""
         );
@@ -387,7 +387,7 @@ contract GRSAllocTest is Test {
         IGRS.Sale memory row = spoke.getSales(0, 1)[0];
         assertEq(row.asset, bytes32(0));
         assertEq(row.assetAmount, 0.03 ether);
-        assertEq(row.recipient, admin);
+        assertEq(row.recipient, _q(admin));
         assertEq(row.grsAmount, 3e18);
 
         uint256 amount = 3e18;
@@ -410,7 +410,7 @@ contract GRSAllocTest is Test {
         grs.lzReceive(
             Origin({srcEid: SPOKE_EID, sender: bytes32(uint256(2)), nonce: 1}),
             bytes32(uint256(1)),
-            _salePayload(1, bytes32(0), 1, address(0), 0),
+            _salePayload(1, bytes32(0), 1, 0, bytes32(0)),
             address(0),
             ""
         );
@@ -420,13 +420,13 @@ contract GRSAllocTest is Test {
         deal(admin, 1);
         vm.prank(admin);
         vm.expectRevert(IGRS.InvalidPayment.selector);
-        grs.sale{value: 1}(bytes32(0), 1 ether, address(0), 1e18, 0);
-        assertEq(grs.quoteSale(bytes32(0), 1 ether, address(0), 1e18, 0), 0);
+        grs.sale{value: 1}(bytes32(0), 1 ether, 1e18, bytes32(0), 0);
+        assertEq(grs.quoteSale(bytes32(0), 1 ether, 1e18, bytes32(0), 0), 0);
     }
 
     function test_SaleAmountCapsBuy() public {
         vm.prank(admin);
-        uint256 id = grs.sale(bytes32(0), 1 ether, address(0), 1e18, 0);
+        uint256 id = grs.sale(bytes32(0), 1 ether, 1e18, bytes32(0), 0);
         deal(address(this), 3 ether);
         vm.expectRevert(IGRS.SaleExceeded.selector);
         grs.buy{value: 2 ether}(id, 2e18, address(this));
@@ -435,9 +435,19 @@ contract GRSAllocTest is Test {
         grs.buy{value: 1 ether}(id, 1e18, address(this));
     }
 
+    function test_BuyRejectsSolanaRecipient() public {
+        bytes32 solanaPayee = bytes32(uint256(1) << 160);
+        vm.prank(admin);
+        uint256 id = grs.sale(bytes32(0), 1 ether, 1e18, solanaPayee, 0);
+        deal(address(this), 1 ether);
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        grs.buy{value: 1 ether}(id, 1e18, address(this));
+        assertEq(grs.getSales(0, 1)[0].recipient, solanaPayee);
+    }
+
     function test_SaleAssetAmountSplitAcrossBuys() public {
         vm.prank(admin);
-        uint256 id = grs.sale(bytes32(0), 10, address(0), 3e18, 0);
+        uint256 id = grs.sale(bytes32(0), 10, 3e18, bytes32(0), 0);
         deal(address(this), 10);
         uint256 first = grs.buy{value: 3}(id, 1e18, address(this));
         assertEq(first, 3);

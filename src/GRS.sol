@@ -26,7 +26,7 @@ contract GRS is OFT, IERC1046, IGRS {
     uint64 public constant MAX_CLIFF = 365 days;
     uint64 public constant MAX_DURATION = 4 * 365 days;
     uint8 public constant BUCKET_COUNT = 11;
-    /// @dev Packed LZ payload: keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount (192 bytes).
+    /// @dev Packed LZ payload: keccak256("GRS.sale") || id || asset || assetAmount || grsAmount || recipient (192 bytes).
     bytes32 internal constant SALE_MSG = keccak256("GRS.sale");
     uint256 internal constant SALE_MSG_LEN = 192;
 
@@ -68,17 +68,18 @@ contract GRS is OFT, IERC1046, IGRS {
         emit VeGRSSet(veGRS_);
     }
 
-    /// @notice Home: append a sale. Id is `saleCount() + 1`. `asset = 0` is native ETH. `dstEid == 0`
-    ///         is local only (`msg.value` must be 0). Else LZ-publishes the row.
+    /// @notice Home: append a sale. Id is `saleCount() + 1`. `asset = 0` is native ETH. `recipient = 0`
+    ///         pays `owner()` at buy. `recipient` is 32 bytes (EVM address left-padded; Solana pubkey as-is).
+    ///         `dstEid == 0` is local only (`msg.value` must be 0). Else LZ-publishes the row.
     function sale(
         bytes32 asset,
         uint256 assetAmount,
-        address recipient,
         uint256 grsAmount,
+        bytes32 recipient,
         uint32 dstEid
     ) public payable onlyOwner returns (uint256 id) {
         if (!home) revert NotHome();
-        id = _upsertSale(0, asset, assetAmount, recipient, grsAmount, false);
+        id = _upsertSale(0, asset, assetAmount, grsAmount, recipient, false);
         if (dstEid == 0) {
             if (msg.value != 0) revert InvalidPayment();
             return id;
@@ -87,14 +88,14 @@ contract GRS is OFT, IERC1046, IGRS {
     }
 
     /// @notice Native LZ fee for `sale(..., dstEid)` (next id). `dstEid == 0` is 0.
-    function quoteSale(bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount, uint32 dstEid)
+    function quoteSale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
         public
         view
         returns (uint256 nativeFee)
     {
         if (dstEid == 0) return 0;
         nativeFee = _quote(
-            dstEid, _encodeSale(_sales.length + 1, asset, assetAmount, recipient, grsAmount), _saleOptions(dstEid), false
+            dstEid, _encodeSale(_sales.length + 1, asset, assetAmount, grsAmount, recipient), _saleOptions(dstEid), false
         ).nativeFee;
     }
 
@@ -152,7 +153,7 @@ contract GRS is OFT, IERC1046, IGRS {
         s.assetAmount -= cost;
         _takeBucket(Bucket.TokenSales, amount);
 
-        address payee = s.recipient == address(0) ? owner() : s.recipient;
+        address payee = s.recipient == bytes32(0) ? owner() : _evm(s.recipient);
         if (s.asset == bytes32(0)) {
             if (msg.value != cost) revert InvalidPayment();
             (bool ok,) = payable(payee).call{value: cost}("");
@@ -348,8 +349,8 @@ contract GRS is OFT, IERC1046, IGRS {
     ) internal override {
         if (_isSaleMessage(message)) {
             if (home) revert NotSpoke();
-            (uint256 id, bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount) = _decodeSale(message);
-            _upsertSale(id, asset, assetAmount, recipient, grsAmount, true);
+            (uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient) = _decodeSale(message);
+            _upsertSale(id, asset, assetAmount, grsAmount, recipient, true);
             return;
         }
         super._lzReceive(origin, guid, message, executor, extraData);
@@ -363,31 +364,29 @@ contract GRS is OFT, IERC1046, IGRS {
         return message.length == SALE_MSG_LEN && bytes32(message[0:32]) == SALE_MSG;
     }
 
-    function _encodeSale(uint256 id, bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount)
+    function _encodeSale(uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
         internal
         pure
         returns (bytes memory)
     {
-        return abi.encodePacked(
-            SALE_MSG, id, asset, assetAmount, bytes32(uint256(uint160(recipient))), grsAmount
-        );
+        return abi.encodePacked(SALE_MSG, id, asset, assetAmount, grsAmount, recipient);
     }
 
     function _decodeSale(bytes calldata message)
         internal
         pure
-        returns (uint256 id, bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount)
+        returns (uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
     {
         id = uint256(bytes32(message[32:64]));
         asset = bytes32(message[64:96]);
         assetAmount = uint256(bytes32(message[96:128]));
-        recipient = address(uint160(uint256(bytes32(message[128:160]))));
-        grsAmount = uint256(bytes32(message[160:192]));
+        grsAmount = uint256(bytes32(message[128:160]));
+        recipient = bytes32(message[160:192]);
     }
 
     function _sale(uint256 id, uint32 dstEid) internal {
         Sale storage s = _sales[id - 1];
-        bytes memory message = _encodeSale(id, s.asset, s.assetAmount, s.recipient, s.grsAmount);
+        bytes memory message = _encodeSale(id, s.asset, s.assetAmount, s.grsAmount, s.recipient);
         bytes memory options = _saleOptions(dstEid);
         address inspector = msgInspector;
         if (inspector != address(0)) IOAppMsgInspector(inspector).inspect(message, options);
@@ -411,30 +410,38 @@ contract GRS is OFT, IERC1046, IGRS {
         if (cost == 0) revert ZeroAmount();
     }
 
+    /// @dev EVM `buy` payee: `bytes32(0)` is handled by the caller. High 12 bytes must be 0 (Solana
+    ///      pubkeys are the LZ / spoke payee, not an ETH / ERC-20 destination).
+    function _evm(bytes32 word) internal pure returns (address) {
+        uint256 n = uint256(word);
+        if (n >> 160 != 0) revert InvalidRecipient();
+        return address(uint160(n));
+    }
+
     function _upsertSale(
         uint256 id,
         bytes32 asset,
         uint256 assetAmount,
-        address recipient,
         uint256 grsAmount,
+        bytes32 recipient,
         bool accepted
     ) internal returns (uint256) {
-        if (recipient == address(this)) revert InvalidRecipient();
+        if (recipient == bytes32(uint256(uint160(address(this))))) revert InvalidRecipient();
         Sale memory row =
-            Sale({asset: asset, assetAmount: assetAmount, recipient: recipient, grsAmount: grsAmount});
+            Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient});
         if (id == 0) {
             _sales.push(row);
             id = _sales.length;
         } else if (accepted) {
             while (_sales.length < id) {
-                _sales.push(Sale({asset: bytes32(0), assetAmount: 0, recipient: address(0), grsAmount: 0}));
+                _sales.push(Sale({asset: bytes32(0), assetAmount: 0, grsAmount: 0, recipient: bytes32(0)}));
             }
             _sales[id - 1] = row;
         } else {
             revert UnknownSale();
         }
-        if (accepted) emit SaleAccepted(id, asset, assetAmount, recipient, grsAmount);
-        else emit SaleSet(id, asset, assetAmount, recipient, grsAmount);
+        if (accepted) emit SaleAccepted(id, asset, assetAmount, grsAmount, recipient);
+        else emit SaleSet(id, asset, assetAmount, grsAmount, recipient);
         return id;
     }
 

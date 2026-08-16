@@ -74,10 +74,12 @@ interface IGRS {
         bytes32 asset;
         /// @dev Remaining `asset` units the seller still wants for remaining `grsAmount`. Zero closes the id.
         uint256 assetAmount;
-        /// @dev Quote payee; `address(0)` → `owner()` at purchase time.
-        address recipient;
         /// @dev Remaining GRS for sale at this id.
         uint256 grsAmount;
+        /// @dev Quote payee. `bytes32(0)` → `owner()` (EVM) / `oft_store.admin` (Solana) at purchase.
+        ///      EVM address left-padded; Solana pubkey as 32 bytes. EVM `buy` requires a clean EVM
+        ///      address (high 12 bytes 0).
+        bytes32 recipient;
     }
 
     event Granted(Bucket indexed bucket, address indexed to, uint256 amount, uint256 vestingId);
@@ -85,8 +87,8 @@ interface IGRS {
     event Released(uint256 indexed vestingId, address indexed to, uint256 amount);
     event ProprietorSet(address indexed proprietor);
     event VeGRSSet(address indexed veGRS);
-    event SaleSet(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, address indexed recipient, uint256 grsAmount);
-    event SaleAccepted(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, address indexed recipient, uint256 grsAmount);
+    event SaleSet(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, uint256 grsAmount, bytes32 indexed recipient);
+    event SaleAccepted(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, uint256 grsAmount, bytes32 indexed recipient);
     event SalePublished(uint256 indexed id, uint32 dstEid, bytes32 guid);
     event Bought(uint256 indexed id, address indexed buyer, address indexed to, uint256 amount, uint256 cost);
 
@@ -128,13 +130,13 @@ interface IGRS {
 
     /// @notice Home: append a sale. Id is `saleCount() + 1`. `dstEid == 0` is local only; else LZ-publish
     ///         so the spoke `lzReceive` upserts the row.
-    function sale(bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount, uint32 dstEid)
+    function sale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
         external
         payable
         returns (uint256 id);
 
     /// @notice Native LZ fee for `sale(..., dstEid)` (next id). `dstEid == 0` is 0.
-    function quoteSale(bytes32 asset, uint256 assetAmount, address recipient, uint256 grsAmount, uint32 dstEid)
+    function quoteSale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
         external
         view
         returns (uint256 nativeFee);
