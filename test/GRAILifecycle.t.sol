@@ -223,6 +223,37 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(usdc.balanceOf(address(treasury)), treasuryBefore + treasuryCut - gross);
     }
 
+    /// @dev Two silent harvests into a non-divisible lock: delayed `floor(E * ΣI / 1e18)` used to
+    ///      exceed per-bump `floor(I * E / 1e18)` by 1 wei and underflow `claimAll`.
+    function test_Distribute_DelayedAccrue_MatchesTotalClaimable() public {
+        uint256 eligible = 100_000_001;
+        uint256 yieldAmount = 10e6; // dividendCut = 5e6 at 50/50
+        _depositUsdc(alice, eligible);
+        uint256 locked = grai.balanceOf(alice);
+        assertEq(locked, eligible);
+        _lock(alice, locked);
+
+        for (uint256 i; i < 2; ++i) {
+            usdc.mint(address(this), yieldAmount);
+            usdc.approve(address(grai), yieldAmount);
+            grai.distribute(address(usdc), yieldAmount);
+        }
+
+        (,,, uint256 totalClaimable) = grai.assets(address(usdc));
+        uint256 pending = grai.previewClaim(alice, address(usdc), type(uint256).max);
+        assertEq(pending, totalClaimable);
+        assertEq(pending, 9_999_999);
+
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        vm.prank(alice);
+        grai.claimAll(alice);
+        // 1% claim tip stays with Alice as caller.
+        assertEq(usdc.balanceOf(alice) - aliceBefore, pending);
+        (,,, uint256 left) = grai.assets(address(usdc));
+        assertEq(left, 0);
+        assertEq(grai.previewClaim(alice, address(usdc), type(uint256).max), 0);
+    }
+
     ////////////////////////////// HELPERS //////////////////////////////
 
     function _depositUsdc(address user, uint256 amount) internal {

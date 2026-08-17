@@ -41,7 +41,7 @@ holder  →  lock()  →  locker (unvoted)  →  vote()  →  voter  ←  bribe(
 | Treasury | `treasuryCutBps` 50%   | `treasury` (affiliates paid later on `claim`; see §10)         |
 
 
-If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is too small to move the index, the dividend cut is **sent to treasury** instead. When the index moves, `totalClaimable` reserves only the index-payable amount (`indexIncrease * eligible / PRECISION`); any remainder is also sent to treasury.
+If there are **no unvoted locks** (`totalLocked == totalVoted`), or the cut is too small to move the index, the dividend cut is **sent to treasury** instead. When the index moves, `totalClaimable` reserves the delayed-whale increment of the index (`floor(eligible * newShare / PRECISION) − floor(eligible * oldShare / PRECISION)`); any remainder of the cut is also sent to treasury.
 
 ---
 
@@ -546,7 +546,7 @@ Custodian / caller yield credited in `positions[from][asset].yielded` (analytics
 ```
 eligible     = totalLocked - totalVoted
 accShare    += dividendCut * 1e18 / eligible     // or treasury if eligible == 0 / dust
-totalClaimable += reserved                       // when index moves
+totalClaimable += floor(eligible * accShare / 1e18) − previous  // delayed-whale increment
 claimable   += (locked - voted) * accShare / 1e18 - debt
 ```
 

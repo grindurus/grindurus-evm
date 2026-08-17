@@ -155,7 +155,7 @@ LZ sale payload is 192 bytes: `keccak256("GRS.sale") || id || asset || assetAmou
 
 #### Book
 
-Ids are **1-based**, assigned on `sale` (`saleCount + 1`). Rows are append-only on home; spoke `lzReceive` writes the published id. Several rows at once (ETH/SOL + USDC). Solana registry cap **16** rows.
+Ids are **1-based**, assigned on `sale` (`saleCount + 1`). Rows are append-only on home; spoke `lzReceive` writes the published id. Several rows at once (ETH/SOL + USDC). Solana registry cap **256** rows (grows with the PDA; EVM `_sales` is unbounded).
 
 | Field         | Closed / empty                                            | Meaning                                                                 |
 | ------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |

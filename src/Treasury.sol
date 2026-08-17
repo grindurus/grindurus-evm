@@ -412,18 +412,9 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         }
     }
 
-    /// @dev True if setting `locker.referrer = to` would cycle: `to`'s upline reaches `locker`,
-    ///      or `to`'s upline already contains a cycle. Self-root `to == locker` is allowed.
-    ///
-    ///      Algorithm (Floyd tortoise/hare on sticky `referrerOf`, starting at `to`):
-    ///      - `slow` advances one hop per iteration; `fast` advances two.
-    ///      - Terminal / self-root (`ref == 0 || ref == cur`) ⇒ acyclic end ⇒ no loop.
-    ///      - `ref == locker` ⇒ new edge would place `locker` on `to`'s upline (downline cannot
-    ///        poach upline). `ref == to` ⇒ `to`'s upline already returns to `to`.
-    ///      - `slow == fast` ⇒ a cycle exists somewhere on the walk (e.g. `D→E→F→D` that `to`
-    ///        reaches without `to` itself being revisited) — same as a hop-cap would need, but
-    ///        without false-positive on deep acyclic chains (old fixed limit of 32 hops).
-    ///      Deep trees terminate when pointers hit a root; cyclic ones meet or hit `locker`/`to`.
+    /// @dev True if `locker.referrer = to` would cycle (`to`'s upline hits `locker` or a loop).
+    ///      Self-root `to == locker` is allowed. Floyd tortoise/hare on `referrerOf` from `to`
+    ///      (https://en.wikipedia.org/wiki/Cycle_detection) - no hop cap, so deep acyclic trees pass.
     function _hasReferralLoop(address locker, address to) internal view returns (bool) {
         if (to == locker) return false;
 

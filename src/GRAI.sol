@@ -879,9 +879,11 @@ contract GRAI is
 
     //////////////////// DIVIDENDS ////////////////////
 
-    /// @dev Accrue yield to unvoted locks via `accShare`. Index dust — tokens that cannot be paid
-    ///      out of this bump (`amount - indexIncrease * eligible / PRECISION`) — goes to treasury
-    ///      instead of ghosting in `totalClaimable` (which would also block delist).
+    /// @dev Accrue yield to unvoted locks via `accShare`. Reserved this bump is the delayed-whale
+    ///      increment `floor(eligible * newShare / PRECISION) - floor(eligible * oldShare / PRECISION)`
+    ///      so a locker who accrues after several harvests cannot outrun `totalClaimable`.
+    ///      Index dust (`amount - reserved`) goes to treasury instead of ghosting in the reserve
+    ///      (which would also block delist). A zero reserved increment does not bump `accShare`.
     function _distribute(address asset, uint256 amount) internal {
         if (amount == 0) return;
         uint256 eligible = totalLocked - totalVoted;
@@ -892,15 +894,15 @@ contract GRAI is
             return;
         }
 
-        // Max this index bump can ever pay (one holder of all `eligible`); per-locker floors
-        // may leave a wei-level gap vs this, which is acceptable dust.
-        uint256 reserved = (indexIncrease * eligible) / PRECISION;
+        AssetConfig storage div = assets[asset];
+        uint256 oldShare = div.accShare;
+        uint256 newShare = oldShare + indexIncrease;
+        uint256 reserved = (newShare * eligible) / PRECISION - (oldShare * eligible) / PRECISION;
         if (reserved == 0) {
             _withdraw(address(treasury), asset, amount);
             return;
         }
-        AssetConfig storage div = assets[asset];
-        div.accShare += indexIncrease;
+        div.accShare = newShare;
         div.totalClaimable += reserved;
         if (amount > reserved) _withdraw(address(treasury), asset, amount - reserved);
     }
