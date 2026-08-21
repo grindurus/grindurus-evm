@@ -5,6 +5,8 @@ import {OFT} from "@layerzerolabs/oft-evm/contracts/OFT.sol";
 import {IOFT, SendParam} from "@layerzerolabs/oft-evm/contracts/interfaces/IOFT.sol";
 import {OFTMsgCodec} from "@layerzerolabs/oft-evm/contracts/libs/OFTMsgCodec.sol";
 import {IOAppMsgInspector} from "@layerzerolabs/oapp-evm/contracts/oapp/interfaces/IOAppMsgInspector.sol";
+import {EnforcedOptionParam} from "@layerzerolabs/oapp-evm/contracts/oapp/interfaces/IOAppOptionsType3.sol";
+import {OptionsBuilder} from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
 import {MessagingFee, MessagingReceipt, Origin} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
@@ -21,6 +23,7 @@ import {IGRS} from "./interfaces/IGRS.sol";
 ///         their own GRS (home or spoke). Spokes mint/burn via OFT. Admin is Ownable2Step.
 contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     using SafeERC20 for IERC20;
+    using OptionsBuilder for bytes;
 
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
     uint256 public constant MONTH = 30 days;
@@ -32,10 +35,18 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     bytes32 internal constant SALE_MSG = keccak256("GRS.sale");
     uint256 internal constant SALE_MSG_LEN = 192;
 
+    /// @dev Fallback lzReceive gas when `peerLzReceiveBudget[eid].gas == 0` (typical EVM peer).
+    uint128 public constant DEFAULT_LZ_RECEIVE_GAS = 200_000;
+    /// @dev Seeded for Solana mainnet/devnet; Aptos / other non-EVM eids use `setPeerLzReceiveBudget`.
+    uint128 public constant DEFAULT_SOLANA_LZ_RECEIVE_VALUE = 2_039_280;
+
     bool public immutable home;
     address public proprietor;
     address public veGRS;
     mapping(Bucket bucket => uint256) public spent;
+    /// @notice Per-destination lzReceive budget used by `setPeer` defaults. `gas == 0` → fall back
+    ///         to `DEFAULT_LZ_RECEIVE_GAS` / `value = 0`. Non-EVM chains (Solana, Aptos, …) set `value`.
+    mapping(uint32 eid => PeerLzReceiveBudget) public peerLzReceiveBudget;
 
     Sale[] internal _sales;
     Vesting[] internal _vestings;
@@ -53,6 +64,9 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     {
         home = home_;
         proprietor = delegate;
+        // Known non-EVM LZ eids that need native value on lzReceive (ATA / account rent).
+        peerLzReceiveBudget[30_168] = PeerLzReceiveBudget(DEFAULT_LZ_RECEIVE_GAS, DEFAULT_SOLANA_LZ_RECEIVE_VALUE);
+        peerLzReceiveBudget[40_168] = PeerLzReceiveBudget(DEFAULT_LZ_RECEIVE_GAS, DEFAULT_SOLANA_LZ_RECEIVE_VALUE);
         if (home_) {
             _mint(address(this), MAX_SUPPLY);
         }
@@ -72,6 +86,20 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (!home) revert NotHome();
         veGRS = veGRS_;
         emit VeGRSSet(veGRS_);
+    }
+
+    /// @notice Set lzReceive gas/value used when `setPeer` installs default enforcedOptions.
+    ///         `gas == 0` clears the entry (EVM fallback). If the peer is already wired, options refresh.
+    function setPeerLzReceiveBudget(uint32 eid, uint128 gas, uint128 value) public onlyOwner {
+        if (gas == 0) {
+            delete peerLzReceiveBudget[eid];
+        } else {
+            peerLzReceiveBudget[eid] = PeerLzReceiveBudget(gas, value);
+        }
+        emit PeerLzReceiveBudgetSet(eid, gas, value);
+        if (peers[eid] != bytes32(0)) {
+            _applyDefaultPeerEnforcedOptions(eid);
+        }
     }
 
     /// @notice Home: append a sale. Id is `saleCount() + 1`. `asset = 0` is native ETH. `recipient = 0`
@@ -149,7 +177,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     /// @notice Buy `amount` GRS from `TokenSales` via sale `id`. Instant, no vest. Home genesis or
-    ///         spoke escrow (this contract's balance). Local 150M cap via `_takeBucket`.
+    ///         spoke escrow (this contract's balance). TokenSales has no hard cap (`spent` is
+    ///         accounting only) so buybacks returned to this bucket can be re-listed.
     function buy(uint256 id, uint256 amount, address to) public payable returns (uint256 cost) {
         if (to == address(0)) revert InvalidRecipient();
         cost = previewBuy(id, amount);
@@ -206,11 +235,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             (uint32 cliffMonths, uint32 linearMonths) = scheduleOf(b);
             uint256 cap = capOf(b);
             uint256 used = spent[b];
+            uint256 left = b == Bucket.TokenSales ? balanceOf(address(this)) : cap - used;
             listed[i] = Allocation({
                 bucket: b,
                 cap: cap,
                 spent: used,
-                remaining: cap - used,
+                remaining: left,
                 gate: gateOf(b),
                 cliffMonths: cliffMonths,
                 linearMonths: linearMonths
@@ -266,7 +296,9 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function capOf(Bucket bucket) public pure returns (uint256) {
-        if (bucket == Bucket.TokenSales) return 150_000_000e18;
+        // TokenSales is uncapped: buybacks / recycled GRS can re-enter the book. Other rows keep
+        // the genesis allocation table (sum of finite caps = 850M; TokenSales is open-ended).
+        if (bucket == Bucket.TokenSales) return type(uint256).max;
         if (bucket == Bucket.PreSeed) return 50_000_000e18;
         if (bucket == Bucket.RevenueShare) return 150_000_000e18;
         if (bucket == Bucket.Airdrops) return 50_000_000e18;
@@ -315,6 +347,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function remaining(Bucket bucket) public view returns (uint256) {
+        // TokenSales is uncapped; surface contract inventory (genesis float + buybacks) as remaining.
+        if (bucket == Bucket.TokenSales) return balanceOf(address(this));
         return capOf(bucket) - spent[bucket];
     }
 
@@ -536,6 +570,11 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function _takeBucket(Bucket bucket, uint256 amount) internal {
+        // TokenSales: no hard cap — buybacks returned here can be sold/granted again.
+        if (bucket == Bucket.TokenSales) {
+            spent[bucket] += amount;
+            return;
+        }
         uint256 next = spent[bucket] + amount;
         if (next > capOf(bucket)) revert BucketExceeded();
         spent[bucket] = next;
@@ -585,10 +624,34 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             }
             peerEids.pop();
             delete peerEidIndex[eid];
+            _clearPeerEnforcedOptions(eid);
         } else if (prev == bytes32(0)) {
             peerEids.push(eid);
             peerEidIndex[eid] = peerEids.length;
+            _applyDefaultPeerEnforcedOptions(eid);
         }
+    }
+
+    /// @dev Per-eid lzReceive budget for auto `enforcedOptions` on `setPeer`. Unset (`gas == 0`)
+    ///      falls back to `DEFAULT_LZ_RECEIVE_GAS` / `value = 0` (EVM). Solana/Aptos/etc. set `value`.
+    function _applyDefaultPeerEnforcedOptions(uint32 eid) internal {
+        (uint128 gas, uint128 value) = _lzReceiveBudget(eid);
+        bytes memory opts = OptionsBuilder.newOptions().addExecutorLzReceiveOption(gas, value);
+        EnforcedOptionParam[] memory enforced = new EnforcedOptionParam[](2);
+        enforced[0] = EnforcedOptionParam({eid: eid, msgType: SEND, options: opts});
+        enforced[1] = EnforcedOptionParam({eid: eid, msgType: SEND_AND_CALL, options: opts});
+        _setEnforcedOptions(enforced);
+    }
+
+    function _clearPeerEnforcedOptions(uint32 eid) internal {
+        delete enforcedOptions[eid][SEND];
+        delete enforcedOptions[eid][SEND_AND_CALL];
+    }
+
+    function _lzReceiveBudget(uint32 eid) internal view returns (uint128 gas, uint128 value) {
+        PeerLzReceiveBudget memory budget = peerLzReceiveBudget[eid];
+        if (budget.gas == 0) return (DEFAULT_LZ_RECEIVE_GAS, 0);
+        return (budget.gas, budget.value);
     }
 
     function _credit(address _to, uint256 _amountLD, uint32 _srcEid)

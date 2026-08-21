@@ -62,16 +62,19 @@ contract GRSAllocTest is Test {
     function test_AllocationsSumToCap() public view {
         IGRS.Allocation[] memory rows = grs.getAllocations();
         assertEq(rows.length, 11);
-        uint256 cap;
-        uint256 left;
+        uint256 finiteCap;
         for (uint256 i; i < rows.length; ++i) {
-            cap += rows[i].cap;
-            left += rows[i].remaining;
+            if (rows[i].bucket == IGRS.Bucket.TokenSales) {
+                assertEq(rows[i].cap, type(uint256).max);
+                assertEq(rows[i].remaining, 1_000_000_000e18);
+                assertEq(rows[i].spent, 0);
+                continue;
+            }
+            finiteCap += rows[i].cap;
             assertEq(rows[i].spent, 0);
             assertEq(rows[i].remaining, rows[i].cap);
         }
-        assertEq(cap, 1_000_000_000e18);
-        assertEq(left, 1_000_000_000e18);
+        assertEq(finiteCap, 850_000_000e18);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);
     }
 
@@ -80,13 +83,17 @@ contract GRSAllocTest is Test {
         grs.grant(IGRS.Bucket.TokenSales, _q(admin), 150_000_000e18, 0, 0, 0, 0);
 
         assertEq(grs.spent(IGRS.Bucket.TokenSales), 150_000_000e18);
-        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 0);
+        // TokenSales is uncapped; remaining is contract inventory after the grant.
+        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 850_000_000e18);
         assertEq(grs.balanceOf(admin), 150_000_000e18);
         assertEq(grs.balanceOf(address(grs)), 850_000_000e18);
 
+        // Finite buckets still enforce caps.
+        vm.prank(admin);
+        grs.grant(IGRS.Bucket.PreSeed, _q(admin), 50_000_000e18, 0, 0, 0, 0);
         vm.prank(admin);
         vm.expectRevert(IGRS.BucketExceeded.selector);
-        grs.grant(IGRS.Bucket.TokenSales, _q(admin), 1, 0, 0, 0, 0);
+        grs.grant(IGRS.Bucket.PreSeed, _q(admin), 1, 0, 0, 0, 0);
     }
 
     function test_GrantVestingCliffThenLinear() public {
@@ -291,7 +298,7 @@ contract GRSAllocTest is Test {
         assertEq(usdc.balanceOf(admin), assetAmount);
         assertEq(grs.getSales(0, 1)[0].grsAmount, 0);
         assertEq(grs.getSales(0, 1)[0].assetAmount, 0);
-        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 150_000_000e18 - amount);
+        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 1_000_000_000e18 - amount);
     }
 
     function test_BuyClosedUntilAssetAmountSet() public {
@@ -304,6 +311,7 @@ contract GRSAllocTest is Test {
     }
 
     function test_BuyAndGrantShareTokenSalesCap() public {
+        // TokenSales no longer hard-caps; grant + buy may both draw from the same inventory.
         vm.prank(admin);
         uint256 id = grs.sale(bytes32(0), 2 ether, 2e18, bytes32(0), 0);
         vm.prank(admin);
@@ -311,8 +319,9 @@ contract GRSAllocTest is Test {
 
         deal(address(this), 2 ether);
         grs.buy{value: 1 ether}(id, 1e18, address(this));
-        vm.expectRevert(IGRS.BucketExceeded.selector);
         grs.buy{value: 1 ether}(id, 1e18, address(this));
+        assertEq(grs.spent(IGRS.Bucket.TokenSales), 150_000_000e18 + 1e18);
+        assertEq(grs.balanceOf(address(this)), 2e18);
     }
 
     function test_TwoSalesDifferentQuotes() public {

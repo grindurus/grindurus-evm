@@ -46,6 +46,12 @@ interface IGRS {
         bytes32 peer;
     }
 
+    /// @dev lzReceive executor budget for a destination eid (`gas` / CU, `value` / native on dest).
+    struct PeerLzReceiveBudget {
+        uint128 gas;
+        uint128 value;
+    }
+
     struct Allocation {
         Bucket bucket;
         uint256 cap;
@@ -86,6 +92,7 @@ interface IGRS {
     event Released(uint256 indexed vestingId, address indexed to, uint256 amount);
     event ProprietorSet(address indexed proprietor);
     event VeGRSSet(address indexed veGRS);
+    event PeerLzReceiveBudgetSet(uint32 indexed eid, uint128 gas, uint128 value);
     event SaleSet(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, uint256 grsAmount, bytes32 indexed recipient);
     event SaleAccepted(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, uint256 grsAmount, bytes32 indexed recipient);
     event SalePublished(uint256 indexed id, uint32 dstEid, bytes32 guid);
@@ -126,6 +133,9 @@ interface IGRS {
     function setProprietor(address proprietor_) external;
 
     function setVeGRS(address veGRS_) external;
+
+    /// @notice Per-eid lzReceive gas/value for auto enforcedOptions on `setPeer`. `gas == 0` clears.
+    function setPeerLzReceiveBudget(uint32 eid, uint128 gas, uint128 value) external;
 
     /// @notice Home: append a sale. Id is `saleCount() + 1`. `dstEid == 0` is local only; else burns
     ///         `grsAmount` from TokenSales, LZ-publishes so the spoke mints that GRS into escrow, and

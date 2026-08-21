@@ -190,6 +190,19 @@ contract GRSTest is Test {
         grs.setPeer(30110, bytes32(uint256(4)));
         vm.stopPrank();
 
+        assertGt(grs.enforcedOptions(30168, 1).length, 0);
+        assertGt(grs.enforcedOptions(30110, 1).length, 0);
+
+        (uint128 solGas, uint128 solValue) = grs.peerLzReceiveBudget(30168);
+        assertEq(solGas, grs.DEFAULT_LZ_RECEIVE_GAS());
+        assertEq(solValue, grs.DEFAULT_SOLANA_LZ_RECEIVE_VALUE());
+
+        vm.prank(admin);
+        grs.setPeerLzReceiveBudget(40_124, 300_000, 1_000_000); // e.g. Aptos-style eid
+        (uint128 aptGas, uint128 aptValue) = grs.peerLzReceiveBudget(40_124);
+        assertEq(aptGas, 300_000);
+        assertEq(aptValue, 1_000_000);
+
         IGRS.Peer[] memory listed = grs.getPeers();
         assertEq(listed.length, 2);
         assertEq(listed[0].eid, 30168);
@@ -199,6 +212,8 @@ contract GRSTest is Test {
 
         vm.prank(admin);
         grs.setPeer(30168, bytes32(0));
+
+        assertEq(grs.enforcedOptions(30168, 1).length, 0);
 
         listed = grs.getPeers();
         assertEq(listed.length, 1);

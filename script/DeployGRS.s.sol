@@ -23,6 +23,9 @@ import {GRS} from "../src/GRS.sol";
 ///   SOLANA_PEER       — Solana OFT store as `bytes32` hex (32-byte pubkey)
 ///   SOLANA_EID        — optional (default: Solana Devnet 40168 on testnets, Solana 30168 on mainnets)
 ///
+/// Note: GRS.setPeer also installs default enforcedOptions (Solana: CU + ATA rent lamports).
+///       Owner may still call setEnforcedOptions to tune.
+
 /// Deploy (Sepolia home):
 ///   PRIVATE_KEY=0x... 
 ///     forge script script/DeployGRS.s.sol:DeployGRS --rpc-url sepolia --broadcast --verify
