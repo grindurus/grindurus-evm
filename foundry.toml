@@ -23,12 +23,15 @@ remappings = [
 skip = ["src/archive/**", "test/archive/**"]
 
 # RPC endpoints for fork tests. Override the public defaults by exporting
+# https://chainlist.org/
 [rpc_endpoints]
+sepolia = "https://ethereum-sepolia-rpc.publicnode.com"
 ethereum = "${ETH_RPC_URL}"
 arbitrum = "${ARBITRUM_RPC_URL}"
 base = "${BASE_RPC_URL}"
 
 [etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.etherscan.io/api" }
 ethereum = { key = "${ETHERSCAN_API_KEY}", url = "https://api.etherscan.io/api" }
 arbitrum = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
 base = { key = "${BASESCAN_API_KEY}", url = "https://api.basescan.org/api" }

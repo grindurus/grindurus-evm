@@ -10,7 +10,7 @@ wallet shortfall). Protocol yield flows through `distribute` and splits per `Con
 cuts (initialize defaults **50% / 50%**): dividend → unvoted lockers via `claim` /
 `claimAll` (else → treasury); treasury → `treasury`.
 
-Full mechanics: [`docs/GRAI.md`](docs/GRAI.md). Grinders / custodians / yield path: [`docs/GRINDERS.md`](docs/GRINDERS.md).
+Full mechanics: [docs.grindurus.xyz/developers/mechanics](https://docs.grindurus.xyz/developers/mechanics).
 
 ## Model
 
@@ -41,7 +41,7 @@ bribe(voter)               [permissionless]
 | `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
 | `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
 | `PriceOracleRouter` | Base of `GRAI`. Chainlink / Pyth / custom feeds per asset. |
-| `GRS` | Non-upgradeable LayerZero **OFT**. Home mints 1B into bucket inventory (`getAllocations` / `grant` / `vest` / `release`). `quoteBridge` / `bridge`. Spec: [`docs/GRS.md`](docs/GRS.md). |
+| `GRS` | Non-upgradeable LayerZero **OFT**. Home mints 1B into bucket inventory (`getAllocations` / `grant` / `vest` / `release`). `quoteBridge` / `bridge`. Spec: [docs.grindurus.xyz → GRS mechanics](https://docs.grindurus.xyz/developers/mechanics/grs). |
 
 Native ETH is `address(0)`. WETH is the fallback when a native ETH push is rejected.
 
@@ -208,11 +208,12 @@ addresses — `GRAI` impl + ERC-1967 proxy and `Grinders` impl + ERC-1967 proxy 
 | Script | Purpose |
 |--------|---------|
 | `script/Deploy.s.sol` | Combined GRAI + Grinders CREATE3 deploy |
-| `script/DeployArbitrum.s.sol` | Same on Arbitrum One + list WETH / USDT / native ETH + `setSettlementAsset(USDT)` |
-| `script/1_DeployGRAI.s.sol` | GRAI only |
-| `script/2_DeployGrinders.s.sol` | Grinders only (optionally `WIRE_GRAI=1`) |
-| `script/3_setGrinders.s.sol` | Wire / retarget `GRAI.setGrinders` |
-| `script/4_DeployCoWCustodian.s.sol` | Deploy + register CoW custodian kind |
+| `script/DeployGRAI.s.sol` | GRAI only (`CHAIN=` / `--rpc-url`); Treasury + feeds |
+| `script/DeployGrinders.s.sol` | Grinders only; wires `GRAI.setGrinders` by default |
+| `script/manual/1_DeployGRAI.s.sol` | GRAI only (legacy staged) |
+| `script/manual/2_DeployGrinders.s.sol` | Grinders only (legacy staged) |
+| `script/manual/3_setGrinders.s.sol` | Wire / retarget `GRAI.setGrinders` |
+| `script/manual/4_DeployCoWCustodian.s.sol` | Deploy + register CoW custodian kind |
 
 ```shell
 # Predict addresses (no broadcast)
@@ -223,15 +224,17 @@ PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy \
   --rpc-url <your_rpc_url> --broadcast
 
 # Arbitrum One (lists WETH, USDT, native ETH; settlementAsset = USDT)
-PRIVATE_KEY=0x... forge script script/DeployArbitrum.s.sol:DeployArbitrum \
-  --rpc-url $ARBITRUM_RPC_URL --broadcast --verify
+PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --rpc-url arbitrum --broadcast --verify
+PRIVATE_KEY=0x... forge script script/DeployGrinders.s.sol:DeployGrinders \
+  --rpc-url arbitrum --broadcast --verify
 ```
 
 The deployer (`vm.addr(PRIVATE_KEY)`) becomes initial `owner`. Optional env `OWNER_MULTISIG`
 starts Ownable2Step handoff on both GRAI and Grinders — the multisig must still call
 `acceptOwnership()` on each. `CREATE3_SALT_TAG` (fallback: `CREATE2_SALT_TAG`) changes the salt
-namespace; `DRY_RUN=1` predicts without broadcasting. `DeployArbitrum` also accepts
-`MAX_STALENESS` (default 25 hours for Arbitrum ETH/USD heartbeat).
+namespace; `DRY_RUN=1` predicts without broadcasting. `DeployGRAI` also accepts
+`MAX_STALENESS` (default 25 hours on Arbitrum / Base for ETH/USD heartbeat).
 
 After a bare `Deploy.s.sol` run, list each asset by setting its feed (this also registers it in
 `GRAI`), then wire protocol config. All admin calls require `owner` unless noted:
@@ -327,7 +330,7 @@ before deploying.
 | ARB/USD  | `0xb2A824043730FE05F3DA2efaFa1CBbe83fa548D6` | 8 |
 | LINK/USD | `0x86E53CF1B870786351Da77A57575e79CB55812CB` | 8 |
 
-Canonical tokens used by `DeployArbitrum.s.sol`:
+Canonical tokens used by `DeployGRAI.s.sol` on Arbitrum:
 
 | Asset | Address |
 |-------|---------|
@@ -438,9 +441,9 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 
 ## Related
 
-- Tokenomics: [`docs/GRAI.md`](docs/GRAI.md)
-- Grinders / custodians: [`docs/GRINDERS.md`](docs/GRINDERS.md)
-- Bribe ask chart: [`docs/bribe-amount-vs-voted.svg`](docs/bribe-amount-vs-voted.svg)
+- Tokenomics: [docs.grindurus.xyz → GRAI mechanics](https://docs.grindurus.xyz/developers/mechanics/grai)
+- Grinders / custodians: [docs.grindurus.xyz → Grinders mechanics](https://docs.grindurus.xyz/developers/mechanics/grinders)
+- Bribe ask chart: [docs.grindurus.xyz mechanics](https://docs.grindurus.xyz/developers/mechanics)
 - Solana port: [`../grindurus-solana/`](../grindurus-solana/)
 
 ## License
