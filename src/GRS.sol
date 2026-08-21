@@ -17,7 +17,7 @@ import {IGRS} from "./interfaces/IGRS.sol";
 
 /// @title GRS (Grindurus Token)
 /// @notice Fixed-supply LayerZero OFT. Home chain mints the 1B genesis into per-bucket inventory
-///         (`docs/grs.svg`); delegate `grant`s vesting / instant payouts. Any holder may `vest`
+///         (`docs.grindurus.xyz` mechanics / `grs.svg`); delegate `grant`s vesting / instant payouts. Any holder may `vest`
 ///         their own GRS (home or spoke). Spokes mint/burn via OFT. Admin is Ownable2Step.
 contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     using SafeERC20 for IERC20;
@@ -48,7 +48,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///                   inventory stays here until `grant` / `vest` / `release`.
     /// @param home_      If true, mint `MAX_SUPPLY` to this contract (canonical chain).
     constructor(address lzEndpoint, address delegate, bool home_)
-        OFT("Grindurus Token", "GRS", lzEndpoint, delegate)
+        OFT("GrindURUS Token", "GRS", lzEndpoint, delegate)
         Ownable(delegate)
     {
         home = home_;
@@ -304,7 +304,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return Gate.Instant;
     }
 
-    /// @notice Default cliff / linear months from `docs/grs.svg`. Delegate may still pick other
+    /// @notice Default cliff / linear months from cap-table `grs.svg`. Delegate may still pick other
     ///         `grant` timestamps; proprietary rows have 0/0 (release is gated, not calendar).
     function scheduleOf(Bucket bucket) public pure returns (uint32 cliffMonths, uint32 linearMonths) {
         if (bucket == Bucket.PreSeed) return (0, 24);
