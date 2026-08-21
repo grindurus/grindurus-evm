@@ -26,5 +26,5 @@ On success prints `CREATE3_SALT_TAG=…` and writes `found.txt` (`tag` + `addres
 Use the tag with deploy scripts:
 
 ```bash
-CREATE3_SALT_TAG=<tag> forge script script/1_DeployGRAI.s.sol:DeployGRAI --sig "predict()"
+CREATE3_SALT_TAG=<tag> forge script script/manual/1_DeployGRAI.s.sol:DeployGRAI --sig "predict()"
 ```
