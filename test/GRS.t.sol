@@ -8,7 +8,7 @@ import {
     MessagingParams,
     MessagingReceipt
 } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
-import {IOFT} from "@layerzerolabs/oft-evm/contracts/interfaces/IOFT.sol";
+import {IOFT, SendParam} from "@layerzerolabs/oft-evm/contracts/interfaces/IOFT.sol";
 
 import {GRS} from "../src/GRS.sol";
 import {IGRS} from "../src/interfaces/IGRS.sol";
@@ -65,7 +65,7 @@ contract GRSTest is Test {
     function test_HomeMintsCapToSelf() public {
         GRS grs = new GRS(address(endpoint), admin, true);
 
-        assertEq(grs.name(), "Grindurus Token");
+        assertEq(grs.name(), "GrindURUS Token");
         assertEq(grs.symbol(), "GRS");
         assertEq(grs.decimals(), 18);
         assertEq(grs.sharedDecimals(), 6);
@@ -86,15 +86,20 @@ contract GRSTest is Test {
         GRS grs = new GRS(address(endpoint), admin, false);
         address next = address(0xB0B);
 
+        assertEq(endpoint.delegates(address(grs)), admin);
+
         vm.prank(admin);
         grs.transferOwnership(next);
         assertEq(grs.owner(), admin);
         assertEq(grs.pendingOwner(), next);
+        // Propose-only: delegate stays with current owner until accept.
+        assertEq(endpoint.delegates(address(grs)), admin);
 
         vm.prank(next);
         grs.acceptOwnership();
         assertEq(grs.owner(), next);
         assertEq(grs.pendingOwner(), address(0));
+        assertEq(endpoint.delegates(address(grs)), next);
     }
 
     function test_SpokeStartsAtZero() public {
@@ -160,6 +165,48 @@ contract GRSTest is Test {
         grs.bridge{value: fee}(DST_EID, dest, 2e18);
 
         assertEq(grs.balanceOf(admin), 8e18);
+    }
+
+    function test_SendRejectsCompose() public {
+        GRS grs = _homeWired();
+        SendParam memory p = SendParam({
+            dstEid: DST_EID,
+            to: solanaTo,
+            amountLD: 1e18,
+            minAmountLD: 1e18,
+            extraOptions: "",
+            composeMsg: hex"01",
+            oftCmd: ""
+        });
+        vm.deal(admin, MOCK_LZ_FEE);
+        vm.prank(admin);
+        vm.expectRevert(IGRS.ComposeDisabled.selector);
+        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee(MOCK_LZ_FEE, 0), admin);
+    }
+
+    function test_SendRejectsSaleOrGrantMsgAsTo() public {
+        GRS grs = _homeWired();
+        bytes32 saleMsg = keccak256("GRS.sale");
+        bytes32 grantMsg = keccak256("GRS.grant");
+        SendParam memory p = SendParam({
+            dstEid: DST_EID,
+            to: saleMsg,
+            amountLD: 1e18,
+            minAmountLD: 1e18,
+            extraOptions: "",
+            composeMsg: "",
+            oftCmd: ""
+        });
+        vm.deal(admin, MOCK_LZ_FEE * 2);
+        vm.startPrank(admin);
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee(MOCK_LZ_FEE, 0), admin);
+        p.to = grantMsg;
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee(MOCK_LZ_FEE, 0), admin);
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        grs.quoteBridge(DST_EID, saleMsg, 1e18);
+        vm.stopPrank();
     }
 
     function test_BridgeStripsDust() public {

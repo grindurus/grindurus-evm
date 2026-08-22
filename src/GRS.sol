@@ -26,7 +26,6 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     using OptionsBuilder for bytes;
 
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
-    uint256 public constant MONTH = 30 days;
     uint64 public constant MAX_CLIFF = 365 days;
     uint64 public constant MAX_DURATION = 4 * 365 days;
     uint8 public constant BUCKET_COUNT = 11;
@@ -34,6 +33,10 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///      (192 bytes). `grsAmount` on the wire is OFT shared decimals (6).
     bytes32 internal constant SALE_MSG = keccak256("GRS.sale");
     uint256 internal constant SALE_MSG_LEN = 192;
+    /// @dev Packed LZ payload: keccak256("GRS.grant") || to || amountSD || start || cliff || duration || bucket
+    ///      (224 bytes). Spoke credits inventory and opens a local vest; instant grants use OFT instead.
+    bytes32 internal constant GRANT_MSG = keccak256("GRS.grant");
+    uint256 internal constant GRANT_MSG_LEN = 224;
 
     /// @dev Fallback lzReceive gas when `peerLzReceiveBudget[eid].gas == 0` (typical EVM peer).
     uint128 public constant DEFAULT_LZ_RECEIVE_GAS = 200_000;
@@ -42,7 +45,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
 
     bool public immutable home;
     address public proprietor;
-    address public veGRS;
+    /// @notice Unreleased vesting GRS locked in this contract (not TokenSales float).
+    uint256 public vestingLocked;
     mapping(Bucket bucket => uint256) public spent;
     /// @notice Per-destination lzReceive budget used by `setPeer` defaults. `gas == 0` → fall back
     ///         to `DEFAULT_LZ_RECEIVE_GAS` / `value = 0`. Non-EVM chains (Solana, Aptos, …) set `value`.
@@ -82,12 +86,6 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         emit ProprietorSet(proprietor_);
     }
 
-    function setVeGRS(address veGRS_) public onlyOwner {
-        if (!home) revert NotHome();
-        veGRS = veGRS_;
-        emit VeGRSSet(veGRS_);
-    }
-
     /// @notice Set lzReceive gas/value used when `setPeer` installs default enforcedOptions.
     ///         `gas == 0` clears the entry (EVM fallback). If the peer is already wired, options refresh.
     function setPeerLzReceiveBudget(uint32 eid, uint128 gas, uint128 value) public onlyOwner {
@@ -102,7 +100,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         }
     }
 
-    /// @notice Home: append a sale. Id is `saleCount() + 1`. `asset = 0` is native ETH. `recipient = 0`
+    /// @notice Home: append a sale. Id is `_sales.length + 1`. `asset = 0` is native ETH. `recipient = 0`
     ///         pays `owner()` at buy. `recipient` is 32 bytes (EVM address left-padded; Solana pubkey as-is).
     ///         `dstEid == 0` is local only (`msg.value` must be 0). Else burns `grsAmount` from TokenSales
     ///         inventory and LZ-publishes so the spoke mints that GRS into escrow. The home row is
@@ -117,10 +115,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (!home) revert NotHome();
         if (dstEid == 0) {
             if (msg.value != 0) revert InvalidPayment();
+            _requireFreeInventory(grsAmount);
         } else {
             uint256 sendable = _removeDust(grsAmount);
             if (sendable != grsAmount) revert IOFT.SlippageExceeded(sendable, grsAmount);
             if (grsAmount != 0) {
+                _requireFreeInventory(grsAmount);
                 _takeBucket(Bucket.TokenSales, grsAmount);
                 _debit(address(this), grsAmount, grsAmount, dstEid);
             }
@@ -148,8 +148,9 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
 
     /// @notice Assign `amount` from `bucket`. Instant if `cliffSeconds` and `durationSeconds` are 0
     ///         (`vestingId = 0`). `dstEid == 0` pays on home (`msg.value` must be 0; `to` is an EVM
-    ///         address). Else instant only: OFT-send inventory to `to` on that chain (`bytes32`:
-    ///         Solana pubkey as-is, EVM address left-padded).
+    ///         address). Else: instant OFT-sends to `to`, or (non-zero schedule) burns inventory and
+    ///         LZ-publishes a grant so the spoke opens a local vest (`vestingId = 0` on home; spoke
+    ///         id is local). `to` is `bytes32` (Solana pubkey as-is, EVM address left-padded).
     function grant(
         Bucket bucket,
         bytes32 to,
@@ -162,10 +163,23 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return _grant(bucket, to, amount, start, cliffSeconds, durationSeconds, dstEid);
     }
 
-    /// @notice Native LZ fee for `grant(..., dstEid)`. `dstEid == 0` is 0.
-    function quoteGrant(bytes32 to, uint256 amount, uint32 dstEid) public view returns (uint256 nativeFee) {
+    /// @notice Native LZ fee for `grant(..., dstEid)`. `dstEid == 0` is 0. Instant quotes OFT send;
+    ///         scheduled grants quote the packed `GRS.grant` message.
+    function quoteGrant(
+        bytes32 to,
+        uint256 amount,
+        uint64 start,
+        uint64 cliffSeconds,
+        uint64 durationSeconds,
+        Bucket bucket,
+        uint32 dstEid
+    ) public view returns (uint256 nativeFee) {
         if (dstEid == 0) return 0;
-        nativeFee = quoteBridge(dstEid, to, amount);
+        if (cliffSeconds == 0 && durationSeconds == 0) {
+            return quoteBridge(dstEid, to, amount);
+        }
+        nativeFee = _quote(dstEid, _encodeGrant(to, amount, start, cliffSeconds, durationSeconds, bucket), _saleOptions(dstEid), false)
+            .nativeFee;
     }
 
     function bridge(uint32 dstEid, bytes32 to, uint256 amountLD) public payable {
@@ -182,6 +196,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     function buy(uint256 id, uint256 amount, address to) public payable returns (uint256 cost) {
         if (to == address(0)) revert InvalidRecipient();
         cost = previewBuy(id, amount);
+        _requireFreeInventory(amount);
         Sale storage s = _sales[id - 1];
         s.grsAmount -= amount;
         s.assetAmount -= cost;
@@ -219,6 +234,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (amount == 0) revert NothingToRelease();
         Vesting storage v = _vesting(id);
         v.released += amount;
+        vestingLocked -= amount;
         _transfer(address(this), v.beneficiary, amount);
         emit Released(id, v.beneficiary, amount);
     }
@@ -235,7 +251,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             (uint32 cliffMonths, uint32 linearMonths) = scheduleOf(b);
             uint256 cap = capOf(b);
             uint256 used = spent[b];
-            uint256 left = b == Bucket.TokenSales ? balanceOf(address(this)) : cap - used;
+            uint256 left = b == Bucket.TokenSales ? _freeInventory() : cap - used;
             listed[i] = Allocation({
                 bucket: b,
                 cap: cap,
@@ -248,16 +264,13 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         }
     }
 
-    function vestingCount() public view returns (uint256) {
-        return _vestings.length;
-    }
-
     /// @notice Page of vestings. `offset` is 0-based into the array (id `offset + 1`).
+    ///         Reverts `UnknownVesting` if `offset >=` book length; `ZeroAmount` if `limit == 0`.
+    ///         A short page (length `< limit`) means the end of the book — there is no `vestingCount`.
     function getVestings(uint256 offset, uint256 limit) public view returns (Vesting[] memory listed) {
         uint256 n = _vestings.length;
-        if (offset >= n || limit == 0) {
-            return listed;
-        }
+        if (limit == 0) revert ZeroAmount();
+        if (offset >= n) revert UnknownVesting();
         uint256 end = offset + limit;
         if (end < offset || end > n) end = n;
         uint256 len = end - offset;
@@ -268,11 +281,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     /// @notice Page of sales. `offset` is 0-based into the array (id `offset + 1`).
+    ///         Reverts `UnknownSale` if `offset >=` book length; `ZeroAmount` if `limit == 0`.
+    ///         A short page (length `< limit`) means the end of the book — there is no `saleCount`.
     function getSales(uint256 offset, uint256 limit) public view returns (Sale[] memory listed) {
         uint256 n = _sales.length;
-        if (offset >= n || limit == 0) {
-            return listed;
-        }
+        if (limit == 0) revert ZeroAmount();
+        if (offset >= n) revert UnknownSale();
         uint256 end = offset + limit;
         if (end < offset || end > n) end = n;
         uint256 len = end - offset;
@@ -296,8 +310,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function capOf(Bucket bucket) public pure returns (uint256) {
-        // TokenSales is uncapped: buybacks / recycled GRS can re-enter the book. Other rows keep
-        // the genesis allocation table (sum of finite caps = 850M; TokenSales is open-ended).
+        // TokenSales uncapped (buybacks re-enter). Finite genesis rows sum to 850M; Holder = 0.
         if (bucket == Bucket.TokenSales) return type(uint256).max;
         if (bucket == Bucket.PreSeed) return 50_000_000e18;
         if (bucket == Bucket.RevenueShare) return 150_000_000e18;
@@ -309,46 +322,30 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (bucket == Bucket.LongTermReserve) return 150_000_000e18;
         if (bucket == Bucket.Audits) return 30_000_000e18;
         if (bucket == Bucket.Legal) return 20_000_000e18;
-        return 0; // Holder — not a cap-table row
+        return 0;
     }
 
     function gateOf(Bucket bucket) public pure returns (Gate) {
-        if (bucket == Bucket.TokenSales) return Gate.Instant;
-        if (
-            bucket == Bucket.PreSeed
-            || bucket == Bucket.CoreTeam
-            || bucket == Bucket.Advisors
-        ) {
-            return Gate.Linear;
-        }
-        if (
-            bucket == Bucket.RevenueShare
-            || bucket == Bucket.Airdrops
-            || bucket == Bucket.LpMm
-            || bucket == Bucket.GrowthFund
-            || bucket == Bucket.LongTermReserve
-            || bucket == Bucket.Audits
-            || bucket == Bucket.Legal
-        ) {
-            return Gate.Proprietary;
-        }
-        if (bucket == Bucket.Holder) return Gate.Linear;
-        return Gate.Instant;
+        uint8 i = uint8(bucket);
+        // PreSeed(1), CoreTeam(4), Advisors(5), Holder(11) → Linear; TokenSales(0) → Instant; else Proprietary
+        if (i == 0) return Gate.Instant;
+        if (i == 1 || i == 4 || i == 5 || i == 11) return Gate.Linear;
+        return Gate.Proprietary;
     }
 
     /// @notice Default cliff / linear months from cap-table `grs.svg`. Delegate may still pick other
     ///         `grant` timestamps; proprietary rows have 0/0 (release is gated, not calendar).
     function scheduleOf(Bucket bucket) public pure returns (uint32 cliffMonths, uint32 linearMonths) {
-        if (bucket == Bucket.PreSeed) return (0, 24);
-        if (bucket == Bucket.CoreTeam) return (12, 60);
-        if (bucket == Bucket.Advisors) return (6, 66);
-        if (bucket == Bucket.Airdrops) return (0, 67);
-        return (0, 0);
+        uint8 i = uint8(bucket);
+        if (i == 1) return (0, 24); // PreSeed
+        if (i == 3) return (0, 67); // Airdrops
+        if (i == 4) return (12, 60); // CoreTeam
+        if (i == 5) return (6, 66); // Advisors
     }
 
     function remaining(Bucket bucket) public view returns (uint256) {
-        // TokenSales is uncapped; surface contract inventory (genesis float + buybacks) as remaining.
-        if (bucket == Bucket.TokenSales) return balanceOf(address(this));
+        // TokenSales: sellable float = contract balance minus unreleased vesting lockbox.
+        if (bucket == Bucket.TokenSales) return _freeInventory();
         return capOf(bucket) - spent[bucket];
     }
 
@@ -365,14 +362,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return due > v.released ? due - v.released : 0;
     }
 
-    function saleCount() public view returns (uint256) {
-        return _sales.length;
-    }
-
-
-    /// @notice Asset units due for `grsAmount` GRS from remaining `assetAmount`. Buying the whole
-    ///         remainder costs exactly `assetAmount`; a partial fill is `floor(grsAmount × assetAmount / remaining)`.
     function previewBuy(uint256 id, uint256 grsAmount) public view returns (uint256 cost) {
+        _requireFreeInventory(grsAmount);
         cost = _quoteCost(_saleAt(id), grsAmount);
     }
 
@@ -382,6 +373,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
 
     function _transferOwnership(address newOwner) internal override(Ownable, Ownable2Step) {
         Ownable2Step._transferOwnership(newOwner);
+        // Keep LayerZero endpoint delegate in lockstep with Ownable after acceptOwnership.
+        // Skip during construction: Ownable runs before OAppCore assigns `endpoint` (OAppCore
+        // already calls endpoint.setDelegate(delegate) once the endpoint is live).
+        if (newOwner != address(0) && address(endpoint) != address(0)) {
+            endpoint.setDelegate(newOwner);
+        }
     }
 
     function _lzReceive(
@@ -394,11 +391,33 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (_isSaleMessage(message)) {
             if (home) revert NotSpoke();
             (uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient) = _decodeSale(message);
+            // id == 0 is the OFT-compose forgery path (append + remint); home always publishes id ≥ 1.
+            if (id == 0) revert UnknownSale();
             uint256 previous = (id > 0 && id <= _sales.length) ? _sales[id - 1].grsAmount : 0;
             _upsertSale(id, asset, assetAmount, grsAmount, recipient, true);
             if (grsAmount != 0 && previous == 0) {
                 _credit(address(this), grsAmount, origin.srcEid);
             }
+            return;
+        }
+        if (_isGrantMessage(message)) {
+            if (home) revert NotSpoke();
+            (
+                bytes32 to,
+                uint256 amount,
+                uint64 start,
+                uint64 cliffSeconds,
+                uint64 durationSeconds,
+                Bucket bucket
+            ) = _decodeGrant(message);
+            if (cliffSeconds == 0 && durationSeconds == 0) revert InvalidSchedule();
+            address payee = _evm(to);
+            if (amount != 0) {
+                _credit(address(this), amount, origin.srcEid);
+            }
+            uint256 vestingId =
+                _openVesting(bucket, address(this), payee, amount, start, cliffSeconds, durationSeconds);
+            emit Granted(bucket, to, amount, vestingId);
             return;
         }
         super._lzReceive(origin, guid, message, executor, extraData);
@@ -408,8 +427,26 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return this.combineOptions(dstEid, SEND, "");
     }
 
+    /// @dev Ban OFT compose and magic `to` so public `send` cannot forge `GRS.sale` / `GRS.grant`
+    ///      packets (length+prefix collision with composed OFT framing). Use `bridge` for OFT transfers;
+    ///      custom payloads go through `_lzSend` only from `sale` / `_grant`.
+    function _buildMsgAndOptions(SendParam calldata _sendParam, uint256 _amountLD)
+        internal
+        view
+        override
+        returns (bytes memory message, bytes memory options)
+    {
+        if (_sendParam.composeMsg.length != 0) revert ComposeDisabled();
+        if (_sendParam.to == SALE_MSG || _sendParam.to == GRANT_MSG) revert InvalidRecipient();
+        return super._buildMsgAndOptions(_sendParam, _amountLD);
+    }
+
     function _isSaleMessage(bytes calldata message) internal pure returns (bool) {
         return message.length == SALE_MSG_LEN && bytes32(message[0:32]) == SALE_MSG;
+    }
+
+    function _isGrantMessage(bytes calldata message) internal pure returns (bool) {
+        return message.length == GRANT_MSG_LEN && bytes32(message[0:32]) == GRANT_MSG;
     }
 
     function _encodeSale(uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
@@ -420,6 +457,31 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return abi.encodePacked(SALE_MSG, id, asset, assetAmount, uint256(_toSD(grsAmount)), recipient);
     }
 
+    function _encodeGrant(
+        bytes32 to,
+        uint256 amount,
+        uint64 start,
+        uint64 cliffSeconds,
+        uint64 durationSeconds,
+        Bucket bucket
+    ) internal view returns (bytes memory) {
+        return abi.encodePacked(
+            GRANT_MSG,
+            to,
+            uint256(_toSD(amount)),
+            uint256(start),
+            uint256(cliffSeconds),
+            uint256(durationSeconds),
+            uint256(uint8(bucket))
+        );
+    }
+
+    function _amountFromShared(bytes32 word) internal view returns (uint256) {
+        uint256 shared = uint256(word);
+        if (shared > type(uint64).max) revert CapExceeded();
+        return _toLD(uint64(shared));
+    }
+
     function _decodeSale(bytes calldata message)
         internal
         view
@@ -428,10 +490,30 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         id = uint256(bytes32(message[32:64]));
         asset = bytes32(message[64:96]);
         assetAmount = uint256(bytes32(message[96:128]));
-        uint256 shared = uint256(bytes32(message[128:160]));
-        if (shared > type(uint64).max) revert CapExceeded();
-        grsAmount = _toLD(uint64(shared));
+        grsAmount = _amountFromShared(bytes32(message[128:160]));
         recipient = bytes32(message[160:192]);
+    }
+
+    function _decodeGrant(bytes calldata message)
+        internal
+        view
+        returns (
+            bytes32 to,
+            uint256 amount,
+            uint64 start,
+            uint64 cliffSeconds,
+            uint64 durationSeconds,
+            Bucket bucket
+        )
+    {
+        to = bytes32(message[32:64]);
+        amount = _amountFromShared(bytes32(message[64:96]));
+        start = uint64(uint256(bytes32(message[96:128])));
+        cliffSeconds = uint64(uint256(bytes32(message[128:160])));
+        durationSeconds = uint64(uint256(bytes32(message[160:192])));
+        uint256 bucketRaw = uint256(bytes32(message[192:224]));
+        if (bucketRaw > uint8(Bucket.Holder)) revert InvalidSchedule();
+        bucket = Bucket(uint8(bucketRaw));
     }
 
     function _saleAt(uint256 id) internal view returns (Sale storage s) {
@@ -516,6 +598,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (dstEid == 0) {
             if (msg.value != 0) revert InvalidPayment();
             address payee = _evm(to);
+            _requireFreeInventory(amount);
             _takeBucket(bucket, amount);
             if (cliffSeconds == 0 && durationSeconds == 0) {
                 _transfer(address(this), payee, amount);
@@ -527,12 +610,25 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             return vestingId;
         }
 
-        if (cliffSeconds != 0 || durationSeconds != 0) revert InvalidSchedule();
         uint256 sendable = _removeDust(amount);
         if (sendable != amount) revert IOFT.SlippageExceeded(sendable, amount);
+        _requireFreeInventory(amount);
         _takeBucket(bucket, amount);
-        _bridgeFrom(address(this), dstEid, to, amount);
+
+        if (cliffSeconds == 0 && durationSeconds == 0) {
+            _bridgeFrom(address(this), dstEid, to, amount);
+            emit Granted(bucket, to, amount, 0);
+            return 0;
+        }
+
+        _debit(address(this), amount, amount, dstEid);
+        bytes memory message = _encodeGrant(to, amount, start, cliffSeconds, durationSeconds, bucket);
+        bytes memory options = _saleOptions(dstEid);
+        address inspector = msgInspector;
+        if (inspector != address(0)) IOAppMsgInspector(inspector).inspect(message, options);
+        _lzSend(dstEid, message, options, MessagingFee({nativeFee: msg.value, lzTokenFee: 0}), msg.sender);
         emit Granted(bucket, to, amount, 0);
+        return 0;
     }
 
     function _bridgeFrom(address from, uint32 dstEid, bytes32 to, uint256 amountLD) internal {
@@ -555,7 +651,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         view
         returns (SendParam memory param)
     {
-        if (to == bytes32(0)) revert InvalidRecipient();
+        if (to == bytes32(0) || to == SALE_MSG || to == GRANT_MSG) revert InvalidRecipient();
         uint256 amount = _removeDust(amountLD);
         if (amount == 0) revert IOFT.SlippageExceeded(0, amountLD);
         param = SendParam({
@@ -595,6 +691,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (cliffEnd < start_ || end_ < cliffEnd) revert InvalidSchedule();
 
         vestingId = _vestings.length + 1;
+        vestingLocked += amount;
         _vestings.push(
             Vesting({
                 id: vestingId,
@@ -608,6 +705,17 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
                 end: end_
             })
         );
+    }
+
+    /// @dev Sellable inventory: contract GRS balance minus unreleased vesting lockbox.
+    function _freeInventory() internal view returns (uint256) {
+        uint256 bal = balanceOf(address(this));
+        uint256 locked = vestingLocked;
+        return bal > locked ? bal - locked : 0;
+    }
+
+    function _requireFreeInventory(uint256 amount) internal view {
+        if (amount > _freeInventory()) revert InsufficientInventory();
     }
 
     function _setPeer(uint32 eid, bytes32 peer) internal override {
