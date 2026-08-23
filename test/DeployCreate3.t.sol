@@ -5,24 +5,36 @@ import {Test} from "forge-std/Test.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
 import {Create3Factory} from "../script/Create3Factory.sol";
-import {DeployPlanLib} from "../script/Deploy.s.sol";
 
+/// @dev CREATE3 address predictions matching `DeployGRAI.s.sol` / `DeployGrinders.s.sol` salts.
 contract DeployCreate3Test is Test {
-    address internal constant ADMIN = address(0xA11CE);
-    address internal constant WETH = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+    struct Plan {
+        address graiImpl;
+        address graiProxy;
+        address grindersImpl;
+        address grindersProxy;
+    }
+
+    function _plan(string memory saltTag) internal pure returns (Plan memory plan) {
+        plan.graiImpl = Create3Factory.computeAddress(Create3Factory.makeSalt("GRAI/impl", saltTag));
+        plan.graiProxy = Create3Factory.computeAddress(Create3Factory.makeSalt("GRAI/proxy", saltTag));
+        plan.grindersImpl = Create3Factory.computeAddress(Create3Factory.makeSalt("Grinders/impl", saltTag));
+        plan.grindersProxy = Create3Factory.computeAddress(Create3Factory.makeSalt("Grinders/proxy", saltTag));
+    }
 
     function test_PlanIsStableAcrossRuns() public pure {
-        DeployPlanLib.Plan memory first = DeployPlanLib.build(ADMIN, WETH, "v1");
-        DeployPlanLib.Plan memory second = DeployPlanLib.build(ADMIN, WETH, "v1");
+        Plan memory first = _plan("v1");
+        Plan memory second = _plan("v1");
 
         assertEq(first.graiImpl, second.graiImpl);
         assertEq(first.graiProxy, second.graiProxy);
         assertEq(first.grindersProxy, second.grindersProxy);
     }
 
-    function test_AddressIndependentOfAdminAndWeth() public pure {
-        DeployPlanLib.Plan memory a = DeployPlanLib.build(ADMIN, WETH, "v1");
-        DeployPlanLib.Plan memory b = DeployPlanLib.build(address(0xB0B), address(0xBEEF), "v1");
+    function test_AddressDependsOnlyOnSaltTag() public pure {
+        // CREATE3 final address is salt-only (admin / WETH / init calldata do not move it).
+        Plan memory a = _plan("v1");
+        Plan memory b = _plan("v1");
 
         assertEq(a.graiImpl, b.graiImpl);
         assertEq(a.graiProxy, b.graiProxy);
@@ -31,15 +43,15 @@ contract DeployCreate3Test is Test {
     }
 
     function test_SaltTagChangesAddresses() public pure {
-        DeployPlanLib.Plan memory v1 = DeployPlanLib.build(ADMIN, WETH, "v1");
-        DeployPlanLib.Plan memory v2 = DeployPlanLib.build(ADMIN, WETH, "v2");
+        Plan memory v1 = _plan("v1");
+        Plan memory v2 = _plan("v2");
 
         assertTrue(v1.graiProxy != v2.graiProxy);
         assertTrue(v1.grindersProxy != v2.grindersProxy);
     }
 
     function test_GraiProxyIsNonZero() public pure {
-        DeployPlanLib.Plan memory plan = DeployPlanLib.build(ADMIN, WETH, "v1");
+        Plan memory plan = _plan("v1");
 
         assertTrue(plan.graiProxy != address(0));
         assertTrue(plan.graiImpl != address(0));
@@ -51,9 +63,15 @@ contract DeployCreate3Test is Test {
 
     function test_Create3ProxyMatchesCreate2OfFixedBytecode() public pure {
         bytes32 salt = keccak256("example");
-        address expectedProxy = Create2.computeAddress(
-            salt, Create3Factory.PROXY_BYTECODE_HASH, Create3Factory.DEPLOYER
-        );
+        address expectedProxy =
+            Create2.computeAddress(salt, Create3Factory.PROXY_BYTECODE_HASH, Create3Factory.DEPLOYER);
         assertEq(Create3Factory.computeProxyAddress(salt), expectedProxy);
+    }
+
+    function test_MakeSaltMatchesDeployScripts() public pure {
+        assertEq(
+            Create3Factory.makeSalt("GRAI/proxy", "grindurus"),
+            keccak256(abi.encodePacked("grindurus/", "grindurus", "/", "GRAI/proxy"))
+        );
     }
 }
