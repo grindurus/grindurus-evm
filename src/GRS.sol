@@ -40,8 +40,11 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
 
     /// @dev Fallback lzReceive gas when `peerLzReceiveBudget[eid].gas == 0` (typical EVM peer).
     uint128 public constant DEFAULT_LZ_RECEIVE_GAS = 200_000;
-    /// @dev Seeded for Solana mainnet/devnet; Aptos / other non-EVM eids use `setPeerLzReceiveBudget`.
-    uint128 public constant DEFAULT_SOLANA_LZ_RECEIVE_VALUE = 2_039_280;
+    /// @dev Native lamports the Executor may spend on Solana `lz_receive` (ATA / escrow rent).
+    ///      GRS always `init_if_needed`s `sale_escrow` plus the recipient ATA — one token-account
+    ///      rent (2_039_280) is not enough; Executor then reverts `PostExecute` / `InsufficientBalance`
+    ///      and the whole atomic tx rolls back. Budget covers ~3 token accounts + headroom.
+    uint128 public constant DEFAULT_SOLANA_LZ_RECEIVE_VALUE = 10_000_000;
 
     bool public immutable home;
     address public proprietor;
