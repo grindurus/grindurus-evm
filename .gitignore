@@ -24,4 +24,8 @@ broadcast
 # Ignore libs
 lib/
 
+# Audit skill clones (install via scripts/install-audit-skills.sh)
+.cursor/skills/pashov-skills/
+.cursor/skills/trailofbits-skills/
+
 archive
