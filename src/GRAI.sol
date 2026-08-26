@@ -484,11 +484,11 @@ contract GRAI is
         uint256 claimable = positions[locker][asset].claimable;
         if (claimable == 0) return 0;
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
-          if (claimed > bal) claimed = bal;
-        if (claimed > reserved) claimed = reserved;
-        if (claimed == 0) return   uint256 bal = _balance(asset);
+        uint256 bal = _balance(asset);
         uint256 reserved = assets[asset].totalClaimable;
-    0;
+        if (claimed > bal) claimed = bal;
+        if (claimed > reserved) claimed = reserved;
+        if (claimed == 0) return 0;
         positions[locker][asset].claimable -= claimed;
         assets[asset].totalClaimable -= claimed;
         uint256 tip = (claimed * config.claimTipBps) / BPS;
