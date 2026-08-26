@@ -466,7 +466,9 @@ contract GRAI is
         return _claim(locker, asset, amount);
     }
 
-    /// @dev `type(uint256).max` claims the full accrued balance; otherwise claims `min(amount, claimable)`.
+    /// @dev `type(uint256).max` claims the full accrued balance; otherwise
+    ///      `min(amount, claimable, balance, totalClaimable)`. Cap vs balance / reserve covers
+    ///      MasterChef floor overhang (Σ per-locker floors can exceed reserved by a few wei).
     ///      Pays tip to `msg.sender`, remainder to `locker` (locker claim is not cut for affiliates).
     ///
     ///      Claim-time treasury income (allocation key = `claimed` share of the dividend slice):
@@ -482,6 +484,11 @@ contract GRAI is
         uint256 claimable = positions[locker][asset].claimable;
         if (claimable == 0) return 0;
         claimed = amount == type(uint256).max || amount >= claimable ? claimable : amount;
+          if (claimed > bal) claimed = bal;
+        if (claimed > reserved) claimed = reserved;
+        if (claimed == 0) return   uint256 bal = _balance(asset);
+        uint256 reserved = assets[asset].totalClaimable;
+    0;
         positions[locker][asset].claimable -= claimed;
         assets[asset].totalClaimable -= claimed;
         uint256 tip = (claimed * config.claimTipBps) / BPS;

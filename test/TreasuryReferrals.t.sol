@@ -346,11 +346,11 @@ contract TreasuryReferralsTest is GRAIFixture {
         uint256 aliceExpected = (aliceMinted * accFinal) / precision - (aliceMinted * accAtAliceBobLock) / precision;
         uint256 bobExpected = (bobMinted * accFinal) / precision - (bobMinted * accAtAliceBobLock) / precision;
         uint256 carolExpected = (carolMinted * accFinal) / precision - (carolMinted * accAtCarolLock) / precision;
-        uint256 claimedTotal = aliceExpected + bobExpected + carolExpected;
-        // Dust vs full 2×DIVIDEND: distribute may send 1 wei to treasury (not claimable),
-        // and per-locker floors may leave 1 wei in totalClaimable.
+        uint256 pendingTotal = aliceExpected + bobExpected + carolExpected;
         uint256 reservedTotal = claimableAfter2 - claimableBefore;
-        uint256 indexDust = reservedTotal - claimedTotal;
+        // Floor overhang: Σ pending can exceed reserved — claim pays min(pending, balance/reserve).
+        uint256 paidTotal = pendingTotal < reservedTotal ? pendingTotal : reservedTotal;
+        uint256 carolPaid = carolExpected - (pendingTotal > reservedTotal ? pendingTotal - reservedTotal : 0);
 
         uint256 aliceUsdcBefore = usdc.balanceOf(alice);
         uint256 bobUsdcBefore = usdc.balanceOf(bob);
@@ -366,21 +366,84 @@ contract TreasuryReferralsTest is GRAIFixture {
 
         assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, aliceExpected);
         assertEq(usdc.balanceOf(bob) - bobUsdcBefore, bobExpected);
-        assertEq(usdc.balanceOf(carol) - carolUsdcBefore, carolExpected);
+        assertEq(usdc.balanceOf(carol) - carolUsdcBefore, carolPaid);
         assertEq(aliceExpected, bobExpected);
-        assertGt(carolExpected, 0);
+        assertGt(carolPaid, 0);
+        assertLe(carolPaid, carolExpected);
         assertLt(carolExpected, aliceExpected);
         // Self-root: gross == claimed → beneficiar.
-        assertEq(usdc.balanceOf(beneficiar) - benBefore, claimedTotal);
+        assertEq(usdc.balanceOf(beneficiar) - benBefore, paidTotal);
         (uint256 aliceBook,,,) = treasury.lockerBooks(alice);
         (uint256 bobBook,,,) = treasury.lockerBooks(bob);
         (uint256 carolBook,,,) = treasury.lockerBooks(carol);
         assertEq(aliceBook - aliceBookBefore, aliceExpected);
         assertEq(bobBook - bobBookBefore, bobExpected);
-        assertEq(carolBook - carolBookBefore, carolExpected);
+        assertEq(carolBook - carolBookBefore, carolPaid);
         (,,, uint256 claimableLeft) = grai.assets(address(usdc));
-        assertEq(claimableLeft, claimableBefore + indexDust);
-        assertApproxEqAbs(reservedTotal, DIVIDEND * 2, 1);    }
+        assertEq(claimableLeft, claimableBefore + reservedTotal - paidTotal);
+        assertApproxEqAbs(reservedTotal, DIVIDEND * 2, 1);
+    }
+
+    /// @dev Same late-joiner path as Solana. On EVM the delayed-whale reserve usually leaves
+    ///      floor dust in `totalClaimable` (Σ pending ≤ reserved), so a natural overdraw does
+    ///      not appear. Force the Solana failure mode by removing 1 wei from the GRAI vault
+    ///      before claims: without `min(claimable, balance, totalClaimable)` the last transfer
+    ///      would revert; with the cap, Carol is shorted by 1 wei and keeps it on `claimable`.
+    function test_Claim_VaultShortfall_CapsLastClaimer() public {
+        uint256 depositAmount = 100e6;
+        uint256 precision = 1e18;
+
+        uint256 aliceBefore = grai.balanceOf(alice);
+        uint256 bobBefore = grai.balanceOf(bob);
+        _depositWithRef(alice, depositAmount, address(0));
+        _depositWithRef(bob, depositAmount, address(0));
+        uint256 aliceMinted = grai.balanceOf(alice) - aliceBefore;
+        uint256 bobMinted = grai.balanceOf(bob) - bobBefore;
+
+        (,, uint256 accAtAliceBobLock,) = grai.assets(address(usdc));
+        _lock(alice, aliceMinted);
+        _lock(bob, bobMinted);
+        _yield(YIELD);
+
+        uint256 carolBeforeGrai = grai.balanceOf(carol);
+        _depositWithRef(carol, depositAmount, address(0));
+        uint256 carolMinted = grai.balanceOf(carol) - carolBeforeGrai;
+        (,, uint256 accAtCarolLock,) = grai.assets(address(usdc));
+        _lock(carol, carolMinted);
+        _yield(YIELD);
+
+        (,, uint256 accFinal, uint256 reserved) = grai.assets(address(usdc));
+        uint256 alicePending =
+            (aliceMinted * accFinal) / precision - (aliceMinted * accAtAliceBobLock) / precision;
+        uint256 bobPending =
+            (bobMinted * accFinal) / precision - (bobMinted * accAtAliceBobLock) / precision;
+        uint256 carolPending =
+            (carolMinted * accFinal) / precision - (carolMinted * accAtCarolLock) / precision;
+        uint256 pendingTotal = alicePending + bobPending + carolPending;
+
+        assertEq(grai.previewClaim(alice, address(usdc), type(uint256).max), alicePending);
+        assertEq(grai.previewClaim(bob, address(usdc), type(uint256).max), bobPending);
+        assertEq(grai.previewClaim(carol, address(usdc), type(uint256).max), carolPending);
+        // Native EVM math for this path: dust stays in reserve (not Solana's +1 overhang).
+        assertLe(pendingTotal, reserved, "EVM late-joiner leaves dust in reserve");
+        assertEq(usdc.balanceOf(address(grai)), reserved);
+
+        // Force Solana's insufficient-funds condition: vault 1 wei below Σ pending.
+        deal(address(usdc), address(grai), pendingTotal - 1);
+
+        uint256 carolUsdcBefore = usdc.balanceOf(carol);
+        assertEq(_claimMax(alice), alicePending);
+        assertEq(_claimMax(bob), bobPending);
+        uint256 carolClaimed = _claimMax(carol);
+
+        assertEq(carolClaimed, carolPending - 1, "cap shorts last claimer by vault shortfall");
+        assertEq(usdc.balanceOf(carol) - carolUsdcBefore, carolPending - 1);
+        assertEq(grai.previewClaim(carol, address(usdc), type(uint256).max), 1);
+        assertEq(usdc.balanceOf(address(grai)), 0);
+        // Native reserve dust was never in the shorted vault; accounting keeps it.
+        (,,, uint256 claimableLeft) = grai.assets(address(usdc));
+        assertEq(claimableLeft, reserved + 1 - pendingTotal);
+    }
 
     /// @dev Mirrors Solana `Carol→Bob→Alice: stub bind, distribute, Alice self-root, claim affiliates`.
     function test_CarolBobAlice_StubBind_Dist_AliceSelfRoot_ClaimAffiliates() public {
@@ -627,9 +690,8 @@ contract TreasuryReferralsTest is GRAIFixture {
     }
 
     function _claimMax(address locker) internal returns (uint256 claimed) {
-        claimed = grai.previewClaim(locker, address(usdc), type(uint256).max);
         vm.prank(locker);
-        grai.claim(locker, address(usdc), type(uint256).max);
+        claimed = grai.claim(locker, address(usdc), type(uint256).max);
     }
 
     function _assertNode(address who, uint256 value, uint256 l1, uint256 l2) internal view {
