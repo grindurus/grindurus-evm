@@ -158,4 +158,34 @@ Installs:
 
 ---
 
+## Multi-agent addendum (2026-08-26)
+
+Parallel reviews: [access control](bc-5a046869-eb1f-52d6-8ea6-cbccced292df), [math/precision](bc-878b916d-e301-56bd-86ea-ee0884326631), [economic security](bc-038fbc83-7133-5ae3-bd42-713e83c11f2f). Execution-trace agent not included.
+
+### New high-signal items (beyond §Findings above)
+
+| Theme | Agents | Note |
+|-------|--------|------|
+| **Dividend `accShare` dust trap** | Math | Small harvests can bump `totalClaimable` while every locker floors to 0 claimable — blocks delist, strands wei |
+| **`setGrai` + fail-open `liquidation()`** | Access | Miswired `grai` lets permissionless sweeps run outside GRAI `REDEMPTION` |
+| **Initialize placeholders** | Access | GRAI/Grinders default `grinders`/`treasury`/`grai` to admin/EOA until rewired — deposit/sweep footgun |
+| **Uncapped `distribute` on custodians** | Economic | Principal can be labeled yield; `totalValue` unchanged → double liability |
+| **Poach unit mismatch** | Economic | `poachOf` is USD book; `poach` charges GRAI 1:1 — mispriced when supply ≠ book |
+| **Sticky treasury books after redeem** | Economic | Books survive full exit; poach asks can exceed live exposure |
+| **Heartbeat griefing** | Economic | Owner ops refresh `grinding()` and can block quorum liquidation |
+| **First-depositor inflation** | Math | Tiny seed + large second deposit mints almost all supply at stale `totalValue` |
+| **Quorum/bribe math split** | Math | `hasQuorum` strict product vs floored `voteBps` in `previewBribe` |
+
+### Confirmed cross-agent themes (already in report or leads)
+
+- LiFi stub, silent `liquidate` try/catch, CoW field gaps, treasury book-credit-before-payout
+- Orphan GRAI dilution, swap during liquidation, oracle spot/`getPriceUnsafe` trust
+- Admin trust: uncapped deallocate, split UUPS owners, NFT owner vs protocol admin roles
+
+### Overall conclusion
+
+No unprivileged Critical/High theft path was confirmed across agents. The strongest **new** actionable items are the dividend dust trap (math), deployment/wiring fail-open paths (access), and economic mismatches in poach/treasury/yield accounting. Most other hits are documented trust boundaries, keeper dependencies, or intentional governance economics.
+
+---
+
 > ⚠️ This review was performed by an AI assistant using Pashov + Trail of Bits skill workflows. AI analysis cannot verify complete absence of vulnerabilities and no guarantee of security is given. Team security reviews, bug bounty programs, and on-chain monitoring are strongly recommended. For a consultation regarding your projects' security, visit [https://www.pashov.com](https://www.pashov.com)
