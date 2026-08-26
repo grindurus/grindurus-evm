@@ -175,6 +175,14 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     /// @notice Linked GRAI core contract for liquidation-state checks and asset routing.
     IGRAI public grai;
 
+    /// @notice Last successful operational touch (`distribute` / `allocate` / `deallocate` / `heartbeat`).
+    /// @dev GRAI liquidation requires quorum and `!grinding()`. Keepers' sweeps do not check `grinding`.
+    uint48 public heartbeatAt;
+
+    /// @notice Inactivity window after `heartbeatAt` before Grinders is considered stale.
+    /// @dev Default `7 days`. Owner may set via `setGrindPeriod` (1–30 days).
+    uint32 public grindPeriod;
+
     /// @notice Registered custodian implementations by custody kind hash.
     mapping(bytes32 custodianKind => address) public custodianImplementations;
 
@@ -183,10 +191,6 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
 
     /// @notice Reverse index: registered custodian address => NFT id.
     mapping(address custodian => uint256) public custodianIds;
-
-    /// @notice Grinders-owner limb of GRAI 2-of-2 liquidation. Armed via `confirm`;
-    ///         required by every `liquidate` sweep; cleared by GRAI on `revive` (or ownership accept).
-    bool public confirmed;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -202,6 +206,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         __Ownable2Step_init();
         __UUPSUpgradeable_init();
         grai = IGRAI(grai_);
+        grindPeriod = uint32(7 days);
+        _heartbeat();
     }
 
     /// @notice Retarget the linked GRAI core. Call before `GRAI.setGrinders` when rewiring
@@ -212,26 +218,16 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         emit GraiTokenUpdate(grai_);
     }
 
-    /// @inheritdoc Ownable2StepUpgradeable
-    /// @dev Prior owner's liquidation arm must not survive handoff.
-    function acceptOwnership() public override {
-        super.acceptOwnership();
-        confirmed = false;
+    /// @notice Set the inactivity window for the liquidation heartbeat (1–30 days).
+    function setGrindPeriod(uint32 grindPeriod_) public onlyOwner {
+        if (grindPeriod_ < 1 days || grindPeriod_ > 30 days) revert InvalidGrindPeriod();
+        grindPeriod = grindPeriod_;
+        emit GrindPeriodUpdate(grindPeriod_);
     }
 
-    /// @notice Toggle the Grinders-owner limb of GRAI liquidation (arm / disarm).
-    /// @dev Arm stays set through open so keeper `liquidate` sweeps keep working; GRAI clears via
-    ///      `revive`.
-    function confirm() public onlyOwner {
-        confirmed = !confirmed;
-        emit Confirm(confirmed);
-    }
-
-    /// @notice Clear the liquidation arm when GRAI closes the cycle. Only linked GRAI.
-    function revive() public {
-        _onlyGrai();
-        confirmed = false;
-        emit Confirm(false);
+    /// @notice True while `block.timestamp <= heartbeatAt + grindPeriod`.
+    function grinding() public view returns (bool) {
+        return block.timestamp <= uint256(heartbeatAt) + grindPeriod;
     }
 
     /// @inheritdoc IGrinders
@@ -247,6 +243,13 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     receive() external payable {}
+
+    /// @notice Refresh the liquidation heartbeat without an allocate / deallocate / distribute.
+    /// @dev Only linked GRAI (e.g. on `revive`) so the fund restarts with a fresh window.
+    function heartbeat() public {
+        _onlyGrai();
+        _heartbeat();
+    }
 
     function set(bytes32 custodianKind, address implementation) public onlyOwner {
         if (implementation == address(0)) revert ZeroAddress();
@@ -318,6 +321,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         }
 
         emit Allocate(custodian, asset, amount);
+        _heartbeat();
     }
 
     /// @notice Pull `amount` of `asset` from a custodian back to this contract.
@@ -330,6 +334,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         ICustodian(payable(custodian)).deallocate(asset, amount);
 
         emit Deallocate(custodian, asset, amount);
+        _heartbeat();
     }
 
     /// @notice Forward custodian yield `amount` of `asset` to GRAI.distribute.
@@ -337,16 +342,17 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     function distribute(address custodian, address asset, uint256 yieldAmount) public onlyOwner {
         _requireCustodian(custodian);
         ICustodian(payable(custodian)).distribute(asset, yieldAmount);
+        _heartbeat();
     }
 
     /// @inheritdoc IGrinders
-    /// @dev Permissionless while `confirmed` **and** `liquidation()` (GRAI flips to REDEMPTION
-    ///      before its open-time sweeps). Pages custodians by registered id, pulls eth/base/quote
-    ///      into this contract, then forwards those amounts to GRAI. Per-custodian `try/catch` keeps
-    ///      earlier pulls if one sleeve reverts. Return amounts are trusted: only registered
-    ///      custodian wallets are iterated, under the Grinders NFT custody model.
+    /// @dev Permissionless while `liquidation()` (GRAI flips to REDEMPTION before its open-time
+    ///      sweeps). Does **not** check `grinding` — keepers must page freely after open. Pages
+    ///      custodians by registered id, pulls eth/base/quote into this contract, then forwards
+    ///      those amounts to GRAI. Per-custodian `try/catch` keeps earlier pulls if one sleeve
+    ///      reverts. Return amounts are trusted: only registered custodian wallets are iterated,
+    ///      under the Grinders NFT custody model.
     function liquidate(uint256 fromId, uint256 toId) public {
-        if (!confirmed) revert LiquidationNotConfirmed();
         if (!liquidation()) revert LiquidationNotOpen();
         address grai_ = address(grai);
         if (fromId >= toId) {
@@ -477,6 +483,11 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
 
     function _requireCustodian(address account) internal view {
         if (!isCustodian(account)) revert UnknownCustodian();
+    }
+
+    function _heartbeat() internal {
+        heartbeatAt = uint48(block.timestamp);
+        emit Heartbeat(heartbeatAt);
     }
 
     function _onlyGrai() internal view {

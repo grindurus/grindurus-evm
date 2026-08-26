@@ -127,8 +127,8 @@ contract GRAI is
         return OwnableUpgradeable.owner();
     }
 
-    /// @dev Disabled: owner is required for feeds / config / UUPS. Liquidation consent lives on
-    ///      `Grinders.confirmed` (`grinders.owner()`). Transfer via Ownable2Step instead.
+    /// @dev Disabled: owner is required for feeds / config / UUPS. Liquidation consent is
+    ///      quorum + Grinders heartbeat. Transfer via Ownable2Step instead.
     function renounceOwnership() public view override onlyOwner {
         revert OwnershipRenounceDisabled();
     }
@@ -651,15 +651,15 @@ contract GRAI is
     //////////////////// LIQUIDATE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev 2-of-2: vote quorum here **and** `Grinders.confirmed` inside `grinders.liquidate`
-    ///      (armed by `grinders.owner()` via `confirm`). Flip to `REDEMPTION` **before** sweeps so
-    ///      `Grinders.liquidate` can require `grai.liquidation()` (blocks premature GRINDING sweeps).
-    ///      Sweep reverts propagate and roll back the regime flip — open stays atomic. On open:
-    ///      orphan/dead GRAI (`balanceOf(this) − totalLocked`) → `msg.sender`, then sweep Grinders
-    ///      custodians + idle listed balances onto GRAI.
+    /// @dev Quorum here **and** Grinders stale (`!grinding()`). Flip to `REDEMPTION` **before**
+    ///      sweeps so `Grinders.liquidate` can require `grai.liquidation()` (blocks premature
+    ///      GRINDING sweeps). Sweep reverts propagate and roll back the regime flip — open stays
+    ///      atomic. On open: orphan/dead GRAI (`balanceOf(this) − totalLocked`) → `msg.sender`,
+    ///      then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() public nonReentrant {
         _requireRegime(Regime.GRINDING);
         if (!hasQuorum()) revert LiquidationNotReady();
+        if (grinders.grinding()) revert GrindersGrinding();
 
         address liquidator = msg.sender;
 
@@ -675,7 +675,7 @@ contract GRAI is
         liquidationAt = uint48(block.timestamp);
         emit RegimeChange(regime);
 
-        // Pull custodian inventories + Grinders idle into GRAI (gated by `confirmed` + regime).
+        // Pull custodian inventories + Grinders idle into GRAI (gated by regime only).
         // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
         grinders.liquidate(0, type(uint256).max);
         grinders.liquidate(0, 0);
@@ -800,7 +800,7 @@ contract GRAI is
         }
         regime = Regime.GRINDING;
         liquidationAt = 0;
-        grinders.revive();
+        grinders.heartbeat();
         emit RegimeChange(regime);
     }
 

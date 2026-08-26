@@ -84,7 +84,7 @@ distribute(asset, yieldAmount)                 // auction + dividend + treasury 
    ↓
 vote(graiAmount) / bribe(voter, graiAmount)    // liquidation quorum + dynamic bribe buyouts
    ↓
-liquidate()                                    // 2-of-2: quorum + grinders.confirmed (arm via grinders.owner)
+liquidate()                                    // quorum + Grinders inactive ≥ grindPeriod
    ↓
 Grinders.liquidate(…) + GRAI.redeem(…)         // sweep custodians; pro-rata redeem basket
    ↓
@@ -123,10 +123,10 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   voter gets book + ½ premium, other ½ → cuts. Discount regime: ask uses half the book−fullAsk gap,
   other half → cuts. Par: full ask to voter. `settlementAsset` must **not** be fee-on-transfer: `_pay`
   must credit exactly `bribeAmount`; briber receives the **full** escrowed `graiAmount`
-- **liquidation open:** 2-of-2 — `hasQuorum()` on `GRAI.liquidate` **and** `grinders.confirmed()`
-  inside every `Grinders.liquidate`. `grinders.owner()` arms via `confirm()`. Open sweeps are not
-  try/caught — arm miss or hard sweep failure aborts open. Arm clears on `revive`. `setConfig` is
-  blocked while liquidation is open
+- **liquidation open:** `hasQuorum()` on `GRAI.liquidate` **and** Grinders inactive
+  (`!grinders.grinding()`, i.e. no `distribute` / `allocate` / `deallocate` for `grindPeriod`, default
+  7 days). Open sweeps are not try/caught — hard sweep failure aborts open. `setConfig` is blocked
+  while liquidation is open
 
 > Liquid wallet GRAI does not earn yield dividends — only **unvoted** lockers do. Auctioned yield is
 
@@ -135,8 +135,7 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
 Both `GRAI` and `Grinders` use OpenZeppelin `Ownable2StepUpgradeable`: a single `owner` gates admin
 ops and UUPS upgrades. Ownership transfer is two-step (`transferOwnership` → pending owner
 `acceptOwnership`). On `GRAI`, `renounceOwnership` is disabled (`OwnershipRenounceDisabled`) so
-ownership cannot be bricked. Grinders-owner liquidation consent clears on Grinders `acceptOwnership`.
-The oracle router is a base class of `GRAI` (not a
+ownership cannot be bricked. The oracle router is a base class of `GRAI` (not a
 separate contract), so feed management is `onlyOwner` — there is no separate oracle owner.
 
 ### Owner functions (`onlyOwner`)
@@ -154,8 +153,8 @@ separate contract), so feed management is `onlyOwner` — there is no separate o
 
 - `set` — register custodian implementation by kind
 - `mint` — deploy custodian proxy NFT
-- `allocate` — move reserve capital into a custodian
-- `confirm` — toggle arm for GRAI 2-of-2 open (`confirmed`)
+- `allocate` / `deallocate` / `distribute` / `heartbeat` — ops that refresh the implicit heartbeat (`heartbeatAt`)
+- `setGrindPeriod` — inactivity window before Grinders is stale (1–30 days; default 7)
 - `_authorizeUpgrade` — UUPS implementation swap
 
 Permissionless (after windows):
@@ -169,8 +168,9 @@ Permissionless (after windows):
 - `lock`, `unlock`, `claim`, `claimAll` (`claim` / `claimAll` stay open in liquidation)
 - `vote` (auto-locks wallet shortfall)
 - `bribe` (third-party or self buyout; blocked while liquidation is open)
-- `liquidate` — requires `hasQuorum()`; arm enforced in `grinders.liquidate` (atomic with open)
+- `liquidate` — requires `hasQuorum()` and `!grinders.grinding()`
 - `Grinders.liquidate` / `Grinders.liquidate(fromId, toId)` while GRAI liquidation is open
+  (no grinding-check — keepers page freely after open)
 - `Grinders.deallocate` — from the custodian
 - views: `previewDeposit`, `previewUnlock`, `previewClaim`, `previewClaimAll`,
   `previewBribe`, `previewRedeem`, `hasQuorum`, `getAssets`, `getEscrows`,
@@ -420,7 +420,8 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 - Hold GRAI + Grinders ownership behind a multisig / timelock (`Ownable2Step` on both):
   - **GRAI owner** — asset ops, wiring, upgrades (`setFeed`, `setConfig` / `setGrinders` /
     `setTreasury` / `setSettlementAsset`, UUPS)
-  - **Grinders owner** — custodians + liquidation arm (`confirm` / `confirmed`)
+  - **Grinders owner** — custodians + ops that refresh heartbeat (`allocate` / `deallocate` /
+    `distribute` / `heartbeat`); `setGrindPeriod`
   - **`revive`** — permissionless after redeem window (restarts the fund)
 - On L2s (Arbitrum, Base, Optimism), additionally check the Chainlink **L2 Sequencer Uptime
   Feed** before trusting a price, and apply a grace period after sequencer recovery:

@@ -79,11 +79,9 @@ contract GRAIRolesTest is Test {
         assertEq(grai.pendingOwner(), address(0));
     }
 
-    function test_AcceptOwnershipClearsConfirmed() public {
-        // Grinders owner arms liquidation while quorum is unmet (no votes).
-        assertFalse(grai.hasQuorum());
-        _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.confirm, ()));
-        assertTrue(grinders.confirmed());
+    function test_AcceptOwnershipDoesNotResetHeartbeat() public {
+        assertTrue(grinders.grinding());
+        uint48 before = grinders.heartbeatAt();
 
         address next = makeAddr("nextOwner");
         _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.transferOwnership, (next)));
@@ -91,7 +89,8 @@ contract GRAIRolesTest is Test {
         grinders.acceptOwnership();
 
         assertEq(grinders.owner(), next);
-        assertFalse(grinders.confirmed(), "prior Grinders-owner consent must not survive handoff");
+        assertEq(grinders.heartbeatAt(), before, "ownership handoff must not bump or clear heartbeat");
+        assertTrue(grinders.grinding());
     }
 
     function test_OwnerCannotRenounceOwnership() public {

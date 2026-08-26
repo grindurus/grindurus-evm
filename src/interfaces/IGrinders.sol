@@ -23,11 +23,11 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error CustodianNonexistent(uint256 custodianId);
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
-    error LiquidationNotConfirmed();
     error LiquidationNotOpen();
-    error NotGrai();
     error InvalidLiquidationRange(uint256 fromId, uint256 toId);
     error InvalidCustodianRange(uint256 fromId, uint256 toId);
+    error InvalidGrindPeriod();
+    error NotGrai();
 
     /// @notice View row for `getCustodiansData`.
     struct CustodianData {
@@ -43,7 +43,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     }
 
     event GraiTokenUpdate(address indexed graiToken);
-    event Confirm(bool confirmed);
+    event Heartbeat(uint48 timestamp);
+    event GrindPeriodUpdate(uint32 grindPeriod);
     event Liquidate(uint256 fromId, uint256 toId);
     event CustodianImplementationUpdated(bytes32 indexed custodianKind, address implementation);
     event CustodianDeployed(
@@ -63,19 +64,21 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
 
-    /// @notice Grinders-owner limb of GRAI 2-of-2 liquidation (armed via `confirm`).
-    function confirmed() external view returns (bool);
+    /// @notice Last successful operational touch (`distribute` / `allocate` / `deallocate`).
+    function heartbeatAt() external view returns (uint48);
+
+    /// @notice Inactivity window after `heartbeatAt` before Grinders is considered stale.
+    function grindPeriod() external view returns (uint32);
+
+    /// @notice True while `block.timestamp <= heartbeatAt + grindPeriod`.
+    function grinding() external view returns (bool);
 
     /// @notice Whether linked GRAI reports open liquidation. Empty `grai` code or missing /
     ///         reverting `liquidation()` → `true` (no external gate). Else GRAI's flag.
     function liquidation() external view returns (bool);
 
-    /// @notice Toggle liquidation arm. Only `owner()`.
-    ///         Arm stays set through open/sweeps until `revive` or ownership accept.
-    function confirm() external;
-
-    /// @notice Clear the arm when GRAI closes liquidation. Only callable by the linked GRAI.
-    function revive() external;
+    /// @notice Refresh the liquidation heartbeat (only linked GRAI, e.g. on `revive`).
+    function heartbeat() external;
 
     function balance(address asset) external view returns (uint256);
 
@@ -96,6 +99,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function set(bytes32 custodianKind, address implementation) external;
     /// @notice Retarget the linked GRAI core (liquidation checks / asset routing).
     function setGrai(address grai_) external;
+    /// @notice Set the inactivity window for the liquidation heartbeat (1–30 days).
+    function setGrindPeriod(uint32 grindPeriod_) external;
     function mint(bytes32 custodianKind, address owner_, address baseAsset_, address quoteAsset_)
         external
         returns (address custodian);
@@ -108,8 +113,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice Protocol owner forwards yield `amount` of `asset` from `custodian` to GRAI.
     function distribute(address custodian, address asset, uint256 amount) external;
 
-    /// @notice Permissionless while `confirmed` and `grai.liquidation()`: liquidate custodians
-    ///         `[fromId, toId)` and transfer swept amounts to GRAI. GRAI opens by flipping
-    ///         REDEMPTION before calling this; keepers re-page during consolidation under the same gates.
+    /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and
+    ///         transfer swept amounts to GRAI. Does not check `grinding`. GRAI opens by flipping
+    ///         REDEMPTION before calling this; keepers re-page during consolidation under the same gate.
     function liquidate(uint256 fromId, uint256 toId) external;
 }

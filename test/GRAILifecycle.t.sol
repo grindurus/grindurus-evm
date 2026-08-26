@@ -109,19 +109,18 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(grai.previewClaim(bob, address(usdc), type(uint256).max), 0);
         assertEq(grai.previewClaim(carol, address(usdc), type(uint256).max), 0);
 
-        // ── 5. Vote to quorum → owner opens liquidation ──
+        // ── 5. Vote to quorum → stale Grinders heartbeat → open liquidation ──
         _vote(alice, aliceGrai);
         _vote(bob, bobGrai);
         _vote(carol, carolGrai);
         assertTrue(grai.hasQuorum());
 
-        vm.prank(admin);
-        grinders.confirm();
+        vm.warp(block.timestamp + uint256(grinders.grindPeriod()) + 1);
+        assertFalse(grinders.grinding());
         vm.prank(admin);
         grai.liquidate();
         assertEq(uint8(grai.regime()), uint8(IGRAI.Regime.REDEMPTION));
         assertTrue(grai.liquidation());
-        assertTrue(grinders.confirmed(), "arm stays through open for keeper sweeps");
         assertEq(uint256(grai.liquidationAt()), block.timestamp);
 
         // ── 6. Redeem window (basket already swept onto GRAI at liquidate open) ──
@@ -173,7 +172,6 @@ contract GRAILifecycleTest is GRAIFixture {
         assertFalse(grai.liquidation());
         assertEq(uint256(grai.liquidationAt()), 0);
         assertEq(grai.totalValue(), 0);
-        assertFalse(grinders.confirmed());
     }
 
     /// @dev `deposit(..., lock_=true)` must call internal `_lock` — nested public `lock`

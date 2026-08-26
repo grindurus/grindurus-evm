@@ -241,17 +241,16 @@ abstract contract GRAIFixture is Test {
         token.mint(address(grinders), amount);
     }
 
-    /// @dev Arm Grinders-owner limb then open GRAI liquidation (requires quorum already).
+    /// @dev Warp past Grinders `grindPeriod` then open GRAI liquidation (requires quorum already).
     function _openLiquidation() internal {
         vm.startPrank(admin);
         if (address(grai.grinders()) != address(grinders)) {
             grai.setGrinders(address(grinders));
         }
-        if (!grinders.confirmed()) {
-            grinders.confirm();
-        }
-        grai.liquidate();
         vm.stopPrank();
+        vm.warp(block.timestamp + uint256(grinders.grindPeriod()) + 1);
+        vm.prank(admin);
+        grai.liquidate();
     }
 
     function _assertFirstVaultSnapshot(address expectedAsset, uint256 expectedSenior, uint256 expectedJunior)

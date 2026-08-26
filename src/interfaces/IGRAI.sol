@@ -29,6 +29,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error RedeemPeriodActive();
     error InvalidPeriod();
     error InvalidCuts();
+    error GrindersGrinding();
     error InvalidRange(uint256 fromId, uint256 toId);
     /// @notice `renounceOwnership` is disabled — owner is required for 2-of-2 liquidation consent.
     error OwnershipRenounceDisabled();
@@ -346,10 +347,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
     function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice Liquidation 2-of-2: open when `hasQuorum()`; Grinders-owner arm is enforced
-    ///         inside `grinders.liquidate` (`confirmed` + `liquidation()`). Anyone may call;
-    ///         sweep reverts abort open. On open: orphan/dead GRAI → `msg.sender`; flip to
-    ///         `REDEMPTION`; then sweep Grinders custodians + idle listed balances onto GRAI.
+    /// @notice Liquidation open when `hasQuorum()` and Grinders is stale (`!grinding()`).
+    ///         Anyone may call; sweep reverts abort open. On open: orphan/dead GRAI → `msg.sender`;
+    ///         flip to `REDEMPTION`; then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() external;
 
     /// @notice Permissionless close after `liquidationPeriod + redeemPeriod`: leftover balances →
