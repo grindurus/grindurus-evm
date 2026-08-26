@@ -160,7 +160,7 @@ Installs:
 
 ## Multi-agent addendum (2026-08-26)
 
-Parallel reviews: [access control](bc-5a046869-eb1f-52d6-8ea6-cbccced292df), [math/precision](bc-878b916d-e301-56bd-86ea-ee0884326631), [economic security](bc-038fbc83-7133-5ae3-bd42-713e83c11f2f). Execution-trace agent not included.
+Parallel reviews: [access control](bc-5a046869-eb1f-52d6-8ea6-cbccced292df), [math/precision](bc-878b916d-e301-56bd-86ea-ee0884326631), [economic security](bc-038fbc83-7133-5ae3-bd42-713e83c11f2f), [execution traces](bc-1bfacaf1-7590-5354-b1b3-39bd1fb6458b).
 
 ### New high-signal items (beyond §Findings above)
 
@@ -175,12 +175,16 @@ Parallel reviews: [access control](bc-5a046869-eb1f-52d6-8ea6-cbccced292df), [ma
 | **Heartbeat griefing** | Economic | Owner ops refresh `grinding()` and can block quorum liquidation |
 | **First-depositor inflation** | Math | Tiny seed + large second deposit mints almost all supply at stale `totalValue` |
 | **Quorum/bribe math split** | Math | `hasQuorum` strict product vs floored `voteBps` in `previewBribe` |
+| **Liquidate drain-before-forward** | Execution | Custodian drained in `try`, forward to GRAI can fail silently — assets stuck on Grinders |
+| **Claim CEI ordering** | Execution | `treasury.distribute` (external affiliate calls) runs before locker/tip payout |
 
 ### Confirmed cross-agent themes (already in report or leads)
 
 - LiFi stub, silent `liquidate` try/catch, CoW field gaps, treasury book-credit-before-payout
 - Orphan GRAI dilution, swap during liquidation, oracle spot/`getPriceUnsafe` trust
 - Admin trust: uncapped deallocate, split UUPS owners, NFT owner vs protocol admin roles
+- Reentrancy: GRAI paths guarded (`bribe` escrow-before-pay, `redeem` snapshot); Grinders/Treasury unguarded — hookable assets can interleave `liquidate` during claim/redeem
+- ETH/WETH fallbacks on redeem/Treasury can route funds to `beneficiar` or soft-fail unpaid shares
 
 ### Overall conclusion
 
