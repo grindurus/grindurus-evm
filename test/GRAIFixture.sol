@@ -201,8 +201,7 @@ abstract contract GRAIFixture is Test {
             cfg.quorumBps,
             cfg.unlockPenaltyBps,
             cfg.liquidationPeriod,
-            cfg.redeemPeriod,
-            cfg.maxVetoExtension
+            cfg.redeemPeriod
         ) = grai.config();
     }
 
@@ -228,7 +227,7 @@ abstract contract GRAIFixture is Test {
             | (uint256(cfg.revenueShareBps) << 32) | (uint256(cfg.claimTipBps) << 48)
             | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
             | (uint256(cfg.unlockPenaltyBps) << 96) | (uint256(cfg.liquidationPeriod) << 112)
-            | (uint256(cfg.redeemPeriod) << 144) | (uint256(cfg.maxVetoExtension) << 176);
+            | (uint256(cfg.redeemPeriod) << 144);
     }
 
     function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {

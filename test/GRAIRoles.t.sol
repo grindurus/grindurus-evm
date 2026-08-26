@@ -179,12 +179,6 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.REDEEM_PERIOD, uint256(uint32(3 days))))
         );
-        _exec(
-            ownerMultisig,
-            ownerSigner,
-            address(grai),
-            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.MAX_VETO_EXTENSION, uint256(uint32(14 days))))
-        );
 
         (
             uint16 dividendCutBps,
@@ -195,8 +189,7 @@ contract GRAIRolesTest is Test {
             uint16 quorum,
             uint16 unlockPenaltyBps,
             uint32 liquidationPeriod,
-            uint32 redeemPeriod,
-            uint32 maxVetoExtension
+            uint32 redeemPeriod
         ) = grai.config();
         // Yield cuts stay at initialize defaults (immutable via setConfig).
         assertEq(dividendCutBps, 5_000);
@@ -208,7 +201,6 @@ contract GRAIRolesTest is Test {
         assertEq(unlockPenaltyBps, 1_000);
         assertEq(liquidationPeriod, 12 hours);
         assertEq(redeemPeriod, 3 days);
-        assertEq(maxVetoExtension, 14 days);
     }
 
     function test_OwnerCanPatchClaimTipBps() public {
@@ -218,7 +210,7 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
         );
-        (,,, uint16 claimTipBps,,,,,,) = grai.config();
+        (,,, uint16 claimTipBps,,,,,) = grai.config();
         assertEq(claimTipBps, 50);
     }
 

@@ -50,8 +50,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         QUORUM,
         UNLOCK_PENALTY,
         LIQUIDATION_PERIOD,
-        REDEEM_PERIOD,
-        MAX_VETO_EXTENSION
+        REDEEM_PERIOD
     }
 
     struct AssetConfig {
@@ -119,10 +118,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 liquidationPeriod;
         /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `revive`.
         uint32 redeemPeriod;
-        /// @notice Hard cap: even an active Grinders cannot block exit longer than this after first quorum.
-        /// @dev Default 30 days. `GRAI.liquidate` allows open when `!grinders.alive()` **or**
-        ///      `block.timestamp >= quorumReachedAt + maxVetoExtension` (still requires live quorum).
-        uint32 maxVetoExtension;
     }
 
     event AssetUpdate(address indexed asset, bool listed);
@@ -161,8 +156,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 quorumBps,
             uint16 unlockPenaltyBps,
             uint32 liquidationPeriod,
-            uint32 redeemPeriod,
-            uint32 maxVetoExtension
+            uint32 redeemPeriod
         );
 
     function treasury() external view returns (ITreasury);
@@ -242,10 +236,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Timestamp when the current liquidation opened; zero while grinding.
     function liquidationAt() external view returns (uint48);
-
-    /// @notice Timestamp of the first `vote` that reached `hasQuorum()`; zero until then / after `revive`.
-    /// @dev Starts the `maxVetoExtension` hard-cap clock for holder exit vs an active Grinders.
-    function quorumReachedAt() external view returns (uint48);
 
     function assets(address asset)
         external
@@ -357,8 +347,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
     function bribe(address voter, uint256 graiAmount) external payable;
 
-    /// @notice Liquidation open when `hasQuorum()` and Grinders is stale (`!alive()`), or after the
-    ///         hard cap (`quorumReachedAt + maxVetoExtension`) even if Grinders is still active.
+    /// @notice Liquidation open when `hasQuorum()` and Grinders is stale (`!alive()`).
     ///         Anyone may call; sweep reverts abort open. On open: orphan/dead GRAI → `msg.sender`;
     ///         flip to `REDEMPTION`; then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() external;

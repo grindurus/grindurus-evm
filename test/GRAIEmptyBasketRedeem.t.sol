@@ -64,10 +64,7 @@ contract GRAIEmptyBasketRedeemTest is GRAIFixture {
         vm.prank(alice);
         grai.vote(graiOut);
 
-        // Skip alive gate via hard-cap path: quorum clock + max extension.
-        IGRAI.Config memory cfg = _readConfig();
-        vm.warp(block.timestamp + uint256(cfg.maxVetoExtension) + 1);
-
+        // Skip alive gate: Grinders is an EOA — `alive()` reverts before the body.
         vm.prank(admin);
         vm.expectRevert();
         grai.liquidate();

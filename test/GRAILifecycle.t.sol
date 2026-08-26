@@ -114,7 +114,6 @@ contract GRAILifecycleTest is GRAIFixture {
         _vote(bob, bobGrai);
         _vote(carol, carolGrai);
         assertTrue(grai.hasQuorum());
-        assertTrue(grai.quorumReachedAt() > 0);
 
         vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
         assertFalse(grinders.alive());
@@ -173,7 +172,6 @@ contract GRAILifecycleTest is GRAIFixture {
         assertFalse(grai.liquidation());
         assertEq(uint256(grai.liquidationAt()), 0);
         assertEq(grai.totalValue(), 0);
-        assertEq(grai.quorumReachedAt(), 0);
     }
 
     /// @dev `deposit(..., lock_=true)` must call internal `_lock` — nested public `lock`

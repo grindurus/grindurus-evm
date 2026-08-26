@@ -84,7 +84,7 @@ distribute(asset, yieldAmount)                 // auction + dividend + treasury 
    ↓
 vote(graiAmount) / bribe(voter, graiAmount)    // liquidation quorum + dynamic bribe buyouts
    ↓
-liquidate()                                    // quorum + Grinders inactive ≥ vetoPeriod (or hard cap)
+liquidate()                                    // quorum + Grinders inactive ≥ vetoPeriod
    ↓
 Grinders.liquidate(…) + GRAI.redeem(…)         // sweep custodians; pro-rata redeem basket
    ↓
@@ -125,9 +125,8 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   must credit exactly `bribeAmount`; briber receives the **full** escrowed `graiAmount`
 - **liquidation open:** `hasQuorum()` on `GRAI.liquidate` **and** Grinders inactive
   (`!grinders.alive()`, i.e. no `distribute` / `allocate` / `deallocate` for `vetoPeriod`, default
-  7 days). Hard cap: even an active Grinders cannot block exit longer than `maxVetoExtension`
-  (default 30 days) after first quorum (`quorumReachedAt`). Open sweeps are not try/caught —
-  hard sweep failure aborts open. `setConfig` is blocked while liquidation is open
+  7 days). Open sweeps are not try/caught — hard sweep failure aborts open. `setConfig` is blocked
+  while liquidation is open
 
 > Liquid wallet GRAI does not earn yield dividends — only **unvoted** lockers do. Auctioned yield is
 
@@ -143,7 +142,7 @@ separate contract), so feed management is `onlyOwner` — there is no separate o
 
 **GRAI**
 
-- `setConfig` — cuts, quorum, auction/liquidation/redeem/unlock timing, `maxVetoExtension` (blocked while liquidation open)
+- `setConfig` — cuts, quorum, auction/liquidation/redeem/unlock timing (blocked while liquidation open)
 - `setGrinders` — wire the Grinders yield pool (validates `grinders.grai() == this`)
 - `setTreasury` — protocol profit recipient (`Treasury`); blocked in liquidation
 - `setSettlementAsset` — bribe payment asset (must have a feed; non-FoT)
@@ -169,7 +168,7 @@ Permissionless (after windows):
 - `lock`, `unlock`, `claim`, `claimAll` (`claim` / `claimAll` stay open in liquidation)
 - `vote` (auto-locks wallet shortfall)
 - `bribe` (third-party or self buyout; blocked while liquidation is open)
-- `liquidate` — requires `hasQuorum()` and (`!grinders.alive()` or hard cap)
+- `liquidate` — requires `hasQuorum()` and `!grinders.alive()`
 - `Grinders.liquidate` / `Grinders.liquidate(fromId, toId)` while GRAI liquidation is open
   (no alive-check — keepers page freely after open)
 - `Grinders.deallocate` — from the custodian

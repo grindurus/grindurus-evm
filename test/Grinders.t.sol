@@ -160,43 +160,12 @@ contract GrindersTest is GRAIFixture {
         grinders.liquidate(0, 0);
     }
 
-    function test_GraiLiquidate_HardCapBypassesAlive() public {
+    function test_Revive_AfterStaleLiquidation() public {
         vm.prank(admin);
         grai.setGrinders(address(grinders));
         _deposit(alice, usdc, 100e6);
         vm.prank(alice);
         grai.vote(100e6);
-        uint48 reached = grai.quorumReachedAt();
-        assertTrue(reached > 0);
-        assertTrue(grinders.alive());
-
-        IGRAI.Config memory cfg = _readConfig();
-        // Keep Grinders alive by warping just under max extension, then bump via allocate.
-        vm.warp(uint256(reached) + uint256(cfg.maxVetoExtension) - 1 days);
-        _fundGrinders(usdc, 1e6);
-        vm.prank(admin);
-        address custody = grinders.mint(cowKind, grinder, address(usdc), address(weth));
-        vm.prank(admin);
-        grinders.allocate(custody, address(usdc), 1e6);
-        assertTrue(grinders.alive());
-
-        vm.expectRevert(IGRAI.GrindersActive.selector);
-        grai.liquidate();
-
-        vm.warp(uint256(reached) + uint256(cfg.maxVetoExtension));
-        assertTrue(grinders.alive(), "ops keep Grinders alive past hard cap clock");
-        vm.prank(admin);
-        grai.liquidate();
-        assertTrue(grai.liquidation());
-    }
-
-    function test_Revive_ClearsQuorumReachedAt() public {
-        vm.prank(admin);
-        grai.setGrinders(address(grinders));
-        _deposit(alice, usdc, 100e6);
-        vm.prank(alice);
-        grai.vote(100e6);
-        assertTrue(grai.quorumReachedAt() > 0);
 
         vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
         vm.prank(admin);
@@ -205,7 +174,6 @@ contract GrindersTest is GRAIFixture {
         IGRAI.Config memory cfg = _readConfig();
         vm.warp(block.timestamp + uint256(cfg.liquidationPeriod) + uint256(cfg.redeemPeriod));
         grai.revive();
-        assertEq(grai.quorumReachedAt(), 0);
         assertEq(uint8(grai.regime()), uint8(IGRAI.Regime.GRINDING));
     }
 
