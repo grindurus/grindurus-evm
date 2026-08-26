@@ -3,6 +3,7 @@ pragma solidity ^0.8.30;
 
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {Grinders} from "../src/Grinders.sol";
+import {IGRAI} from "../src/interfaces/IGRAI.sol";
 import {IGrinders} from "../src/interfaces/IGrinders.sol";
 import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
@@ -60,8 +61,7 @@ contract GrindersTest is GRAIFixture {
         grai.lock(100e6);
         vm.prank(alice);
         grai.vote(100e6);
-        vm.prank(admin);
-        grinders.confirm();
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
         vm.prank(admin);
         grai.liquidate();
 
@@ -72,20 +72,19 @@ contract GrindersTest is GRAIFixture {
         assertEq(weth.balanceOf(address(grai)), 2e18);
     }
 
-    function test_LiquidateIdleRevertsWhenNotArmed() public {
-        vm.expectRevert(IGrinders.LiquidationNotConfirmed.selector);
+    function test_LiquidateIdleRevertsWhenStillGrinding() public {
+        vm.expectRevert(IGrinders.LiquidationNotOpen.selector);
         grinders.liquidate(0, 0);
     }
 
-    function test_LiquidateIdleRevertsWhenArmedButStillGrinding() public {
+    function test_LiquidateIdleRevertsWhenStillGrindingEvenIfStale() public {
         vm.prank(admin);
         grai.setGrinders(address(grinders));
         _deposit(alice, usdc, 100e6);
         _fundGrinders(weth, 2e18);
 
-        vm.prank(admin);
-        grinders.confirm();
-        assertTrue(grinders.confirmed());
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
+        assertFalse(grinders.alive());
         assertFalse(grai.liquidation());
         assertFalse(grinders.liquidation());
 
@@ -101,6 +100,113 @@ contract GrindersTest is GRAIFixture {
         assertEq(weth.balanceOf(address(grinders)), grindersWethBefore);
         assertEq(usdc.balanceOf(address(grai)), graiUsdcBefore);
         assertEq(weth.balanceOf(address(grai)), graiWethBefore);
+    }
+
+    function test_Heartbeat_DistributeAllocateDeallocateBump_SetMintDoNot() public {
+        vm.startPrank(admin);
+        uint48 baseline = grinders.lastActiveAt();
+        address custodyWallet = grinders.mint(cowKind, grinder, address(usdc), address(weth));
+        assertEq(grinders.lastActiveAt(), baseline, "mint must not bump heartbeat");
+        assertTrue(grinders.alive());
+
+        skip(2 days);
+        grinders.set(cowKind, grinders.custodianImplementations(cowKind));
+        assertEq(grinders.lastActiveAt(), baseline, "set must not bump heartbeat");
+
+        skip(2 days);
+        grinders.mint(cowKind, bob, address(usdc), address(weth));
+        assertEq(grinders.lastActiveAt(), baseline, "second mint must not bump heartbeat");
+
+        usdc.mint(address(grinders), 50e6);
+        grinders.allocate(custodyWallet, address(usdc), 20e6);
+        uint48 afterAllocate = grinders.lastActiveAt();
+        assertGt(afterAllocate, baseline);
+
+        skip(2 days);
+        grinders.deallocate(custodyWallet, address(usdc), 5e6);
+        uint48 afterDeallocate = grinders.lastActiveAt();
+        assertGt(afterDeallocate, afterAllocate);
+
+        skip(2 days);
+        grinders.distribute(custodyWallet, address(usdc), 5e6);
+        uint48 afterDistribute = grinders.lastActiveAt();
+        assertGt(afterDistribute, afterDeallocate);
+        vm.stopPrank();
+
+        skip(uint256(grinders.vetoPeriod()) + 1);
+        assertFalse(grinders.alive());
+    }
+
+    function test_GraiLiquidate_RevertsWhileAlive_SucceedsWhenStale() public {
+        vm.prank(admin);
+        grai.setGrinders(address(grinders));
+        _deposit(alice, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(100e6);
+        assertTrue(grai.hasQuorum());
+        assertTrue(grinders.alive());
+
+        vm.expectRevert(IGRAI.GrindersActive.selector);
+        grai.liquidate();
+
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
+        assertFalse(grinders.alive());
+        vm.prank(admin);
+        grai.liquidate();
+        assertTrue(grai.liquidation());
+
+        // Keeper paging works without alive-check once REDEMPTION is open.
+        grinders.liquidate(0, type(uint256).max);
+        grinders.liquidate(0, 0);
+    }
+
+    function test_GraiLiquidate_HardCapBypassesAlive() public {
+        vm.prank(admin);
+        grai.setGrinders(address(grinders));
+        _deposit(alice, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(100e6);
+        uint48 reached = grai.quorumReachedAt();
+        assertTrue(reached > 0);
+        assertTrue(grinders.alive());
+
+        IGRAI.Config memory cfg = _readConfig();
+        // Keep Grinders alive by warping just under max extension, then bump via allocate.
+        vm.warp(uint256(reached) + uint256(cfg.maxVetoExtension) - 1 days);
+        _fundGrinders(usdc, 1e6);
+        vm.prank(admin);
+        address custody = grinders.mint(cowKind, grinder, address(usdc), address(weth));
+        vm.prank(admin);
+        grinders.allocate(custody, address(usdc), 1e6);
+        assertTrue(grinders.alive());
+
+        vm.expectRevert(IGRAI.GrindersActive.selector);
+        grai.liquidate();
+
+        vm.warp(uint256(reached) + uint256(cfg.maxVetoExtension));
+        assertTrue(grinders.alive(), "ops keep Grinders alive past hard cap clock");
+        vm.prank(admin);
+        grai.liquidate();
+        assertTrue(grai.liquidation());
+    }
+
+    function test_Revive_ClearsQuorumReachedAt() public {
+        vm.prank(admin);
+        grai.setGrinders(address(grinders));
+        _deposit(alice, usdc, 100e6);
+        vm.prank(alice);
+        grai.vote(100e6);
+        assertTrue(grai.quorumReachedAt() > 0);
+
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
+        vm.prank(admin);
+        grai.liquidate();
+
+        IGRAI.Config memory cfg = _readConfig();
+        vm.warp(block.timestamp + uint256(cfg.liquidationPeriod) + uint256(cfg.redeemPeriod));
+        grai.revive();
+        assertEq(grai.quorumReachedAt(), 0);
+        assertEq(uint8(grai.regime()), uint8(IGRAI.Regime.GRINDING));
     }
 
     function test_Liquidation_OpenWhenGraiHasNoCode() public {

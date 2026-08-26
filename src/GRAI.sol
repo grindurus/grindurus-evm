@@ -93,6 +93,10 @@ contract GRAI is
     /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
     Config public config;
 
+    /// @notice First time `hasQuorum()` became true after the last `revive` (or initialize).
+    /// @dev Starts `config.maxVetoExtension` hard cap vs an active Grinders. Cleared on `revive`.
+    uint48 public quorumReachedAt;
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
@@ -117,7 +121,8 @@ contract GRAI is
             bribePremiumBps: 2_00, // 2%
             unlockPenaltyBps: 1_00, // 1% on every unlock
             liquidationPeriod: uint32(24 hours),
-            redeemPeriod: uint32(7 days)
+            redeemPeriod: uint32(7 days),
+            maxVetoExtension: uint32(30 days)
         });
         _requireValidConfig(config);
     }
@@ -127,8 +132,8 @@ contract GRAI is
         return OwnableUpgradeable.owner();
     }
 
-    /// @dev Disabled: owner is required for feeds / config / UUPS. Liquidation consent lives on
-    ///      `Grinders.confirmed` (`grinders.owner()`). Transfer via Ownable2Step instead.
+    /// @dev Disabled: owner is required for feeds / config / UUPS. Liquidation consent is
+    ///      quorum + Grinders heartbeat (or hard cap). Transfer via Ownable2Step instead.
     function renounceOwnership() public view override onlyOwner {
         revert OwnershipRenounceDisabled();
     }
@@ -190,6 +195,8 @@ contract GRAI is
             cfg.liquidationPeriod = uint32(data);
         } else if (id == ConfigId.REDEEM_PERIOD) {
             cfg.redeemPeriod = uint32(data);
+        } else if (id == ConfigId.MAX_VETO_EXTENSION) {
+            cfg.maxVetoExtension = uint32(data);
         }
         // forge-lint: disable-end(unsafe-typecast)
 
@@ -556,6 +563,10 @@ contract GRAI is
         entry.votedAt = uint48(block.timestamp);
         _syncDividendDebts(voter);
 
+        if (quorumReachedAt == 0 && hasQuorum()) {
+            quorumReachedAt = uint48(block.timestamp);
+        }
+
         emit Vote(voter, graiAmount, totalVoted);
     }
 
@@ -651,15 +662,20 @@ contract GRAI is
     //////////////////// LIQUIDATE ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev 2-of-2: vote quorum here **and** `Grinders.confirmed` inside `grinders.liquidate`
-    ///      (armed by `grinders.owner()` via `confirm`). Flip to `REDEMPTION` **before** sweeps so
-    ///      `Grinders.liquidate` can require `grai.liquidation()` (blocks premature GRINDING sweeps).
-    ///      Sweep reverts propagate and roll back the regime flip — open stays atomic. On open:
-    ///      orphan/dead GRAI (`balanceOf(this) − totalLocked`) → `msg.sender`, then sweep Grinders
-    ///      custodians + idle listed balances onto GRAI.
+    /// @dev Quorum here **and** Grinders stale (`!alive()`), or hard cap after first quorum
+    ///      (`quorumReachedAt + maxVetoExtension`) even if Grinders is still active. Flip to
+    ///      `REDEMPTION` **before** sweeps so `Grinders.liquidate` can require `grai.liquidation()`
+    ///      (blocks premature GRINDING sweeps). Sweep reverts propagate and roll back the regime
+    ///      flip — open stays atomic. On open: orphan/dead GRAI (`balanceOf(this) − totalLocked`)
+    ///      → `msg.sender`, then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() public nonReentrant {
         _requireRegime(Regime.GRINDING);
         if (!hasQuorum()) revert LiquidationNotReady();
+
+        bool stale = !grinders.alive();
+        bool hardCap = quorumReachedAt > 0
+            && block.timestamp >= uint256(quorumReachedAt) + config.maxVetoExtension;
+        if (!stale && !hardCap) revert GrindersActive();
 
         address liquidator = msg.sender;
 
@@ -675,7 +691,7 @@ contract GRAI is
         liquidationAt = uint48(block.timestamp);
         emit RegimeChange(regime);
 
-        // Pull custodian inventories + Grinders idle into GRAI (gated by `confirmed` + regime).
+        // Pull custodian inventories + Grinders idle into GRAI (gated by regime only).
         // `toId` is capped to NFT supply inside Grinders; `(0,0)` sweeps idle listed balances.
         grinders.liquidate(0, type(uint256).max);
         grinders.liquidate(0, 0);
@@ -800,6 +816,7 @@ contract GRAI is
         }
         regime = Regime.GRINDING;
         liquidationAt = 0;
+        quorumReachedAt = 0;
         grinders.revive();
         emit RegimeChange(regime);
     }
@@ -849,6 +866,7 @@ contract GRAI is
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.dividendCutBps) + cfg.treasuryCutBps != BPS) revert InvalidCuts();
         if (cfg.liquidationPeriod == 0 || cfg.redeemPeriod == 0) revert InvalidPeriod();
+        if (cfg.maxVetoExtension == 0) revert InvalidPeriod();
     }
 
     /// @notice Contract balance of `asset` (`address(0)` = native ETH).

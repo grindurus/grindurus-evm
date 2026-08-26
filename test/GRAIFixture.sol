@@ -201,7 +201,8 @@ abstract contract GRAIFixture is Test {
             cfg.quorumBps,
             cfg.unlockPenaltyBps,
             cfg.liquidationPeriod,
-            cfg.redeemPeriod
+            cfg.redeemPeriod,
+            cfg.maxVetoExtension
         ) = grai.config();
     }
 
@@ -227,7 +228,7 @@ abstract contract GRAIFixture is Test {
             | (uint256(cfg.revenueShareBps) << 32) | (uint256(cfg.claimTipBps) << 48)
             | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
             | (uint256(cfg.unlockPenaltyBps) << 96) | (uint256(cfg.liquidationPeriod) << 112)
-            | (uint256(cfg.redeemPeriod) << 144);
+            | (uint256(cfg.redeemPeriod) << 144) | (uint256(cfg.maxVetoExtension) << 176);
     }
 
     function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {
@@ -241,17 +242,16 @@ abstract contract GRAIFixture is Test {
         token.mint(address(grinders), amount);
     }
 
-    /// @dev Arm Grinders-owner limb then open GRAI liquidation (requires quorum already).
+    /// @dev Warp past Grinders `vetoPeriod` then open GRAI liquidation (requires quorum already).
     function _openLiquidation() internal {
         vm.startPrank(admin);
         if (address(grai.grinders()) != address(grinders)) {
             grai.setGrinders(address(grinders));
         }
-        if (!grinders.confirmed()) {
-            grinders.confirm();
-        }
-        grai.liquidate();
         vm.stopPrank();
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
+        vm.prank(admin);
+        grai.liquidate();
     }
 
     function _assertFirstVaultSnapshot(address expectedAsset, uint256 expectedSenior, uint256 expectedJunior)

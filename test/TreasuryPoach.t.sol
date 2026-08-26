@@ -664,8 +664,7 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.vote(aliceGrai);
         assertTrue(grai.hasQuorum());
 
-        vm.prank(admin);
-        grinders.confirm();
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
         vm.prank(admin);
         grai.liquidate();
         assertTrue(grai.liquidation());
@@ -685,8 +684,7 @@ contract TreasuryPoachTest is GRAIFixture {
         vm.prank(alice);
         grai.vote(aliceGrai);
 
-        vm.prank(admin);
-        grinders.confirm();
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
         vm.prank(admin);
         grai.liquidate();
         assertTrue(grai.liquidation());
@@ -730,8 +728,7 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.vote(aliceGrai);
         assertTrue(grai.hasQuorum());
 
-        vm.prank(admin);
-        grinders.confirm();
+        vm.warp(block.timestamp + uint256(grinders.vetoPeriod()) + 1);
         vm.prank(admin);
         grai.liquidate();
         IGRAI.Config memory cfg = _readConfig();
