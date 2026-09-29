@@ -195,7 +195,7 @@ contract DeployGRS is Script {
             return 0;
         }
 
-        require(grs.homeAddress() == bytes32(0), "GRS not home");
+        require(grs.homeEid() == 0, "GRS not home");
         require(grs.owner() == vm.addr(pk), "PRIVATE_KEY is not GRS owner");
 
         vm.startBroadcast(pk);
@@ -232,7 +232,7 @@ contract DeployGRS is Script {
             return 0;
         }
 
-        require(grs.homeAddress() == bytes32(0), "GRS not home");
+        require(grs.homeEid() == 0, "GRS not home");
         require(grs.owner() == vm.addr(pk), "PRIVATE_KEY is not GRS owner");
 
         vm.startBroadcast(pk);
@@ -302,7 +302,7 @@ contract DeployGRS is Script {
             return 0;
         }
 
-        require(grs.homeAddress() == bytes32(0), "GRS not home");
+        require(grs.homeEid() == 0, "GRS not home");
         require(grs.owner() == vm.addr(pk), "PRIVATE_KEY is not GRS owner");
         require(grs.peers(dstEid) != bytes32(0), "Solana peer not set (setSolanaPeer)");
 

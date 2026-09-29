@@ -69,7 +69,7 @@ contract GRSTest is Test {
         assertEq(grs.symbol(), "GRS");
         assertEq(grs.decimals(), 18);
         assertEq(grs.sharedDecimals(), 6);
-        assertEq(grs.homeAddress(), bytes32(0));
+        assertEq(grs.homeAddress(), bytes32(uint256(uint160(address(grs)))));
         assertEq(grs.MAX_SUPPLY(), 1_000_000_000e18);
         assertEq(grs.totalSupply(), 1_000_000_000e18);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);

@@ -52,8 +52,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     uint32 public immutable homeEid;
 
     /// @notice Canonical home GRS as `bytes32` (`address` left-padded, or Solana pubkey as-is).
-    ///         `bytes32(0)` means **this** deployment is home (mints `MAX_SUPPLY`, home-only ops).
-    ///         Non-zero → spoke; value is the home peer wired in the constructor via `homeEid`.
+    ///         On home = this contract (`address(this)` left-padded). On spoke = the home peer
+    ///         wired in the constructor via `homeEid`. Role gate uses `homeEid == 0` (home).
     // forge-lint: disable-next-line(screaming-snake-case-immutable)
     bytes32 public immutable homeAddress;
 
@@ -84,8 +84,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///                     inventory stays here until `grant` / `vest` / `release`.
     /// @param homeEid_     Home chain LZ eid. Must be `0` on home; required non-zero on spoke — constructor
     ///                     calls `setPeer(homeEid_, homeAddress_)` so the spoke can receive from home.
-    /// @param homeAddress_ `bytes32(0)` = this chain is home (mint `MAX_SUPPLY`). Else spoke, and
-    ///                     `homeAddress_` is the canonical home GRS identity (EVM left-padded / Solana pubkey).
+    /// @param homeAddress_ `bytes32(0)` = deploy as home (mint `MAX_SUPPLY`, store `address(this)`).
+    ///                     Else spoke: canonical home GRS identity (EVM left-padded / Solana pubkey).
     constructor(address lzEndpoint, address delegate, uint32 homeEid_, bytes32 homeAddress_)
         OFT("GrindURUS Token", "GRS", lzEndpoint, delegate)
         Ownable(delegate)
@@ -97,12 +97,13 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         peerLzReceiveBudget[40_168] =
             PeerLzReceiveBudget({gas: DEFAULT_LZ_RECEIVE_GAS, value: DEFAULT_SOLANA_LZ_RECEIVE_VALUE});
         homeEid = homeEid_;
-        homeAddress = homeAddress_;
         if (homeAddress_ == bytes32(0)) {
             if (homeEid_ != 0) revert InvalidRecipient();
+            homeAddress = bytes32(uint256(uint160(address(this))));
             _mint(address(this), MAX_SUPPLY);
         } else {
             if (homeEid_ == 0) revert InvalidRecipient();
+            homeAddress = homeAddress_;
             _setPeer(homeEid_, homeAddress_);
         }
     }
@@ -790,11 +791,11 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function _requireHome() private view {
-        if (homeAddress != bytes32(0)) revert NotHome();
+        if (homeEid != 0) revert NotHome();
     }
 
     function _requireSpoke() private view {
-        if (homeAddress == bytes32(0)) revert NotSpoke();
+        if (homeEid == 0) revert NotSpoke();
     }
 
     function _setPeer(uint32 eid, bytes32 peer) internal override {

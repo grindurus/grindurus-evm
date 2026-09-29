@@ -130,7 +130,7 @@ contract GRSCrossChainTest is Test {
         ethereum.setPeer(ARBITRUM_EID, arbPeer);
         vm.stopPrank();
 
-        assertEq(ethereum.homeAddress(), bytes32(0));
+        assertEq(ethereum.homeAddress(), bytes32(uint256(uint160(address(ethereum)))));
         assertTrue(arbitrum.homeAddress() != bytes32(0));
         assertEq(ethereum.totalSupply(), 1_000_000_000e18);
         assertEq(arbitrum.totalSupply(), 0);

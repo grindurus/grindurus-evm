@@ -102,8 +102,8 @@ interface IGRS {
     /// @notice Home chain LZ eid. `0` on home; on spoke equals the eid used in constructor `setPeer`.
     function homeEid() external view returns (uint32);
 
-    /// @notice Canonical home GRS identity. `bytes32(0)` ⇒ this deployment is home; else spoke and
-    ///         the value is the home peer (`address` left-padded or Solana pubkey).
+    /// @notice Canonical home GRS identity (`address` left-padded or Solana pubkey). On home equals
+    ///         this contract; on spoke equals the home peer. Home vs spoke is gated by `homeEid == 0`.
     function homeAddress() external view returns (bytes32);
 
     function MAX_SUPPLY() external view returns (uint256);
