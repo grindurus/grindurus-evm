@@ -7,7 +7,6 @@ interface IGRS {
     error NotHome();
     error NotSpoke();
     error BucketExceeded();
-    error ProprietorGated();
     error InvalidSchedule();
     error ZeroAmount();
     error NothingToRelease();
@@ -92,20 +91,22 @@ interface IGRS {
     }
 
     event Granted(Bucket indexed bucket, bytes32 indexed to, uint256 amount, uint256 vestingId);
-    event Vested(address indexed from, address indexed to, uint256 amount, uint256 vestingId);
-    event Released(uint256 indexed vestingId, address indexed to, uint256 amount);
-    event ProprietorSet(address indexed proprietor);
+    event Vest(address indexed from, address indexed to, uint256 amount, uint256 vestingId);
+    event Release(uint256 indexed vestingId, address indexed to, uint256 amount);
     event PeerLzReceiveBudgetSet(uint32 indexed eid, uint128 gas, uint128 value);
     event SaleSet(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, uint256 grsAmount, bytes32 indexed recipient);
     event SaleAccepted(uint256 indexed id, bytes32 indexed asset, uint256 assetAmount, uint256 grsAmount, bytes32 indexed recipient);
     event SalePublished(uint256 indexed id, uint32 dstEid, bytes32 guid);
-    event Bought(uint256 indexed id, address indexed buyer, address indexed to, uint256 amount, uint256 cost);
+    event Buy(uint256 indexed id, address indexed buyer, address indexed to, uint256 amount, uint256 cost);
 
-    function home() external view returns (bool);
+    /// @notice Home chain LZ eid. `0` on home; on spoke equals the eid used in constructor `setPeer`.
+    function homeEid() external view returns (uint32);
+
+    /// @notice Canonical home GRS identity. `bytes32(0)` ⇒ this deployment is home; else spoke and
+    ///         the value is the home peer (`address` left-padded or Solana pubkey).
+    function homeAddress() external view returns (bytes32);
 
     function MAX_SUPPLY() external view returns (uint256);
-
-    function proprietor() external view returns (address);
 
     /// @notice Page of sales (`offset` 0-based, id = offset+1). Reverts `UnknownSale` if
     ///         `offset` is past the book; `ZeroAmount` if `limit == 0`. Short page ⇒ end.
@@ -122,6 +123,9 @@ interface IGRS {
     /// @notice Unreleased vesting escrow still held by this contract (`Σ allocation − released`).
     function vestingLocked() external view returns (uint256);
 
+    /// @notice GRS earmarked by open sale lots (not part of `remaining(TokenSales)`).
+    function salesReserved() external view returns (uint256);
+
     function getAllocations() external view returns (Allocation[] memory);
 
     function vested(uint256 id, uint256 timestamp) external view returns (uint256);
@@ -133,8 +137,6 @@ interface IGRS {
     function getVestings(uint256 offset, uint256 limit) external view returns (Vesting[] memory);
 
     function getPeers() external view returns (Peer[] memory);
-
-    function setProprietor(address proprietor_) external;
 
     /// @notice Per-eid lzReceive gas/value for auto enforcedOptions on `setPeer`. `gas == 0` clears.
     function setPeerLzReceiveBudget(uint32 eid, uint128 gas, uint128 value) external;
@@ -154,7 +156,7 @@ interface IGRS {
         returns (uint256 nativeFee);
 
     /// @notice Asset units due for `grsAmount` GRS from that sale's remaining `assetAmount`.
-    function previewBuy(uint256 id, uint256 grsAmount) external view returns (uint256 cost);
+    function quoteBuy(uint256 id, uint256 grsAmount) external view returns (uint256 cost);
 
     /// @notice Buy `amount` from `TokenSales` via sale `id` (instant). Home or spoke. Asset
     ///         `bytes32(0)` is ETH (`msg.value` must equal the cost); otherwise ERC-20 `transferFrom`
@@ -186,7 +188,7 @@ interface IGRS {
         uint32 dstEid
     ) external view returns (uint256 nativeFee);
 
-    /// @notice Lock `amount` of the caller's GRS into a non-revocable vest for `to`.
+    /// @notice Lock `amount` of the caller's GRS into a non-revocable `Holder` vest for `to`.
     ///         `cliffSeconds` or `durationSeconds` must be non-zero (use `transfer` for instant).
     ///         Cliff ≤ 365 days; linear duration ≤ 4 × 365 days.
     function vest(
@@ -197,9 +199,12 @@ interface IGRS {
         uint64 durationSeconds
     ) external returns (uint256 vestingId);
 
+    /// @notice Pay out vested-but-unreleased GRS for vesting `id` to its `beneficiary`. Anyone may
+    ///         call; tokens always go to the beneficiary, not `msg.sender`.
     function release(uint256 id) external;
 
-    function quoteBridge(uint32 dstEid, bytes32 to, uint256 amountLD) external view returns (uint256 nativeFee);
+    /// @notice Native LayerZero fee for `bridge(dstEid, to, amountLd)` (OFT send quote).
+    function quoteBridge(uint32 dstEid, bytes32 to, uint256 amountLd) external view returns (uint256 nativeFee);
 
-    function bridge(uint32 dstEid, bytes32 to, uint256 amountLD) external payable;
+    function bridge(uint32 dstEid, bytes32 to, uint256 amountLd) external payable;
 }

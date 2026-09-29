@@ -13,8 +13,10 @@ import {
 import {GRS} from "../src/GRS.sol";
 import {IGRS} from "../src/interfaces/IGRS.sol";
 
-uint32 constant HOME_EID = 30101;
-uint32 constant SPOKE_EID = 30110;
+uint32 constant HOME_EID = 30101; // Ethereum mainnet (LayerZero V2)
+uint32 constant SPOKE_EID = 30110; // Arbitrum One (LayerZero V2)
+uint32 constant ETHEREUM_EID = HOME_EID;
+uint32 constant ARBITRUM_EID = SPOKE_EID;
 uint256 constant MOCK_LZ_FEE = 0.01 ether;
 
 /// @dev Captures the last LZ payload so tests can deliver it to the peer OApp.
@@ -62,14 +64,13 @@ contract GRSCrossChainTest is Test {
 
     function setUp() public {
         endpoint = new MockLzEndpoint();
-        home = new GRS(address(endpoint), admin, true);
-        spoke = new GRS(address(endpoint), admin, false);
+        home = new GRS(address(endpoint), admin, 0, bytes32(0));
+        spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(home)))));
         homePeer = bytes32(uint256(uint160(address(home))));
         spokePeer = bytes32(uint256(uint160(address(spoke))));
 
         vm.startPrank(admin);
         home.setPeer(SPOKE_EID, spokePeer);
-        spoke.setPeer(HOME_EID, homePeer);
         vm.stopPrank();
     }
 
@@ -114,6 +115,77 @@ contract GRSCrossChainTest is Test {
     // -------------------------------------------------------------------------
     // Sale
     // -------------------------------------------------------------------------
+
+    /// @notice Deploy GRS home on Ethereum, spoke on Arbitrum; owner lists a native ETH lot on
+    ///         Ethereum targeted at Arbitrum — inventory burns on home, lot opens in spoke escrow.
+    function test_EthereumDeploy_CrossChainSaleToArbitrum() public {
+        // Fresh deploy pair labeled by chain eid (same mock endpoint; peers wire ETH ↔ ARB).
+        MockLzEndpoint lz = new MockLzEndpoint();
+        GRS ethereum = new GRS(address(lz), admin, 0, bytes32(0));
+        GRS arbitrum = new GRS(address(lz), admin, ETHEREUM_EID, bytes32(uint256(uint160(address(ethereum)))));
+        bytes32 ethPeer = bytes32(uint256(uint160(address(ethereum))));
+        bytes32 arbPeer = bytes32(uint256(uint160(address(arbitrum))));
+
+        vm.startPrank(admin);
+        ethereum.setPeer(ARBITRUM_EID, arbPeer);
+        vm.stopPrank();
+
+        assertEq(ethereum.homeAddress(), bytes32(0));
+        assertTrue(arbitrum.homeAddress() != bytes32(0));
+        assertEq(ethereum.totalSupply(), 1_000_000_000e18);
+        assertEq(arbitrum.totalSupply(), 0);
+
+        uint256 lot = 10e18;
+        uint256 quote = 0.1 ether;
+        uint256 fee = ethereum.quoteSale(bytes32(0), quote, lot, _q(admin), ARBITRUM_EID);
+        assertEq(fee, MOCK_LZ_FEE);
+        deal(admin, fee);
+
+        uint256 ethSupplyBefore = ethereum.totalSupply();
+        vm.prank(admin);
+        uint256 id = ethereum.sale{value: fee}(bytes32(0), quote, lot, _q(admin), ARBITRUM_EID);
+
+        assertEq(id, 1);
+        assertEq(lz.lastDstEid(), ARBITRUM_EID);
+        assertEq(ethereum.spent(IGRS.Bucket.TokenSales), lot);
+        assertEq(ethereum.salesReserved(), 0); // cross-chain debit, not local earmark
+        assertEq(ethereum.getSales(0, 1)[0].grsAmount, 0); // home row closed after publish
+        assertEq(ethereum.getSales(0, 1)[0].assetAmount, 0);
+        assertEq(ethereum.totalSupply(), ethSupplyBefore - lot);
+        assertEq(ethereum.balanceOf(address(ethereum)), ethSupplyBefore - lot);
+
+        // Simulate LZ executor delivering the packed GRS.sale message to Arbitrum.
+        bytes memory payload = lz.lastMessage();
+        vm.prank(address(lz));
+        arbitrum.lzReceive(
+            Origin({srcEid: ETHEREUM_EID, sender: ethPeer, nonce: 1}),
+            bytes32(uint256(1)),
+            payload,
+            address(0),
+            ""
+        );
+
+        assertEq(arbitrum.getSales(0, 1).length, 1);
+        IGRS.Sale memory row = arbitrum.getSales(0, 1)[0];
+        assertEq(row.asset, bytes32(0));
+        assertEq(row.assetAmount, quote);
+        assertEq(row.grsAmount, lot);
+        assertEq(row.recipient, _q(admin));
+        assertEq(arbitrum.salesReserved(), lot);
+        assertEq(arbitrum.balanceOf(address(arbitrum)), lot);
+        assertEq(arbitrum.totalSupply(), lot);
+        assertEq(arbitrum.remaining(IGRS.Bucket.TokenSales), 0); // escrow fully earmarked to the lot
+
+        deal(buyer, quote);
+        uint256 adminBefore = admin.balance;
+        vm.prank(buyer);
+        uint256 cost = arbitrum.buy{value: quote}(id, lot, buyer);
+        assertEq(cost, quote);
+        assertEq(arbitrum.balanceOf(buyer), lot);
+        assertEq(arbitrum.salesReserved(), 0);
+        assertEq(arbitrum.getSales(0, 1)[0].grsAmount, 0);
+        assertEq(admin.balance, adminBefore + quote);
+    }
 
     function test_CrossChain_SalePublishThenBuyOnSpoke() public {
         uint256 lot = 5e18;

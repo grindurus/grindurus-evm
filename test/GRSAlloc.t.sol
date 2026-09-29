@@ -21,7 +21,7 @@ uint256 constant MOCK_LZ_FEE = 0.01 ether;
 
 contract MockLzEndpoint {
     mapping(address => address) public delegates;
-    uint256 public constant quoteNative = MOCK_LZ_FEE;
+    uint256 public constant QUOTE_NATIVE = MOCK_LZ_FEE;
     bytes public lastMessage;
 
     function setDelegate(address delegate) external {
@@ -52,7 +52,7 @@ contract GRSAllocTest is Test {
 
     function setUp() public {
         endpoint = new MockLzEndpoint();
-        grs = new GRS(address(endpoint), admin, true);
+        grs = new GRS(address(endpoint), admin, 0, bytes32(0));
     }
 
     function _q(address token) internal pure returns (bytes32) {
@@ -100,8 +100,9 @@ contract GRSAllocTest is Test {
         address alice = address(0xB0B);
         uint64 month = 30 days;
         uint64 start = uint64(block.timestamp);
+        // Within MAX_CLIFF (365d) / MAX_DURATION (4×365d): 12mo cliff + 48mo linear.
         vm.prank(admin);
-        uint256 id = grs.grant(IGRS.Bucket.CoreTeam, _q(alice), 12e18, start, 12 * month, 60 * month, 0);
+        uint256 id = grs.grant(IGRS.Bucket.CoreTeam, _q(alice), 12e18, start, 12 * month, 48 * month, 0);
 
         assertEq(id, 1);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);
@@ -113,7 +114,7 @@ contract GRSAllocTest is Test {
         vm.warp(start + 12 * month + 1);
         assertGt(grs.releasable(id), 0);
 
-        vm.warp(start + 72 * month);
+        vm.warp(start + 60 * month);
         assertEq(grs.releasable(id), 12e18);
         grs.release(id);
         assertEq(grs.balanceOf(alice), 12e18);
@@ -151,25 +152,24 @@ contract GRSAllocTest is Test {
         assertEq(grs.getVestings(0, 10).length, 3);
     }
 
-    function test_OwnerGrantsProprietaryAfterProprietorSet() public {
+    function test_OwnerGrantsProprietaryBuckets() public {
         vm.prank(admin);
         grs.grant(IGRS.Bucket.GrowthFund, _q(admin), 1e18, 0, 0, 0, 0);
 
-        address prop = address(0x60);
         vm.prank(admin);
-        grs.setProprietor(prop);
-
-        vm.prank(admin);
-        grs.grant(IGRS.Bucket.GrowthFund, _q(admin), 1e18, 0, 0, 0, 0);
-
-        vm.prank(prop);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, prop));
         grs.grant(IGRS.Bucket.Audits, _q(admin), 2e18, 0, 0, 0, 0);
-        assertEq(grs.spent(IGRS.Bucket.GrowthFund), 2e18);
+
+        address stranger = address(0x60);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        grs.grant(IGRS.Bucket.Audits, _q(admin), 1e18, 0, 0, 0, 0);
+
+        assertEq(grs.spent(IGRS.Bucket.GrowthFund), 1e18);
+        assertEq(grs.spent(IGRS.Bucket.Audits), 2e18);
     }
 
     function test_SpokeCannotGrant() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         vm.prank(admin);
         vm.expectRevert(IGRS.NotHome.selector);
         spoke.grant(IGRS.Bucket.TokenSales, _q(admin), 1e18, 0, 0, 0, 0);
@@ -204,6 +204,17 @@ contract GRSAllocTest is Test {
         grs.vest(admin, 1e18, 0, 0, 0);
     }
 
+    function test_GrantRejectsTooLongCliffOrUnlock() public {
+        vm.startPrank(admin);
+        vm.expectRevert(IGRS.InvalidSchedule.selector);
+        grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 1e18, 0, 365 days + 1, 0, 0);
+        vm.expectRevert(IGRS.InvalidSchedule.selector);
+        grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 1e18, 0, 0, 4 * 365 days + 1, 0);
+        uint256 id = grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 1e18, 0, 365 days, 4 * 365 days, 0);
+        vm.stopPrank();
+        assertEq(id, 1);
+    }
+
     function test_VestRejectsTooLongCliffOrUnlock() public {
         vm.prank(admin);
         grs.grant(IGRS.Bucket.TokenSales, _q(admin), 2e18, 0, 0, 0, 0);
@@ -218,7 +229,7 @@ contract GRSAllocTest is Test {
     }
 
     function test_SpokeHolderCanVest() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         deal(address(spoke), admin, 5e18);
         vm.prank(admin);
         uint256 id = spoke.vest(admin, 5e18, uint64(block.timestamp), 0, 7 days);
@@ -253,7 +264,7 @@ contract GRSAllocTest is Test {
 
         address buyer = address(0xB1E);
         uint256 amount = 10e18;
-        uint256 cost = grs.previewBuy(id, amount);
+        uint256 cost = grs.quoteBuy(id, amount);
         assertEq(cost, assetAmount);
         deal(buyer, cost);
 
@@ -264,6 +275,7 @@ contract GRSAllocTest is Test {
         assertEq(grs.balanceOf(buyer), amount);
         assertEq(grs.spent(IGRS.Bucket.TokenSales), amount);
         assertEq(admin.balance, adminBefore + cost);
+        assertEq(grs.salesReserved(), 0);
         assertEq(grs.getSales(0, 10).length, 1);
         assertEq(grs.getSales(0, 1)[0].assetAmount, 0);
         assertEq(grs.getSales(0, 1)[0].grsAmount, 0);
@@ -277,7 +289,7 @@ contract GRSAllocTest is Test {
 
         address buyer = address(0xB1E);
         uint256 amount = 100e18;
-        assertEq(grs.previewBuy(id, amount), assetAmount);
+        assertEq(grs.quoteBuy(id, amount), assetAmount);
         usdc.mint(buyer, assetAmount);
         vm.prank(buyer);
         usdc.approve(address(grs), assetAmount);
@@ -324,6 +336,7 @@ contract GRSAllocTest is Test {
 
         assertEq(grs.balanceOf(buyer), 900_000_000e18);
         assertEq(grs.vestingLocked(), 100_000_000e18);
+        assertEq(grs.salesReserved(), 0);
         assertEq(grs.remaining(IGRS.Bucket.TokenSales), 0);
         assertEq(grs.balanceOf(address(grs)), 100_000_000e18);
 
@@ -348,22 +361,41 @@ contract GRSAllocTest is Test {
         assertEq(grs.balanceOf(address(grs)), freeBefore + 10e18);
     }
 
-    function test_PreviewBuyRespectsVestingLock() public {
+    function test_QuoteBuyRespectsSaleSizeNotFreeFloat() public {
         vm.prank(admin);
         grs.grant(IGRS.Bucket.CoreTeam, _q(admin), 100_000_000e18, uint64(block.timestamp), 1, 0, 0);
         vm.prank(admin);
         uint256 id = grs.sale(bytes32(0), 1 ether, 900_000_000e18, bytes32(0), 0);
 
-        assertEq(grs.previewBuy(id, 900_000_000e18), 1 ether);
+        // Lot is earmarked: remaining float is 0, but preview still quotes the reserved lot.
+        assertEq(grs.salesReserved(), 900_000_000e18);
+        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 0);
+        assertEq(grs.quoteBuy(id, 900_000_000e18), 1 ether);
+        vm.expectRevert(IGRS.SaleExceeded.selector);
+        grs.quoteBuy(id, 900_000_000e18 + 1);
+    }
+
+    function test_LocalSaleCannotOversubscribeFreeInventory() public {
+        vm.startPrank(admin);
+        grs.sale(bytes32(0), 1 ether, 600_000_000e18, bytes32(0), 0);
+        assertEq(grs.salesReserved(), 600_000_000e18);
+        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 400_000_000e18);
+
         vm.expectRevert(IGRS.InsufficientInventory.selector);
-        grs.previewBuy(id, 900_000_000e18 + 1);
+        grs.sale(bytes32(0), 1 ether, 400_000_000e18 + 1, bytes32(0), 0);
+
+        grs.sale(bytes32(0), 1 ether, 400_000_000e18, bytes32(0), 0);
+        assertEq(grs.salesReserved(), 1_000_000_000e18);
+        assertEq(grs.remaining(IGRS.Bucket.TokenSales), 0);
+        vm.stopPrank();
     }
 
     function test_BuyClosedUntilAssetAmountSet() public {
         vm.expectRevert(IGRS.UnknownSale.selector);
         grs.buy(1, 1e18, admin);
         vm.prank(admin);
-        uint256 id = grs.sale(bytes32(0), 0, 1e18, bytes32(0), 0);
+        uint256 id = grs.sale(bytes32(0), 0, 0, bytes32(0), 0);
+        assertEq(grs.salesReserved(), 0);
         vm.expectRevert(IGRS.SaleClosed.selector);
         grs.buy(id, 1e18, admin);
     }
@@ -410,7 +442,7 @@ contract GRSAllocTest is Test {
     }
 
     function test_SpokeCannotSale() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         vm.prank(admin);
         vm.expectRevert(IGRS.NotHome.selector);
         spoke.sale(bytes32(0), 1 ether, 1e18, bytes32(0), 0);
@@ -432,13 +464,12 @@ contract GRSAllocTest is Test {
     }
 
     function test_HomePublishSaleSpokeLzReceiveAccepts() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         bytes32 homePeer = bytes32(uint256(uint160(address(grs))));
         bytes32 spokePeer = bytes32(uint256(uint160(address(spoke))));
 
         vm.startPrank(admin);
         grs.setPeer(SPOKE_EID, spokePeer);
-        spoke.setPeer(HOME_EID, homePeer);
         deal(admin, MOCK_LZ_FEE);
         assertEq(grs.quoteSale(bytes32(0), 0.03 ether, 3e18, _q(admin), SPOKE_EID), MOCK_LZ_FEE);
         uint256 id = grs.sale{value: MOCK_LZ_FEE}(bytes32(0), 0.03 ether, 3e18, _q(admin), SPOKE_EID);
@@ -474,7 +505,7 @@ contract GRSAllocTest is Test {
 
         uint256 amount = 3e18;
         address buyer = address(0xB1E);
-        uint256 cost = spoke.previewBuy(id, amount);
+        uint256 cost = spoke.quoteBuy(id, amount);
         assertEq(cost, 0.03 ether);
         deal(buyer, cost);
         vm.prank(buyer);
@@ -483,7 +514,7 @@ contract GRSAllocTest is Test {
     }
 
     function test_HomePublishSaleDoesNotDoubleSpendTokenSales() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         bytes32 homePeer = bytes32(uint256(uint160(address(grs))));
         bytes32 spokePeer = bytes32(uint256(uint160(address(spoke))));
         uint256 lot = 3e18;
@@ -491,7 +522,6 @@ contract GRSAllocTest is Test {
 
         vm.startPrank(admin);
         grs.setPeer(SPOKE_EID, spokePeer);
-        spoke.setPeer(HOME_EID, homePeer);
         deal(admin, MOCK_LZ_FEE);
         uint256 id = grs.sale{value: MOCK_LZ_FEE}(bytes32(0), quote, lot, _q(admin), SPOKE_EID);
         vm.stopPrank();
@@ -588,7 +618,7 @@ contract GRSAllocTest is Test {
         assertEq(grs.balanceOf(address(this)), 3e18);
     }
     function test_GrantInstantToSpokeBurnsAndCredits() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         bytes32 homePeer = bytes32(uint256(uint160(address(grs))));
         bytes32 spokePeer = bytes32(uint256(uint160(address(spoke))));
         address bob = address(0xB0B);
@@ -596,7 +626,6 @@ contract GRSAllocTest is Test {
 
         vm.startPrank(admin);
         grs.setPeer(SPOKE_EID, spokePeer);
-        spoke.setPeer(HOME_EID, homePeer);
         deal(admin, MOCK_LZ_FEE);
         assertEq(grs.quoteGrant(_q(bob), amount, 0, 0, 0, IGRS.Bucket.CoreTeam, SPOKE_EID), MOCK_LZ_FEE);
         uint256 vestingId = grs.grant{value: MOCK_LZ_FEE}(IGRS.Bucket.CoreTeam, _q(bob), amount, 0, 0, 0, SPOKE_EID);
@@ -612,6 +641,8 @@ contract GRSAllocTest is Test {
         spoke.lzReceive(
             Origin({srcEid: HOME_EID, sender: homePeer, nonce: 1}),
             bytes32(uint256(1)),
+            // casting to 'uint64' is safe because amount is tiny LD dusted to shared decimals
+            // forge-lint: disable-next-line(unsafe-typecast)
             abi.encodePacked(bytes32(uint256(uint160(bob))), uint64(amount / 1e12)),
             address(0),
             ""
@@ -635,11 +666,13 @@ contract GRSAllocTest is Test {
         assertEq(grs.spent(IGRS.Bucket.CoreTeam), amount);
         assertEq(grs.totalSupply(), 1_000_000_000e18 - amount);
         bytes memory payload = endpoint.lastMessage();
+        // casting to 'uint64' is safe because amount is tiny LD dusted to shared decimals
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(payload, abi.encodePacked(solanaTo, uint64(amount / 1e12)));
     }
 
     function test_GrantVestToSpokeOpensSpokeVesting() public {
-        GRS spoke = new GRS(address(endpoint), admin, false);
+        GRS spoke = new GRS(address(endpoint), admin, HOME_EID, bytes32(uint256(uint160(address(grs)))));
         bytes32 homePeer = bytes32(uint256(uint160(address(grs))));
         bytes32 spokePeer = bytes32(uint256(uint160(address(spoke))));
         address bob = address(0xB0B);
@@ -650,7 +683,6 @@ contract GRSAllocTest is Test {
 
         vm.startPrank(admin);
         grs.setPeer(SPOKE_EID, spokePeer);
-        spoke.setPeer(HOME_EID, homePeer);
         deal(admin, MOCK_LZ_FEE);
         assertEq(
             grs.quoteGrant(_q(bob), amount, start, cliff, linear, IGRS.Bucket.CoreTeam, SPOKE_EID), MOCK_LZ_FEE

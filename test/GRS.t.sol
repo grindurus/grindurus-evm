@@ -19,14 +19,14 @@ uint256 constant MOCK_LZ_FEE = 0.01 ether;
 /// @dev Minimal EndpointV2 surface used by `OAppCore` construction and `bridge`.
 contract MockLzEndpoint {
     mapping(address => address) public delegates;
-    uint256 public constant quoteNative = MOCK_LZ_FEE;
+    uint256 public constant QUOTE_NATIVE = MOCK_LZ_FEE;
 
     function setDelegate(address delegate) external {
         delegates[msg.sender] = delegate;
     }
 
     function quote(MessagingParams calldata, address) external pure returns (MessagingFee memory) {
-        return MessagingFee(MOCK_LZ_FEE, 0);
+        return MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0});
     }
 
     function send(MessagingParams calldata, address refund)
@@ -34,7 +34,7 @@ contract MockLzEndpoint {
         payable
         returns (MessagingReceipt memory)
     {
-        MessagingFee memory fee = MessagingFee(MOCK_LZ_FEE, 0);
+        MessagingFee memory fee = MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0});
         if (msg.value < fee.nativeFee) revert();
         uint256 extra = msg.value - fee.nativeFee;
         if (extra > 0) {
@@ -55,7 +55,7 @@ contract GRSTest is Test {
     }
 
     function _homeWired() internal returns (GRS grs) {
-        grs = new GRS(address(endpoint), admin, true);
+        grs = new GRS(address(endpoint), admin, 0, bytes32(0));
         vm.startPrank(admin);
         grs.setPeer(DST_EID, bytes32(uint256(2)));
         grs.grant(IGRS.Bucket.TokenSales, bytes32(uint256(uint160(admin))), 10e18, 0, 0, 0, 0);
@@ -63,13 +63,13 @@ contract GRSTest is Test {
     }
 
     function test_HomeMintsCapToSelf() public {
-        GRS grs = new GRS(address(endpoint), admin, true);
+        GRS grs = new GRS(address(endpoint), admin, 0, bytes32(0));
 
         assertEq(grs.name(), "GrindURUS Token");
         assertEq(grs.symbol(), "GRS");
         assertEq(grs.decimals(), 18);
         assertEq(grs.sharedDecimals(), 6);
-        assertTrue(grs.home());
+        assertEq(grs.homeAddress(), bytes32(0));
         assertEq(grs.MAX_SUPPLY(), 1_000_000_000e18);
         assertEq(grs.totalSupply(), 1_000_000_000e18);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);
@@ -83,7 +83,7 @@ contract GRSTest is Test {
     }
 
     function test_Ownable2Step() public {
-        GRS grs = new GRS(address(endpoint), admin, false);
+        GRS grs = new GRS(address(endpoint), admin, DST_EID, bytes32(uint256(1)));
         address next = address(0xB0B);
 
         assertEq(endpoint.delegates(address(grs)), admin);
@@ -102,17 +102,28 @@ contract GRSTest is Test {
         assertEq(endpoint.delegates(address(grs)), next);
     }
 
-    function test_SpokeStartsAtZero() public {
-        GRS grs = new GRS(address(endpoint), admin, false);
+    function test_RenounceOwnershipDisabled() public {
+        GRS grs = new GRS(address(endpoint), admin, DST_EID, bytes32(uint256(1)));
 
-        assertFalse(grs.home());
+        vm.prank(admin);
+        vm.expectRevert();
+        grs.renounceOwnership();
+
+        assertEq(grs.owner(), admin);
+        assertEq(endpoint.delegates(address(grs)), admin);
+    }
+
+    function test_SpokeStartsAtZero() public {
+        GRS grs = new GRS(address(endpoint), admin, DST_EID, bytes32(uint256(1)));
+
+        assertTrue(grs.homeAddress() != bytes32(0));
         assertEq(grs.totalSupply(), 0);
         assertEq(grs.balanceOf(admin), 0);
         assertEq(grs.MAX_SUPPLY(), 1_000_000_000e18);
     }
 
     function test_TransferWorks() public {
-        GRS grs = new GRS(address(endpoint), admin, true);
+        GRS grs = new GRS(address(endpoint), admin, 0, bytes32(0));
         address bob = address(0xB0B);
 
         vm.startPrank(admin);
@@ -124,8 +135,8 @@ contract GRSTest is Test {
     }
 
     function test_CreditRespectsCap() public {
-        GRS home = new GRS(address(endpoint), admin, true);
-        GRSHarness spoke = new GRSHarness(address(endpoint), admin, false);
+        GRS home = new GRS(address(endpoint), admin, 0, bytes32(0));
+        GRSHarness spoke = new GRSHarness(address(endpoint), admin, DST_EID, bytes32(uint256(uint160(address(home)))));
 
         vm.expectRevert(IGRS.CapExceeded.selector);
         spoke.credit(admin, 1_000_000_000e18 + 1, 1);
@@ -181,7 +192,7 @@ contract GRSTest is Test {
         vm.deal(admin, MOCK_LZ_FEE);
         vm.prank(admin);
         vm.expectRevert(IGRS.ComposeDisabled.selector);
-        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee(MOCK_LZ_FEE, 0), admin);
+        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0}), admin);
     }
 
     function test_SendRejectsSaleOrGrantMsgAsTo() public {
@@ -200,10 +211,10 @@ contract GRSTest is Test {
         vm.deal(admin, MOCK_LZ_FEE * 2);
         vm.startPrank(admin);
         vm.expectRevert(IGRS.InvalidRecipient.selector);
-        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee(MOCK_LZ_FEE, 0), admin);
+        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0}), admin);
         p.to = grantMsg;
         vm.expectRevert(IGRS.InvalidRecipient.selector);
-        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee(MOCK_LZ_FEE, 0), admin);
+        grs.send{value: MOCK_LZ_FEE}(p, MessagingFee({nativeFee: MOCK_LZ_FEE, lzTokenFee: 0}), admin);
         vm.expectRevert(IGRS.InvalidRecipient.selector);
         grs.quoteBridge(DST_EID, saleMsg, 1e18);
         vm.stopPrank();
@@ -227,7 +238,7 @@ contract GRSTest is Test {
     }
 
     function test_GetPeers() public {
-        GRS grs = new GRS(address(endpoint), admin, true);
+        GRS grs = new GRS(address(endpoint), admin, 0, bytes32(0));
         IGRS.Peer[] memory empty = grs.getPeers();
         assertEq(empty.length, 0);
 
@@ -277,9 +288,9 @@ contract GRSTest is Test {
 
 /// @dev Exposes OFT `_credit` for the local cap check without a live endpoint send.
 contract GRSHarness is GRS {
-    constructor(address lzEndpoint, address delegate, bool home_) GRS(lzEndpoint, delegate, home_) {}
+    constructor(address lzEndpoint, address delegate, uint32 homeEid_, bytes32 homeAddress_) GRS(lzEndpoint, delegate, homeEid_, homeAddress_) {}
 
-    function credit(address to, uint256 amountLD, uint32 srcEid) external returns (uint256) {
-        return _credit(to, amountLD, srcEid);
+    function credit(address to, uint256 amountLd, uint32 srcEid) external returns (uint256) {
+        return _credit(to, amountLd, srcEid);
     }
 }
