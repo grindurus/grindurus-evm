@@ -94,7 +94,7 @@ contract GRAIRolesTest is Test {
     }
 
     function test_OwnerCannotRenounceOwnership() public {
-        vm.expectRevert(IGRAI.OwnershipRenounceDisabled.selector);
+        vm.expectRevert();
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.renounceOwnership, ()));
     }
 

@@ -31,9 +31,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidCuts();
     error GrindersGrinding();
     error InvalidRange(uint256 fromId, uint256 toId);
-    /// @notice `renounceOwnership` is disabled — owner is required for 2-of-2 liquidation consent.
-    error OwnershipRenounceDisabled();
-
     /// @notice Fund lifecycle: normal ops → redeem window (after consolidation delay) → grinding.
     enum Regime {
         GRINDING,

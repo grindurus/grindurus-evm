@@ -130,7 +130,7 @@ contract GRAI is
     /// @dev Disabled: owner is required for feeds / config / UUPS. Liquidation consent is
     ///      quorum + Grinders heartbeat. Transfer via Ownable2Step instead.
     function renounceOwnership() public view override onlyOwner {
-        revert OwnershipRenounceDisabled();
+        revert();
     }
 
     /// @dev Owner feed waterfall on `feeds[asset]`:
@@ -334,10 +334,10 @@ contract GRAI is
         address referrer
     ) public payable nonReentrant returns (uint256 graiOut, uint256 value) {
         _requireRegime(Regime.GRINDING);
+        _requireNotPaused(asset);
         _requireNotGRAI(asset);
         _requireListed(asset);
         _requireNotZeroAmount(amount);
-        if (feeds[asset].paused) revert Paused();
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(grinders), asset, amount, false);
         (value, graiOut) = previewDeposit(asset, received);
@@ -541,6 +541,8 @@ contract GRAI is
         }
     }
 
+    //////////////////// EXIT 1 ////////////////////
+
     //////////////////// VOTE ////////////////////
 
     /// @inheritdoc IGRAI
@@ -654,6 +656,10 @@ contract GRAI is
         }
         _requireNotZeroAmount(bribeAmount);
     }
+
+    //////////////////// END EXIT 1 ////////////////////
+
+    //////////////////// EXIT 2 ////////////////////
 
     //////////////////// LIQUIDATE ////////////////////
 
@@ -811,10 +817,17 @@ contract GRAI is
         emit RegimeChange(regime);
     }
 
+    //////////////////// END EXIT 2 ////////////////////
+
     ////////////////////////////// INTERNAL HELPERS //////////////////////////////
 
     function _requireListed(address asset) internal view {
         if (feeds[asset].feedType == FeedType.NONE) revert AssetUnknown();
+    }
+
+    /// @dev Deposit gate on `feeds[asset].paused` (does not block distribute / claim / redeem).
+    function _requireNotPaused(address asset) internal view {
+        if (feeds[asset].paused) revert Paused();
     }
 
     /// @inheritdoc IGRAI
