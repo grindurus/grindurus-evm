@@ -134,7 +134,7 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
 
 Both `GRAI` and `Grinders` use OpenZeppelin `Ownable2StepUpgradeable`: a single `owner` gates admin
 ops and UUPS upgrades. Ownership transfer is two-step (`transferOwnership` → pending owner
-`acceptOwnership`). On `GRAI`, `renounceOwnership` is disabled (`OwnershipRenounceDisabled`) so
+`acceptOwnership`). On `GRAI`, `renounceOwnership` is disabled (`revert()`) so
 ownership cannot be bricked. The oracle router is a base class of `GRAI` (not a
 separate contract), so feed management is `onlyOwner` — there is no separate oracle owner.
 
