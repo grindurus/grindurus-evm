@@ -92,7 +92,8 @@ contract GRAI is
     }
 
     function initialize(address admin_, address weth_) public initializer {
-        if (admin_ == address(0) || weth_ == address(0)) revert ZeroAddress();
+        _requireNotZeroAddress(weth_);
+        if (admin_ == address(0)) admin_ = msg.sender;
         __UUPSUpgradeable_init();
         __ERC20_init("Grinders Artificial Index", "GRAI");
         __Ownable_init(admin_);
@@ -755,7 +756,7 @@ contract GRAI is
             revert LiquidationDelay();
         }
         uint256 supply = totalSupply();
-        if (supply == 0) revert InvalidAmount();
+        _requireNotZeroAmount(supply);
         Escrow storage entry = escrows[holder];
         uint256 holderAmount = balanceOf(holder) + entry.locked;
         if (graiAmount == 0 || graiAmount > holderAmount) revert InvalidAmount();
@@ -851,8 +852,12 @@ contract GRAI is
 
     /// @dev `target.grai()` must be this contract (`IGrinders` / `ITreasury` share the selector).
     function _requireGraiMatch(address target) internal view {
-        if (target == address(0)) revert ZeroAddress();
+        _requireNotZeroAddress(target);
         if (address(ITreasury(target).grai()) != address(this)) revert GraiMismatch();
+    }
+
+    function _requireNotZeroAddress(address account) internal pure {
+        if (account == address(0)) revert ZeroAddress();
     }
 
     function _requireNotZeroAmount(uint256 amount) internal pure {
@@ -1071,7 +1076,7 @@ contract GRAI is
     function _withdraw(address to, address asset, uint256 amount) internal {
         if (amount == 0) return;
         if (asset == address(0)) {
-            if (to == address(0)) revert ZeroAddress();
+            _requireNotZeroAddress(to);
             _sendEth(to, amount);
         } else {
             IERC20(asset).safeTransfer(to, amount);
