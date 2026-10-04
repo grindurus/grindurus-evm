@@ -91,17 +91,17 @@ contract GRAI is
         _disableInitializers();
     }
 
-    function initialize(address admin_, address weth_) public initializer {
+    function initialize(address owner_, address weth_) public initializer {
         _requireNotZeroAddress(weth_);
-        if (admin_ == address(0)) admin_ = msg.sender;
+        if (owner_ == address(0)) owner_ = msg.sender;
         __UUPSUpgradeable_init();
         __ERC20_init("Grinders Artificial Index", "GRAI");
-        __Ownable_init(admin_);
+        __Ownable_init(owner_);
         __Ownable2Step_init();
         __ReentrancyGuard_init();
         weth = IWETH(weth_);
-        grinders = IGrinders(admin_);
-        treasury = ITreasury(admin_);
+        grinders = IGrinders(owner_);
+        treasury = ITreasury(owner_);
         config = Config({
             dividendCutBps: 50_00, // 50%
             treasuryCutBps: 50_00, // 50%
