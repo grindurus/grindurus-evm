@@ -24,4 +24,5 @@ broadcast
 # Ignore libs
 lib/
 
+logs
 archive

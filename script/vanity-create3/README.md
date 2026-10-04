@@ -23,8 +23,10 @@ cargo run --release -- --prefix dead --suffix beef --label Grinders/proxy
 
 On success prints `CREATE3_SALT_TAG=…` and writes `found.txt` (`tag` + `address`).
 
-Use the tag with deploy scripts:
+Use the tag with deploy scripts (per-label env, or shared fallback):
 
-```bash
-CREATE3_SALT_TAG=<tag> forge script script/manual/1_DeployGRAI.s.sol:DeployGRAI --sig "predict()"
-```
+
+# label GRAI/proxy → CREATE3_SALT_TAG_GRAI
+# label Treasury/proxy → CREATE3_SALT_TAG_TREASURY
+# label Grinders/proxy → CREATE3_SALT_TAG_GRINDERS
+

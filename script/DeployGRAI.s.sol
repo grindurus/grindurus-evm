@@ -7,6 +7,7 @@ import {Create3Factory} from "./Create3Factory.sol";
 import {GRAI, IGRAI, IPriceOracleRouter} from "../src/GRAI.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {Grinders} from "../src/Grinders.sol";
+import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 
 /// @title Deploy GRAI (CREATE3) on an EVM chain
 /// @notice GRAI impl + proxy, Treasury, Grinders, Chainlink feeds.
@@ -19,6 +20,7 @@ import {Grinders} from "../src/Grinders.sol";
 ///   OWNER_MULTISIG    — optional Ownable2Step handoff (`acceptOwnership` required)
 ///   MAX_STALENESS     — optional seconds (default per-chain)
 ///   WETH              — optional override of network WETH
+///   GRINDERS          — optional override for `deployCoWCustodian()` (else CREATE3 predict)
 ///
 /// Predict addresses only:
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI --sig "predict()" --rpc-url arbitrum
@@ -29,11 +31,12 @@ import {Grinders} from "../src/Grinders.sol";
 /// Deploy (Arbitrum):
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI --rpc-url arbitrum --broadcast --verify
 ///
-/// Configure bribeable / grinders on an existing GRAI:
+/// Post-deploy helpers (owner = `PRIVATE_KEY`):
 ///   PRIVATE_KEY=0x... GRAI=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "setBribeable()" --rpc-url arbitrum --broadcast
-///   PRIVATE_KEY=0x... GRAI=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-///     --sig "setGrinders()" --rpc-url arbitrum --broadcast
+///   PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "deployCoWCustodian()" --rpc-url arbitrum --broadcast --verify
+///   # deploy only (skip Grinders.set): --sig "deployCoWCustodian(bool)" false
 contract DeployGRAI is Script {
     struct AssetData {
         address asset;
@@ -238,6 +241,36 @@ contract DeployGRAI is Script {
             (,, bool bribeable,,) = grai.assets(net.assets[i].asset);
             require(bribeable, "asset not bribeable");
         }
+    }
+
+    //////////////////// COW CUSTODIAN ////////////////////
+
+    /// @param setImpl If true, call `Grinders.set(cow, impl)` after deploy.
+    function deployCoWCustodian(bool setImpl) public returns (CoWCustodian impl) {
+        Network memory net = _network();
+        Plan memory plan = _plan(net);
+        address grindersAddr = vm.envOr("GRINDERS", plan.grindersProxy);
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+
+        Grinders grinders = Grinders(payable(grindersAddr));
+        console2.log("Grinders:", grindersAddr);
+        console2.log("owner:", grinders.owner());
+        console2.log("setImpl:", setImpl);
+
+        require(grindersAddr.code.length > 0, "GRINDERS not a contract");
+        if (setImpl) require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+
+        vm.startBroadcast(pk);
+        impl = new CoWCustodian();
+        bytes32 cowKind = keccak256("grindurus.custodian.cow");
+        require(impl.custodianKind() == cowKind, "unexpected custodianKind");
+        if (setImpl) grinders.set(cowKind, address(impl));
+        vm.stopBroadcast();
+
+        console2.log("Deploy complete.");
+        console2.log("CoWCustodian impl:", address(impl));
+        console2.log("COW_SETTLEMENT:", address(impl.COW_SETTLEMENT()));
+        console2.log("COW_VAULT_RELAYER:", impl.COW_VAULT_RELAYER());
     }
 
     function _plan(Network memory net) internal view returns (Plan memory plan) {
