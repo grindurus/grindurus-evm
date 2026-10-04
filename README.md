@@ -69,7 +69,7 @@ return a different token/size after swaps; there is no on-chain allocate ledger)
 ## Lifecycle
 
 ```
-initialize(admin, weth)
+initialize(owner, weth)
    ↓
 setConfig(ConfigId, data)   // patch knobs; yield cuts fixed at initialize
 setFeed(asset, feed)                           // list asset (`Feed.paused` on struct)
@@ -176,7 +176,7 @@ Permissionless (after windows):
   `previewBribe`, `previewRedeem`, `hasQuorum`, `getAssets`, `getEscrows`,
   `tokenURI`
 
-On deploy, `initialize(admin, weth)` sets `owner = admin`, `treasury = admin` temporarily; scripts then
+On deploy, `initialize(owner, weth)` sets Ownable `owner` and temporary `treasury`/`grinders` placeholders; scripts then
 deploy `Treasury` and `setTreasury`. `grinders` points at the contract itself until wired. For production,
 hand off ownership to a multisig:
 
