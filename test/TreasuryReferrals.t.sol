@@ -304,7 +304,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(aliceMinted, bobMinted);
         assertGt(aliceMinted, 0);
 
-        (,, uint256 accAtAliceBobLock,) = grai.assets(address(usdc));
+        (,,, uint256 accAtAliceBobLock,) = grai.assets(address(usdc));
         _lock(alice, aliceMinted);
         _lock(bob, bobMinted);
 
@@ -315,11 +315,11 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(grai.totalLocked() - grai.totalVoted(), aliceMinted + bobMinted);
 
         uint256 treasuryBefore = usdc.balanceOf(address(treasury));
-        (,,, uint256 claimableBefore) = grai.assets(address(usdc));
+        (,,,, uint256 claimableBefore) = grai.assets(address(usdc));
 
         _yield(YIELD);
         assertEq(usdc.balanceOf(address(treasury)) - treasuryBefore, GROSS_PROFIT_SHARE);
-        (,,, uint256 claimableAfter1) = grai.assets(address(usdc));
+        (,,,, uint256 claimableAfter1) = grai.assets(address(usdc));
         // Index dust (amount − reserved) may leave 1 wei on treasury instead of claimable.
         assertApproxEqAbs(claimableAfter1 - claimableBefore, DIVIDEND, 1);
 
@@ -328,21 +328,21 @@ contract TreasuryReferralsTest is GRAIFixture {
         uint256 carolMinted = grai.balanceOf(carol) - carolBeforeGrai;
         assertEq(carolMinted, aliceMinted);
 
-        (,, uint256 accAtCarolLock,) = grai.assets(address(usdc));
+        (,,, uint256 accAtCarolLock,) = grai.assets(address(usdc));
         _lock(carol, carolMinted);
         assertEq(grai.totalLocked() - grai.totalVoted(), aliceMinted + bobMinted + carolMinted);
 
         uint256 treasuryAfterDist1 = usdc.balanceOf(address(treasury));
-        (,,, uint256 claimableAfterDist1) = grai.assets(address(usdc));
+        (,,,, uint256 claimableAfterDist1) = grai.assets(address(usdc));
 
         _yield(YIELD);
         assertApproxEqAbs(
             usdc.balanceOf(address(treasury)) - treasuryAfterDist1, GROSS_PROFIT_SHARE, 1
         );
-        (,,, uint256 claimableAfter2) = grai.assets(address(usdc));
+        (,,,, uint256 claimableAfter2) = grai.assets(address(usdc));
         assertApproxEqAbs(claimableAfter2 - claimableAfterDist1, DIVIDEND, 1);
 
-        (,, uint256 accFinal,) = grai.assets(address(usdc));
+        (,,, uint256 accFinal,) = grai.assets(address(usdc));
         uint256 aliceExpected = (aliceMinted * accFinal) / precision - (aliceMinted * accAtAliceBobLock) / precision;
         uint256 bobExpected = (bobMinted * accFinal) / precision - (bobMinted * accAtAliceBobLock) / precision;
         uint256 carolExpected = (carolMinted * accFinal) / precision - (carolMinted * accAtCarolLock) / precision;
@@ -379,7 +379,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(aliceBook - aliceBookBefore, aliceExpected);
         assertEq(bobBook - bobBookBefore, bobExpected);
         assertEq(carolBook - carolBookBefore, carolPaid);
-        (,,, uint256 claimableLeft) = grai.assets(address(usdc));
+        (,,,, uint256 claimableLeft) = grai.assets(address(usdc));
         assertEq(claimableLeft, claimableBefore + reservedTotal - paidTotal);
         assertApproxEqAbs(reservedTotal, DIVIDEND * 2, 1);
     }
@@ -400,7 +400,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         uint256 aliceMinted = grai.balanceOf(alice) - aliceBefore;
         uint256 bobMinted = grai.balanceOf(bob) - bobBefore;
 
-        (,, uint256 accAtAliceBobLock,) = grai.assets(address(usdc));
+        (,,, uint256 accAtAliceBobLock,) = grai.assets(address(usdc));
         _lock(alice, aliceMinted);
         _lock(bob, bobMinted);
         _yield(YIELD);
@@ -408,11 +408,11 @@ contract TreasuryReferralsTest is GRAIFixture {
         uint256 carolBeforeGrai = grai.balanceOf(carol);
         _depositWithRef(carol, depositAmount, address(0));
         uint256 carolMinted = grai.balanceOf(carol) - carolBeforeGrai;
-        (,, uint256 accAtCarolLock,) = grai.assets(address(usdc));
+        (,,, uint256 accAtCarolLock,) = grai.assets(address(usdc));
         _lock(carol, carolMinted);
         _yield(YIELD);
 
-        (,, uint256 accFinal, uint256 reserved) = grai.assets(address(usdc));
+        (,,, uint256 accFinal, uint256 reserved) = grai.assets(address(usdc));
         uint256 alicePending =
             (aliceMinted * accFinal) / precision - (aliceMinted * accAtAliceBobLock) / precision;
         uint256 bobPending =
@@ -441,7 +441,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         assertEq(grai.previewClaim(carol, address(usdc), type(uint256).max), 1);
         assertEq(usdc.balanceOf(address(grai)), 0);
         // Native reserve dust was never in the shorted vault; accounting keeps it.
-        (,,, uint256 claimableLeft) = grai.assets(address(usdc));
+        (,,,, uint256 claimableLeft) = grai.assets(address(usdc));
         assertEq(claimableLeft, reserved + 1 - pendingTotal);
     }
 

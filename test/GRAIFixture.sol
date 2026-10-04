@@ -186,9 +186,11 @@ abstract contract GRAIFixture is Test {
         });
     }
 
-    function _setSettlementAsset(address asset) internal {
+    function _setBribeable(address asset, bool bribeable) internal {
+        uint256 data = uint256(uint160(asset));
+        if (bribeable) data |= uint256(1) << 160;
         vm.prank(admin);
-        grai.setSettlementAsset(asset);
+        grai.setConfig(IGRAI.ConfigId.BRIBEABLE, data);
     }
 
     function _readConfig() internal view returns (IGRAI.Config memory cfg) {

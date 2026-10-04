@@ -237,7 +237,7 @@ contract GRAILifecycleTest is GRAIFixture {
             grai.distribute(address(usdc), yieldAmount);
         }
 
-        (,,, uint256 totalClaimable) = grai.assets(address(usdc));
+        (,,,, uint256 totalClaimable) = grai.assets(address(usdc));
         uint256 pending = grai.previewClaim(alice, address(usdc), type(uint256).max);
         assertEq(pending, totalClaimable);
         assertEq(pending, 9_999_999);
@@ -247,7 +247,7 @@ contract GRAILifecycleTest is GRAIFixture {
         grai.claimAll(alice);
         // 1% claim tip stays with Alice as caller.
         assertEq(usdc.balanceOf(alice) - aliceBefore, pending);
-        (,,, uint256 left) = grai.assets(address(usdc));
+        (,,,, uint256 left) = grai.assets(address(usdc));
         assertEq(left, 0);
         assertEq(grai.previewClaim(alice, address(usdc), type(uint256).max), 0);
     }

@@ -119,7 +119,7 @@ contract GRAIRolesTest is Test {
         address asset = makeAddr("opsAsset");
         _setFeedAsOwner(asset, new MockAggregator(8, 1e8));
 
-        (, uint32 id,,) = grai.assets(asset);
+        (, uint32 id,,,) = grai.assets(asset);
         assertEq(grai.assetList(id), asset);
     }
 
@@ -224,11 +224,18 @@ contract GRAIRolesTest is Test {
 
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setTreasury, (nextTreasury)));
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setGrinders, (address(grinders))));
-        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.setSettlementAsset, (address(0))));
+        uint256 bribeableData = uint256(uint160(address(0))) | (uint256(1) << 160);
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.BRIBEABLE, bribeableData))
+        );
 
         assertEq(address(grai.treasury()), nextTreasury);
         assertEq(address(grai.grinders()), address(grinders));
-        assertEq(grai.settlementAsset(), address(0));
+        (,, bool ethBribeable,,) = grai.assets(address(0));
+        assertTrue(ethBribeable);
     }
 
     function test_NonOwnerCannotSetFeed() public {

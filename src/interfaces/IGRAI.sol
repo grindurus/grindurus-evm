@@ -31,6 +31,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidCuts();
     error GrindersGrinding();
     error InvalidRange(uint256 fromId, uint256 toId);
+    /// @notice Bribe payment asset is not marked `bribeable` on its `AssetConfig`.
+    error NotBribeable();
     /// @notice Fund lifecycle: normal ops → redeem window (after consolidation delay) → grinding.
     enum Regime {
         GRINDING,
@@ -40,7 +42,11 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Field selector for `setConfig`.
     /// @dev Yield cuts (`dividendCutBps` / `treasuryCutBps`) are fixed at `initialize` and cannot
     ///      be changed via `setConfig`. Still blocked while liquidation is open.
+    ///      `BRIBEABLE` packs `address asset` in the low 160 bits and the flag in bit 160
+    ///      (`data = uint160(asset) | (bribeable ? 1 << 160 : 0)`); it writes `assets[asset].bribeable`,
+    ///      not a field on `Config`.
     enum ConfigId {
+        BRIBEABLE,
         REVENUE_SHARE,
         CLAIM_TIP,
         BRIBE_PREMIUM,
@@ -55,6 +61,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         address asset;
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
+        /// @notice When true, `asset` may be used as the payment token in `bribe` / `previewBribe`.
+        /// @dev Must not be fee-on-transfer: `bribe` requires exact `_pay` credit.
+        bool bribeable;
         /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`locked - voted`), scaled by 1e18.
         uint256 accShare;
         /// @notice Tokens reserved for locker claims (excluded from redeem / revive).
@@ -134,7 +143,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     event Bribe(
         address indexed briber,
         address indexed voter,
-        address indexed settlementAsset,
+        address indexed asset,
         uint256 graiAmount,
         uint256 bribeAmount,
         uint256 totalVoted
@@ -237,7 +246,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function assets(address asset)
         external
         view
-        returns (address asset_, uint32 id, uint256 accShare, uint256 totalClaimable);
+        returns (address asset_, uint32 id, bool bribeable, uint256 accShare, uint256 totalClaimable);
 
     function assetList(uint256 index) external view returns (address);
 
@@ -246,14 +255,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Retarget the fee sink. Reverts while liquidation is open.
     function setTreasury(address treasury_) external;
 
-    function settlementAsset() external view returns (address);
-
     /// @notice Canonical WETH for ETH→WETH fallback when a native push is rejected.
     function weth() external view returns (IWETH);
 
-    /// @notice Set bribe settlement asset (listed feed). Must not be fee-on-transfer.
-    function setSettlementAsset(address settlementAsset_) external;
-
+    /// @notice Patch a `Config` field, or `BRIBEABLE` (`assets[asset].bribeable` via packed `data`).
     function setConfig(ConfigId id, uint256 data) external;
 
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
@@ -328,21 +333,23 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         Same tip split as `claim` per asset.
     function claimAll(address locker) external;
 
-    /// @notice Preview bribe ask in `settlementAsset`: `bribeAmount`, plus absolute `premium` or `discount`
-    ///         vs book (one is always 0). `premium > 0` ⇒ scarce votes (favor voting); `discount > 0`
-    ///         ⇒ excess votes (favor bribing). Discount is half the full book−ask gap; ask = book − discount.
-    function previewBribe(address voter, uint256 graiAmount)
+    /// @notice Preview bribe ask in `asset` (must be `bribeable`): `bribeAmount`, plus absolute
+    ///         `premium` or `discount` vs book (one is always 0). `premium > 0` ⇒ scarce votes
+    ///         (favor voting); `discount > 0` ⇒ excess votes (favor bribing). Discount is half the
+    ///         full book−ask gap; ask = book − discount.
+    function previewBribe(address asset, address voter, uint256 graiAmount)
         external
         view
         returns (uint256 bribeAmount, uint256 premium, uint256 discount);
 
-    /// @notice Anyone may buy out `voter`'s vote for `previewBribe`. Ask is book scaled by a dynamic
-    ///         adj vs half-quorum (premium / par / discount; slope `bribePremiumBps`, uncapped above
-    ///         quorum on the discount leg). `settlementAsset` must not be fee-on-transfer: payment must
-    ///         credit exactly `bribeAmount`; briber receives the full escrowed `graiAmount`.
-    ///         Premium: voter gets book + half the premium, rest → cuts. Discount: ask is book −
-    ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
-    function bribe(address voter, uint256 graiAmount) external payable;
+    /// @notice Anyone may buy out `voter`'s vote for `previewBribe` paid in `asset` (`bribeable`).
+    ///         Ask is book scaled by a dynamic adj vs half-quorum (premium / par / discount; slope
+    ///         `bribePremiumBps`, uncapped above quorum on the discount leg). `asset` must not be
+    ///         fee-on-transfer: payment must credit exactly `bribeAmount`; briber receives the full
+    ///         escrowed `graiAmount`. Premium: voter gets book + half the premium, rest → cuts.
+    ///         Discount: ask is book − half gap; the other half → cuts. Par: voter gets the full
+    ///         credited pull.
+    function bribe(address asset, address voter, uint256 graiAmount) external payable;
 
     /// @notice Liquidation open when `hasQuorum()` and Grinders is stale (`!grinding()`).
     ///         Anyone may call; sweep reverts abort open. On open: orphan/dead GRAI → `msg.sender`;
