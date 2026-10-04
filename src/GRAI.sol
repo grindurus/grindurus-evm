@@ -313,7 +313,7 @@ contract GRAI is
         uint256 treasuryCut = received - dividendCut;
 
         _distribute(asset, dividendCut);
-        _withdraw(address(treasury), asset, treasuryCut);
+        _send(address(treasury), asset, treasuryCut);
         _sendEth(msg.sender, refund);
 
         emit Distribute(msg.sender, asset, received, dividendCut, treasuryCut);
@@ -493,8 +493,8 @@ contract GRAI is
         uint256 grossProfitShare = (claimed * config.treasuryCutBps) / config.dividendCutBps;
         uint256 revenueShare = (claimed * config.revenueShareBps) / config.dividendCutBps;
         treasury.distribute(asset, locker, grossProfitShare, revenueShare, claimedValue);
-        _withdraw(locker, asset, toLocker);
-        _withdraw(msg.sender, asset, tip);
+        _send(locker, asset, toLocker);
+        _send(msg.sender, asset, tip);
         emit Claim(locker, asset, claimed);
     }
 
@@ -610,8 +610,8 @@ contract GRAI is
         uint256 dividendCut = (cutPool * config.dividendCutBps) / BPS;
         uint256 treasuryCut = cutPool - dividendCut;
         _distribute(asset, dividendCut);
-        _withdraw(address(treasury), asset, treasuryCut);
-        _withdraw(voter, asset, voterCut);
+        _send(address(treasury), asset, treasuryCut);
+        _send(voter, asset, voterCut);
         _sendEth(briber, refund);
         emit Bribe(briber, voter, asset, graiAmount, received, totalVoted);
     }
@@ -734,7 +734,7 @@ contract GRAI is
 
         uint256 len = assetOuts.length;
         for (uint256 i; i < len;) {
-            _withdraw(holder, assetOuts[i], amounts[i]);
+            _send(holder, assetOuts[i], amounts[i]);
             unchecked { ++i; }
         }
         emit Redeem(holder, graiAmount, value);
@@ -807,7 +807,7 @@ contract GRAI is
         uint256 len = assetList.length;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            _withdraw(address(grinders), asset, _redeemable(asset));
+            _send(address(grinders), asset, _redeemable(asset));
             unchecked { ++i; }
         }
         regime = Regime.GRINDING;
@@ -917,7 +917,7 @@ contract GRAI is
         uint256 indexIncrease = eligible > 0 ? (amount * PRECISION) / eligible : 0;
         // No eligible locks, or cut too small to move the index → full cut to treasury.
         if (indexIncrease == 0) {
-            _withdraw(address(treasury), asset, amount);
+            _send(address(treasury), asset, amount);
             return;
         }
 
@@ -926,12 +926,12 @@ contract GRAI is
         uint256 newShare = oldShare + indexIncrease;
         uint256 reserved = (newShare * eligible) / PRECISION - (oldShare * eligible) / PRECISION;
         if (reserved == 0) {
-            _withdraw(address(treasury), asset, amount);
+            _send(address(treasury), asset, amount);
             return;
         }
         div.accShare = newShare;
         div.totalClaimable += reserved;
-        if (amount > reserved) _withdraw(address(treasury), asset, amount - reserved);
+        if (amount > reserved) _send(address(treasury), asset, amount - reserved);
     }
 
     function _accrueDividends(address account) internal {
@@ -1073,7 +1073,7 @@ contract GRAI is
 
     /// @dev Native ETH is pushed first. If the recipient rejects it (no payable fallback), wrap via
     ///      `weth` and ERC20-transfer so bribes / liquidations / treasury cuts still settle.
-    function _withdraw(address to, address asset, uint256 amount) internal {
+    function _send(address to, address asset, uint256 amount) internal {
         if (amount == 0) return;
         if (asset == address(0)) {
             _requireNotZeroAddress(to);

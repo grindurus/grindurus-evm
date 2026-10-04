@@ -73,7 +73,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
     function custodianKind() public view virtual returns (bytes32);
 
-    function balance(address asset) public view returns (uint256) {
+    function balance(address asset) public view virtual returns (uint256) {
         if (asset == address(0)) return address(this).balance;
         return IERC20(asset).balanceOf(address(this));
     }
@@ -119,7 +119,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     function deallocate(address asset, uint256 amount) public virtual {
         _onlyGrinders();
         if (liquidation()) revert LiquidationOpen();
-        _withdraw(address(grinders), asset, amount);
+        _send(address(grinders), asset, amount);
         emit Deallocate(asset, amount);
     }
 
@@ -135,18 +135,18 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
             if (asset == address(0)) {
                 try grai.distribute{value: yieldAmount}(asset, yieldAmount) {}
                 catch {
-                    _withdraw(address(grai), asset, yieldAmount);
+                    _send(address(grai), asset, yieldAmount);
                 }
             } else {
                 IERC20(asset).forceApprove(address(grai), yieldAmount);
                 try grai.distribute(asset, yieldAmount) {}
                 catch {
                     IERC20(asset).forceApprove(address(grai), 0);
-                    _withdraw(address(grai), asset, yieldAmount);
+                    _send(address(grai), asset, yieldAmount);
                 }
             }
         } catch {
-            _withdraw(address(grinders), asset, yieldAmount);
+            _send(address(grinders), asset, yieldAmount);
         }
         emit Distribute(asset, yieldAmount);
     }
@@ -163,9 +163,9 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         _onlyGrinders();
         baseAssetOut = baseAsset;
         quoteAssetOut = quoteAsset;
-        ethOut = _withdraw(address(grinders), address(0), balance(address(0)));
-        baseOut = _withdraw(address(grinders), baseAssetOut, balance(baseAssetOut));
-        quoteOut = _withdraw(address(grinders), quoteAssetOut, balance(quoteAssetOut));
+        ethOut = _send(address(grinders), address(0), balance(address(0)));
+        baseOut = _send(address(grinders), baseAssetOut, balance(baseAssetOut));
+        quoteOut = _send(address(grinders), quoteAssetOut, balance(quoteAssetOut));
         emit Liquidate(ethOut, baseOut, quoteOut);
     }
 
@@ -179,7 +179,7 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         if (msg.sender != address(grinders)) revert NotGrinders(msg.sender);
     }
 
-    function _withdraw(address to, address asset, uint256 amount) internal virtual returns (uint256 withdrawn) {
+    function _send(address to, address asset, uint256 amount) internal virtual returns (uint256 withdrawn) {
         if (amount == 0) return 0;
         if (asset == address(0)) {
             (bool ok,) = to.call{value: amount}("");

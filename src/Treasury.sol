@@ -25,13 +25,14 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     using Strings for uint256;
     using Strings for address;
 
-    uint16 public constant BPS = 100_00; // 100%
+    /// @notice Basis-point denominator (`100_00` = 100%).
+    uint16 internal constant BPS = 100_00;
+
+    /// @notice Stored protocol fee recipient; use `beneficiar()` (falls back to `grai` when unset).
+    address internal _beneficiar;
 
     /// @notice Linked GRAI that may call `mint` / `rebind` / `distribute`; upgrades authorized by its `owner`.
     IGRAI public grai;
-
-    /// @notice Stored protocol fee recipient; use `beneficiar()` (falls back to `grai` when unset).
-    address private _beneficiar;
 
     /// @notice Shared ERC-2981 royalty fraction (bps of sale price → `beneficiar()`).
     uint16 public royaltyBps;
@@ -218,7 +219,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @dev Credits referral books with `claimedValue` (book USD of claimed dividends) before payouts
     ///      so poach ask tracks realized yield. No-op payouts if balance < `grossProfitShare` so claim
     ///      is not bricked and partial affiliate pays never happen; book credit still applies.
-    ///      Soft-fail per recipient via `_tryWithdraw` (no self-call); unpaid → `beneficiar`.
+    ///      Soft-fail per recipient via `_trySend` (no self-call); unpaid → `beneficiar`.
     function distribute(
         address asset,
         address locker,
@@ -239,7 +240,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         for (uint256 i; i < len;) {
             address ref = referrers[i];
             uint256 share = shares[i];
-            if (_tryWithdraw(ref, asset, share)) {
+            if (_trySend(ref, asset, share)) {
                 revenueShare += share;
                 emit Distribute(asset, ref, share);
             }
@@ -250,7 +251,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
         uint256 netProfitShare = grossProfitShare - revenueShare;
         address to = beneficiar();
-        if (_tryWithdraw(to, asset, netProfitShare)) {
+        if (_trySend(to, asset, netProfitShare)) {
             emit Distribute(asset, to, netProfitShare);
         }
     }
@@ -441,24 +442,6 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         return false; // unreachable; satisfies definite-assignment
     }
 
-    /// @dev Soft-fail payout (no self-call). ETH → native, else WETH wrap; ERC20 via low-level
-    ///      transfer matching SafeERC20 optional-return rules.
-    function _tryWithdraw(address to, address asset, uint256 amount) internal returns (bool) {
-        if (amount == 0) return true;
-        if (to == address(0)) return false;
-        if (asset == address(0)) return _trySendEth(to, amount);
-        return _trySafeTransfer(asset, to, amount);
-    }
-
-    /// @dev Same success predicate as OZ `SafeERC20._callOptionalReturnBool` for `transfer`.
-    function _trySafeTransfer(address token, address to, uint256 amount) internal returns (bool) {
-        (bool success, bytes memory ret) = token.call(abi.encodeCall(IERC20.transfer, (to, amount)));
-        if (!success) return false;
-        if (ret.length == 0) return token.code.length > 0;
-        if (ret.length == 32) return abi.decode(ret, (bool));
-        return false;
-    }
-
     function _trySendEth(address to, uint256 amount) internal returns (bool) {
         (bool ok,) = payable(to).call{value: amount}("");
         if (ok) return true;
@@ -475,6 +458,24 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         } catch {
             return false;
         }
+    }
+
+    /// @dev Soft-fail payout (no self-call). ETH → native, else WETH wrap; ERC20 via low-level
+    ///      transfer matching SafeERC20 optional-return rules.
+    function _trySend(address to, address asset, uint256 amount) internal returns (bool) {
+        if (amount == 0) return true;
+        if (to == address(0)) return false;
+        if (asset == address(0)) return _trySendEth(to, amount);
+        return _trySafeTransfer(asset, to, amount);
+    }
+
+    /// @dev Same success predicate as OZ `SafeERC20._callOptionalReturnBool` for `transfer`.
+    function _trySafeTransfer(address token, address to, uint256 amount) internal returns (bool) {
+        (bool success, bytes memory ret) = token.call(abi.encodeCall(IERC20.transfer, (to, amount)));
+        if (!success) return false;
+        if (ret.length == 0) return token.code.length > 0;
+        if (ret.length == 32) return abi.decode(ret, (bool));
+        return false;
     }
 
     function _onlyGrai() internal view {
