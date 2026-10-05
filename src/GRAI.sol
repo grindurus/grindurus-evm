@@ -410,7 +410,7 @@ contract GRAI is
     //////////////////// UNLOCK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Accrues lock dividends, takes flat unlock fee (`unlockPenaltyBps` of `graiAmount` → dead on GRAI),
+    /// @dev Accrues lock dividends, takes flat unlock fee (`unlockPenaltyBps` of `graiAmount` → Grinders),
     ///      clamps excess votes, and returns `graiAmount - penalty` to wallet. Dust floor (including
     ///      full-escrow exit) lives in `previewUnlock` — intentional, not a stuck-funds exception.
     ///      Yield claims are separate (`claim` / `claimAll`).
@@ -422,7 +422,7 @@ contract GRAI is
 
         _accrueDividends(account);
 
-        (uint256 unlockAmount, ) = previewUnlock(account, graiAmount);
+        (uint256 unlockAmount, uint256 penalty) = previewUnlock(account, graiAmount);
 
         totalLocked -= graiAmount;
         entry.locked -= graiAmount;
@@ -430,6 +430,7 @@ contract GRAI is
         _syncDividendDebts(account);
 
         if (unlockAmount > 0) _transfer(address(this), account, unlockAmount);
+        if (penalty > 0) _transfer(address(this), address(grinders), penalty);
         if (entry.locked == 0) _removeAccount(account, false);
         emit Unlock(account, graiAmount, totalLocked);
     }
@@ -440,7 +441,7 @@ contract GRAI is
     ///      `graiAmount < ceil(BPS / unlockPenaltyBps)`. The floor is intentional and applies to
     ///      full-escrow exit (`graiAmount == locked` is not special). A legal partial unlock may
     ///      leave `locked < graiDust`; that remainder cannot `unlock` until the lock grows, the fee
-    ///      is set to 0, or they exit via liquidation `redeem`. Penalty stays on GRAI as dead.
+    ///      is set to 0, or they exit via liquidation `redeem`. Penalty GRAI is sent to Grinders.
     function previewUnlock(
         address account,
         uint256 graiAmount
@@ -666,8 +667,9 @@ contract GRAI is
     /// @dev Quorum here **and** Grinders stale (`!grinding()`). Flip to `REDEMPTION` **before**
     ///      sweeps so `Grinders.liquidate` can require `grai.liquidation()` (blocks premature
     ///      GRINDING sweeps). Sweep reverts propagate and roll back the regime flip — open stays
-    ///      atomic. On open: orphan/dead GRAI (`balanceOf(this) − totalLocked`) → `msg.sender`,
+    ///      atomic. On open: stray/orphan GRAI (`balanceOf(this) − totalLocked`) → `msg.sender`,
     ///      then sweep Grinders custodians + idle listed balances onto GRAI.
+    ///      Unlock penalties are already sent to Grinders on `unlock` — not part of this scoop.
     function liquidate() public nonReentrant {
         _requireRegime(Regime.GRINDING);
         if (!hasQuorum()) revert LiquidationNotReady();
@@ -675,9 +677,9 @@ contract GRAI is
 
         address liquidator = msg.sender;
 
-        // Unlock fees / stray GRAI on this contract are not escrow — send to the opener
+        // Stray GRAI on this contract (not escrow, not unlock fees — those go to Grinders) → opener
         // (`msg.sender`) as a normal holder so they can redeem (or hold) rather than leave
-        // ghost supply on Treasury / dilute after a full redeem + `revive` bootstrap.
+        // ghost supply / dilute after a full redeem + `revive` bootstrap.
         uint256 bal = balanceOf(address(this));
         if (bal > totalLocked) _transfer(address(this), liquidator, bal - totalLocked);
 

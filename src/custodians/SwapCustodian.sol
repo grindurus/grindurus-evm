@@ -27,8 +27,6 @@ contract SwapCustodian is Custodian {
     error NoTrade();
     error ExceededPriceLimit();
 
-    bytes32 private constant _CUSTODY_KIND = 0xed402d39d17fde1cee5497b1836db076721aeed07c6337ad6f981559e69383ad; // keccak256("grindurus.custodian.explicit_swap")
-
     event Swap(
         address indexed target,
         uint256 baseDelta,
@@ -40,7 +38,8 @@ contract SwapCustodian is Custodian {
 
     /// @inheritdoc Custodian
     function custodianKind() public pure override returns (bytes32) {
-        return _CUSTODY_KIND;
+        // forge-lint: disable-next-line(asm-keccak256)
+        return keccak256("grindurus.custodian.explicit_swap");
     }
 
     function initialize(address grinders_) public override initializer {

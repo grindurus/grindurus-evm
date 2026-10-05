@@ -292,16 +292,16 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function vote(uint256 graiAmount) external;
 
     /// @notice Accrue residual dividends and return `graiAmount` from the active lock to the wallet.
-    ///         Takes a flat unlock fee (`unlockPenaltyBps` of `graiAmount`); the penalty GRAI stays on
-    ///         GRAI as orphan/dead (scooped to the liquidation opener; not sent to treasury).
+    ///         Takes a flat unlock fee (`unlockPenaltyBps` of `graiAmount`); the penalty GRAI is sent
+    ///         to Grinders (not Treasury, not left dead on GRAI).
     ///         While fee > 0, unlocks below `ceil(BPS / unlockPenaltyBps)` revert — including
     ///         full-escrow exit and any remainder after a legal partial unlock. Intentional: top up,
     ///         set fee to 0, or exit via liquidation `redeem`. Yield claims are separate
     ///         (`claim` / `claimAll`).
     function unlock(uint256 graiAmount) external;
 
-    /// @notice Preview unlock of `graiAmount`: `unlockAmount` GRAI returned to wallet and `penalty` dead
-    ///         on GRAI (`penalty = ceil(graiAmount * unlockPenaltyBps / BPS)`). Reverts if
+    /// @notice Preview unlock of `graiAmount`: `unlockAmount` GRAI returned to wallet and `penalty`
+    ///         sent to Grinders (`penalty = ceil(graiAmount * unlockPenaltyBps / BPS)`). Reverts if
     ///         `graiAmount > escrows[account].locked`, or while fee > 0 if
     ///         `graiAmount < ceil(BPS / unlockPenaltyBps)` — same floor for full-escrow exit
     ///         (remainder below dust cannot `unlock` until lock grows, fee is 0, or liquidation redeem).
@@ -352,7 +352,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function bribe(address asset, address voter, uint256 graiAmount) external payable;
 
     /// @notice Liquidation open when `hasQuorum()` and Grinders is stale (`!grinding()`).
-    ///         Anyone may call; sweep reverts abort open. On open: orphan/dead GRAI → `msg.sender`;
+    ///         Anyone may call; sweep reverts abort open. On open: stray/orphan GRAI on this
+    ///         contract (`balanceOf(this) − totalLocked`) → `msg.sender`. Unlock penalties are
+    ///         already sent to Grinders on `unlock` and are not part of that scoop.
     ///         flip to `REDEMPTION`; then sweep Grinders custodians + idle listed balances onto GRAI.
     function liquidate() external;
 
