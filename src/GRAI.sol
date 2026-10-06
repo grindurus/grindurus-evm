@@ -110,6 +110,7 @@ contract GRAI is
             quorumBps: 66_67, // 66.67% ~ 2/3
             bribePremiumBps: 2_00, // 2%
             unlockPenaltyBps: 1_00, // 1% on every unlock
+            poachFeeBps: 1_00, // 1% of poach ask → Grinders
             liquidationPeriod: uint32(24 hours),
             redeemPeriod: uint32(7 days)
         });
@@ -162,8 +163,8 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev `id` selects the field; `data` is the packed value. Yield cuts are immutable after
-    ///      `initialize` — only tip, quorum, unlock, periods, `revenueShareBps`, and per-asset
-    ///      `BRIBEABLE` are patchable. `BRIBEABLE` packs `asset` (low 160) + flag (bit 160).
+    ///      `initialize` — only tip, quorum, unlock, poach fee, periods, `revenueShareBps`, and
+    ///      per-asset `BRIBEABLE` are patchable. `BRIBEABLE` packs `asset` (low 160) + flag (bit 160).
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/revive clocks; freeze both windows for the whole liquidation.
         _requireRegime(Regime.GRINDING);
@@ -190,6 +191,8 @@ contract GRAI is
             cfg.quorumBps = uint16(data);
         } else if (id == ConfigId.UNLOCK_PENALTY) {
             cfg.unlockPenaltyBps = uint16(data);
+        } else if (id == ConfigId.POACH_FEE) {
+            cfg.poachFeeBps = uint16(data);
         } else if (id == ConfigId.LIQUIDATION_PERIOD) {
             cfg.liquidationPeriod = uint32(data);
         } else if (id == ConfigId.REDEEM_PERIOD) {
@@ -361,7 +364,8 @@ contract GRAI is
     //////////////////// POACH ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Any bound slot; `poacher` ≠ current sticky referrer. Price = `value + l1Value` in GRAI.
+    /// @dev Any bound slot; `poacher` ≠ current referrer. Price = `value + l1Value` in GRAI
+    ///      (full ask). Of that, `ceil(price * poachFeeBps / BPS)` → Grinders on `poach`.
     ///      Reverts `InvalidAmount` if `price == 0` or `poacher` cannot pay.
     function previewPoach(address locker, address poacher) public view returns (uint256 price, address referrer) {
         (price, referrer) = treasury.poachOf(locker, poacher);
@@ -369,13 +373,17 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Pays `previewPoach` GRAI to the current sticky referrer, then `treasury.rebind` (tree only).
-    ///      Blocked while liquidation is open (same gate as deposit / lock / bribe).
+    /// @dev Pays `previewPoach` GRAI: fee → Grinders, remainder → referrer, then
+    ///      `treasury.rebind` (tree only). Blocked while liquidation is open (same gate as
+    ///      deposit / lock / bribe).
     function poach(address locker) public nonReentrant {
         _requireRegime(Regime.GRINDING);
         address poacher = msg.sender;
         (uint256 price, address referrer) = previewPoach(locker, poacher);
-        _transfer(poacher, referrer, price);
+        uint256 fee = (price * config.poachFeeBps + BPS - 1) / BPS;
+        uint256 toReferrer = price - fee;
+        if (toReferrer > 0) _transfer(poacher, referrer, toReferrer);
+        if (fee > 0) _transfer(poacher, address(grinders), fee);
         treasury.rebind(locker, poacher);
         emit Poach(poacher, locker, price);
     }
@@ -874,6 +882,7 @@ contract GRAI is
         if (2 * cfg.bribePremiumBps > BPS) revert BpsTooHigh();
         if (cfg.quorumBps >= BPS) revert BpsTooHigh();
         if (cfg.unlockPenaltyBps > 10_00) revert BpsTooHigh();
+        if (cfg.poachFeeBps > 10_00) revert BpsTooHigh();
         if (cfg.quorumBps < 2) revert BpsTooHigh();
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.dividendCutBps) + cfg.treasuryCutBps != BPS) revert InvalidCuts();

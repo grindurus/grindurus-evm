@@ -53,7 +53,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         QUORUM,
         UNLOCK_PENALTY,
         LIQUIDATION_PERIOD,
-        REDEEM_PERIOD
+        REDEEM_PERIOD,
+        POACH_FEE
     }
 
     struct AssetConfig {
@@ -118,6 +119,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint16 quorumBps;
         /// @notice Flat unlock penalty in bps of unlocked GRAI (every unlock; no time decay).
         uint16 unlockPenaltyBps;
+        /// @notice Flat poach fee in bps of the poach ask (`value + l1Value`); sent to Grinders.
+        uint16 poachFeeBps;
         /// @notice Delay after liquidation opens before `redeem` (claim) is allowed.
         /// @dev Window for keepers to call `Grinders.liquidate`, which pulls all custodian assets into GRAI
         ///      where they sit as idle inventory for the subsequent pro-rata `redeem` basket.
@@ -161,6 +164,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 bribePremiumBps,
             uint16 quorumBps,
             uint16 unlockPenaltyBps,
+            uint16 poachFeeBps,
             uint32 liquidationPeriod,
             uint32 redeemPeriod
         );
@@ -364,13 +368,15 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function revive() external;
 
     /// @notice GRAI cost to poach the sticky referrer link for `locker`: `value + l1Value`.
-    ///         Reverts if unbound, `poacher` is already the referrer, `price == 0`, or balance `< price`.
-    /// @return price GRAI due to the current sticky referrer.
-    /// @return referrer Current sticky upline (receives payment).
+    ///         Of that ask, `ceil(price * poachFeeBps / BPS)` goes to Grinders; the rest to the
+    ///         current sticky referrer. Reverts if unbound, `poacher` is already the referrer,
+    ///         `price == 0`, or balance `< price`.
+    /// @return price Full GRAI ask paid by the poacher (`fee + referrer net`).
+    /// @return referrer Current sticky upline (receives `price - fee`).
     function previewPoach(address locker, address poacher) external view returns (uint256 price, address referrer);
 
-    /// @notice Poach the sticky referrer link for `locker`. Pays `previewPoach` GRAI to the current
-    ///         referrer, then `treasury.rebind` (tree only — cashflow NFT ownership unchanged).
-    ///         Reverts while liquidation is open.
+    /// @notice Poach the sticky referrer link for `locker`. Pays `previewPoach` GRAI: fee → Grinders,
+    ///         remainder → current referrer, then `treasury.rebind` (tree only — cashflow NFT
+    ///         ownership unchanged). Reverts while liquidation is open.
     function poach(address locker) external;
 }

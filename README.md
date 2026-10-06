@@ -27,7 +27,7 @@ distribute(asset)          [custodian or any payer]
    └─ treasuryCutBps → treasury
                       ↓
 unlock(amount)                [locker]
-   flat unlock fee stays on GRAI as orphan/dead; net GRAI to wallet
+   flat unlock fee → Grinders; net GRAI to wallet
                       ↓
 bribe(voter)               [permissionless]
    dynamic ask vs half-quorum (premium / par / discount) in settlementAsset (non-FoT);
@@ -77,7 +77,7 @@ setSettlementAsset(usdc)
 setGrinders(grinders)
    ↓
 deposit(asset, amount, lock?)                  // capital → Grinders; GRAI at book; optional escrow
-lock / unlock / claim                         // unvoted dividends; unlock fee → dead on GRAI
+lock / unlock / claim                         // unvoted dividends; unlock fee → Grinders
    ↓
 distribute(asset, yieldAmount)                 // auction + dividend + treasury cuts
    ↓
@@ -106,14 +106,14 @@ For native ETH call `deposit` / `distribute` / `bribe` with `{value: …}` when 
   dividend cut is sent to treasury instead.
 - **redeem during open liquidation only** — after `liquidationPeriod`, burns wallet and/or locked
   GRAI for a pro-rata share of `_redeemable` balances on GRAI (excludes dividend reserves; share
-  denominator excludes orphan/dead GRAI on the contract). Grinders
+  denominator is `totalSupply`, so stray GRAI still on GRAI dilutes redeemers). Grinders
   sweeps return custodian assets to GRAI. After `liquidationPeriod + redeemPeriod`, `revive`
   sends leftover redeemable balances to Grinders and clears liquidation **without** repricing
   `totalValue` from leftover NAV (keeps ~$1/GRAI mint; zeroes book only if supply is 0).
   Unclaimed dividend reserve stays on GRAI
 - **distribute:** splits `received` by `dividendCutBps` / `treasuryCutBps` (defaults 50/50); no eligible locks → dividend cut to treasury
-- **unlock:** `unlock(graiAmount)` — flat penalty (`unlockPenaltyBps`, default **1%**) **stays on GRAI as dead**
-  (not sent to treasury); net returns to the wallet (`previewUnlock` → `(unlockAmount, penalty)`).
+- **unlock:** `unlock(graiAmount)` — flat penalty (`unlockPenaltyBps`, default **1%**) **sent to Grinders**
+  (not Treasury, not left dead on GRAI); net returns to the wallet (`previewUnlock` → `(unlockAmount, penalty)`).
   While penalty > 0, any unlock below `ceil(BPS / unlockPenaltyBps)` reverts — including full-escrow
   dust and any remainder after a partial unlock (intentional: top up, set fee to 0, or liquidation redeem).
   Yield claims are separate

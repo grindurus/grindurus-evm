@@ -29,6 +29,7 @@ contract TreasuryReferralsTest is GRAIFixture {
         grai.setGrinders(address(grinders));
         _setYieldSplitFiftyFifty();
         grai.setConfig(IGRAI.ConfigId.REVENUE_SHARE, REVENUE_SHARE_BPS);
+        grai.setConfig(IGRAI.ConfigId.POACH_FEE, 0); // tree tests assert full ask to seller
         treasury.setBeneficiar(beneficiar);
         vm.stopPrank();
 

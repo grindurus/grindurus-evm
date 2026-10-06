@@ -42,6 +42,7 @@ contract TreasuryPoachTest is GRAIFixture {
         grai.setGrinders(address(grinders));
         _setYieldSplitFiftyFifty();
         grai.setConfig(IGRAI.ConfigId.REVENUE_SHARE, REVENUE_SHARE_BPS);
+        grai.setConfig(IGRAI.ConfigId.POACH_FEE, 0); // tree tests assert full ask to seller
         treasury.setBeneficiar(beneficiar);
         vm.stopPrank();
 
@@ -110,6 +111,33 @@ contract TreasuryPoachTest is GRAIFixture {
         _assertNode(bob, 300e6, 601e6, 0);
         _assertNode(carol, 300e6, 0, 0);
         _assertNode(carol2, 301e6, 0, 0);
+    }
+
+    /// Poach fee (`poachFeeBps`) is carved from the ask → Grinders; remainder → sticky seller.
+    function test_PoachFee_ToGrinders() public {
+        _deposit(alice, 100e6, address(0));
+        _deposit(dias, 100e6, address(0));
+
+        vm.prank(admin);
+        grai.setConfig(IGRAI.ConfigId.POACH_FEE, 1_00); // 1%
+
+        (uint256 price, address seller) = treasury.poachOf(alice, dias);
+        assertEq(seller, alice);
+        assertEq(price, 100e6);
+        uint256 fee = (price * 1_00 + 10_000 - 1) / 10_000; // ceil
+        assertEq(fee, 1e6);
+
+        uint256 aliceBefore = grai.balanceOf(alice);
+        uint256 grindersBefore = grai.balanceOf(address(grinders));
+        uint256 diasBefore = grai.balanceOf(dias);
+
+        vm.prank(dias);
+        grai.poach(alice);
+
+        assertEq(grai.balanceOf(alice), aliceBefore + price - fee);
+        assertEq(grai.balanceOf(address(grinders)), grindersBefore + fee);
+        assertEq(grai.balanceOf(dias), diasBefore - price);
+        assertEq(treasury.referrerOf(alice), dias);
     }
 
     ////////////////////////////// mint / lockerBooks //////////////////////////////

@@ -171,6 +171,12 @@ contract GRAIRolesTest is Test {
             ownerMultisig,
             ownerSigner,
             address(grai),
+            abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.POACH_FEE, uint256(200)))
+        );
+        _exec(
+            ownerMultisig,
+            ownerSigner,
+            address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.LIQUIDATION_PERIOD, uint256(uint32(12 hours))))
         );
         _exec(
@@ -188,6 +194,7 @@ contract GRAIRolesTest is Test {
             uint16 bribePremiumBps,
             uint16 quorum,
             uint16 unlockPenaltyBps,
+            uint16 poachFeeBps,
             uint32 liquidationPeriod,
             uint32 redeemPeriod
         ) = grai.config();
@@ -199,6 +206,7 @@ contract GRAIRolesTest is Test {
         assertEq(bribePremiumBps, 300);
         assertEq(quorum, 5_000);
         assertEq(unlockPenaltyBps, 1_000);
+        assertEq(poachFeeBps, 200);
         assertEq(liquidationPeriod, 12 hours);
         assertEq(redeemPeriod, 3 days);
     }
@@ -210,7 +218,7 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
         );
-        (,,, uint16 claimTipBps,,,,,) = grai.config();
+        (,,, uint16 claimTipBps,,,,,,) = grai.config();
         assertEq(claimTipBps, 50);
     }
 
