@@ -25,10 +25,10 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     using SafeERC20 for IERC20;
     using OptionsBuilder for bytes;
 
-    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
-    uint64 public constant MAX_CLIFF = 365 days;
-    uint64 public constant MAX_DURATION = 4 * 365 days;
-    uint8 public constant BUCKET_COUNT = 11;
+    uint256 internal constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
+    uint64 internal constant MAX_CLIFF = 365 days;
+    uint64 internal constant MAX_DURATION = 4 * 365 days;
+    uint8 internal constant BUCKET_COUNT = 11;
     /// @dev Packed LZ payload: keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient
     ///      (192 bytes). `grsAmount` on the wire is OFT shared decimals (6).
     bytes32 internal constant SALE_MSG = keccak256("GRS.sale");
@@ -39,12 +39,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     uint256 internal constant GRANT_MSG_LEN = 224;
 
     /// @dev Fallback lzReceive gas when `peerLzReceiveBudget[eid].gas == 0` (typical EVM peer).
-    uint128 public constant DEFAULT_LZ_RECEIVE_GAS = 200_000;
+    uint128 internal constant DEFAULT_LZ_RECEIVE_GAS = 200_000;
     /// @dev Native lamports the Executor may spend on Solana `lz_receive` (ATA / escrow rent).
     ///      GRS always `init_if_needed`s `sale_escrow` plus the recipient ATA — one token-account
     ///      rent (2_039_280) is not enough; Executor then reverts `PostExecute` / `InsufficientBalance`
     ///      and the whole atomic tx rolls back. Budget covers ~3 token accounts + headroom.
-    uint128 public constant DEFAULT_SOLANA_LZ_RECEIVE_VALUE = 10_000_000;
+    uint128 internal constant DEFAULT_SOLANA_LZ_RECEIVE_VALUE = 10_000_000;
 
     /// @notice LayerZero eid of the home chain. `0` on home; on spoke set in the constructor with
     ///         `homeAddress` (`setPeer(homeEid, homeAddress)`).
@@ -209,7 +209,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         public
         returns (uint256 vestingId)
     {
-        if (to == address(0)) revert InvalidRecipient();
+        if (to == address(0)) revert ERC20InvalidReceiver(to);
         if (amount == 0) revert ZeroAmount();
         if (cliffSeconds == 0 && durationSeconds == 0) revert InstantNotVest();
         if (cliffSeconds > MAX_CLIFF || durationSeconds > MAX_DURATION) revert InvalidSchedule();
@@ -222,7 +222,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///         call; tokens always go to the beneficiary, not `msg.sender`.
     function release(uint256 id) public {
         uint256 amount = releasable(id);
-        if (amount == 0) revert NothingToRelease();
+        if (amount == 0) revert ZeroAmount();
         Vesting storage v = _vesting(id);
         v.released += amount;
         vestingLocked -= amount;
@@ -235,7 +235,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///         accounting only) so buybacks returned to this bucket can be re-listed.
     /// @dev CEI: release sale reserve + transfer GRS before paying `recipient` (native / ERC-20 hooks).
     function buy(uint256 id, uint256 amount, address to) public payable returns (uint256 cost) {
-        if (to == address(0)) revert InvalidRecipient();
+        if (to == address(0)) revert ERC20InvalidReceiver(to);
         Sale storage s = _saleAt(id);
         cost = _quoteCost(s, amount);
         s.grsAmount -= amount;
@@ -543,8 +543,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
 
     function _amountFromShared(bytes32 word) internal view returns (uint256) {
         uint256 shared = uint256(word);
-        if (shared > type(uint64).max) revert CapExceeded();
-        // casting to 'uint64' is safe because CapExceeded above
+        if (shared > type(uint64).max) revert IOFT.AmountSDOverflowed(shared);
+        // casting to 'uint64' is safe because AmountSDOverflowed above
         // forge-lint: disable-next-line(unsafe-typecast)
         return _toLD(uint64(shared));
     }
@@ -593,7 +593,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     function _quoteCost(Sale storage s, uint256 grsAmount) internal view returns (uint256 cost) {
         if (s.assetAmount == 0 || s.grsAmount == 0) revert SaleClosed();
         if (grsAmount == 0) revert ZeroAmount();
-        if (grsAmount > s.grsAmount) revert SaleExceeded();
+        if (grsAmount > s.grsAmount) revert InsufficientInventory();
         cost = grsAmount == s.grsAmount
             ? s.assetAmount
             : Math.mulDiv(grsAmount, s.assetAmount, s.grsAmount, Math.Rounding.Floor);

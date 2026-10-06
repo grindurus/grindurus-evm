@@ -9,15 +9,14 @@ interface IGRS {
     error BucketExceeded();
     error InvalidSchedule();
     error ZeroAmount();
-    error NothingToRelease();
     error UnknownVesting();
     error InstantNotVest();
     error SaleClosed();
-    error SaleExceeded();
     error InvalidPayment();
     error PaymentFailed();
     error UnknownSale();
-    /// @dev Sellable / transferable inventory is below the requested amount (vesting lockbox reserved).
+    /// @dev Sellable / transferable inventory is below the requested amount (vesting lockbox reserved),
+    ///      or a sale buy exceeds remaining `grsAmount` on the lot.
     error InsufficientInventory();
     /// @dev OFT compose is disabled — custom sale/grant payloads must not share compose framing.
     error ComposeDisabled();
@@ -105,8 +104,6 @@ interface IGRS {
     /// @notice Canonical home GRS identity (`address` left-padded or Solana pubkey). On home equals
     ///         this contract; on spoke equals the home peer. Home vs spoke is gated by `homeEid == 0`.
     function homeAddress() external view returns (bytes32);
-
-    function MAX_SUPPLY() external view returns (uint256);
 
     /// @notice Page of sales (`offset` 0-based, id = offset+1). Reverts `UnknownSale` if
     ///         `offset` is past the book; `ZeroAmount` if `limit == 0`. Short page ⇒ end.

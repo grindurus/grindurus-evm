@@ -70,7 +70,6 @@ contract GRSTest is Test {
         assertEq(grs.decimals(), 18);
         assertEq(grs.sharedDecimals(), 6);
         assertEq(grs.homeAddress(), bytes32(uint256(uint160(address(grs)))));
-        assertEq(grs.MAX_SUPPLY(), 1_000_000_000e18);
         assertEq(grs.totalSupply(), 1_000_000_000e18);
         assertEq(grs.balanceOf(address(grs)), 1_000_000_000e18);
         assertEq(grs.balanceOf(admin), 0);
@@ -119,7 +118,6 @@ contract GRSTest is Test {
         assertTrue(grs.homeAddress() != bytes32(0));
         assertEq(grs.totalSupply(), 0);
         assertEq(grs.balanceOf(admin), 0);
-        assertEq(grs.MAX_SUPPLY(), 1_000_000_000e18);
     }
 
     function test_TransferWorks() public {
@@ -252,8 +250,8 @@ contract GRSTest is Test {
         assertGt(grs.enforcedOptions(30110, 1).length, 0);
 
         (uint128 solGas, uint128 solValue) = grs.peerLzReceiveBudget(30168);
-        assertEq(solGas, grs.DEFAULT_LZ_RECEIVE_GAS());
-        assertEq(solValue, grs.DEFAULT_SOLANA_LZ_RECEIVE_VALUE());
+        assertEq(solGas, 200_000);
+        assertEq(solValue, 10_000_000);
 
         vm.prank(admin);
         grs.setPeerLzReceiveBudget(40_124, 300_000, 1_000_000); // e.g. Aptos-style eid

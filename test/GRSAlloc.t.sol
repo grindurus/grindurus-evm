@@ -371,7 +371,7 @@ contract GRSAllocTest is Test {
         assertEq(grs.salesReserved(), 900_000_000e18);
         assertEq(grs.remaining(IGRS.Bucket.TokenSales), 0);
         assertEq(grs.quoteBuy(id, 900_000_000e18), 1 ether);
-        vm.expectRevert(IGRS.SaleExceeded.selector);
+        vm.expectRevert(IGRS.InsufficientInventory.selector);
         grs.quoteBuy(id, 900_000_000e18 + 1);
     }
 
@@ -583,7 +583,7 @@ contract GRSAllocTest is Test {
         vm.prank(admin);
         uint256 id = grs.sale(bytes32(0), 1 ether, 1e18, bytes32(0), 0);
         deal(address(this), 3 ether);
-        vm.expectRevert(IGRS.SaleExceeded.selector);
+        vm.expectRevert(IGRS.InsufficientInventory.selector);
         grs.buy{value: 2 ether}(id, 2e18, address(this));
         grs.buy{value: 1 ether}(id, 1e18, address(this));
         vm.expectRevert(IGRS.SaleClosed.selector);
