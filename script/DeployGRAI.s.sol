@@ -2,41 +2,36 @@
 pragma solidity ^0.8.30;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {Create3Factory} from "./Create3Factory.sol";
 import {GRAI, IGRAI, IPriceOracleRouter} from "../src/GRAI.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {Grinders} from "../src/Grinders.sol";
 import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 
-/// @title Deploy GRAI (CREATE3) on an EVM chain
-/// @notice GRAI impl + proxy, Treasury, Grinders, Chainlink feeds.
-///         Network is selected from `block.chainid` (`--rpc-url`).
+/// @title Deploy GRAI on an EVM chain
+/// @notice Direct CREATE: GRAI + Treasury + Grinders (impl + ERC1967 proxy each), feeds.
+///         Network from `block.chainid` (`--rpc-url`). Addresses are not precomputed.
 ///
 /// Env:
 ///   PRIVATE_KEY       — deployer / initial owner
-///   CREATE3_SALT_TAG  — shared salt namespace fallback (default: "grindurus")
-///   CREATE3_SALT_TAG_GRAI / _TREASURY / _GRINDERS — per-contract override (vanity)
 ///   OWNER_MULTISIG    — optional Ownable2Step handoff (`acceptOwnership` required)
 ///   MAX_STALENESS     — optional seconds (default per-chain)
 ///   WETH              — optional override of network WETH
-///   GRINDERS          — optional override for `deployCoWCustodian()` (else CREATE3 predict)
+///   GRAI / GRINDERS   — required for post-deploy helpers
 ///
-/// Predict addresses only:
-///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI --sig "predict()" --rpc-url arbitrum
-///
-/// Simulate deploy (no broadcast — catches reverts, shows addresses):
+/// Simulate (no broadcast):
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI --rpc-url arbitrum
 ///
-/// Deploy (Arbitrum):
-///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI --rpc-url arbitrum --broadcast --verify
+/// Deploy:
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --rpc-url arbitrum --broadcast --verify
 ///
 /// Post-deploy helpers (owner = `PRIVATE_KEY`):
 ///   PRIVATE_KEY=0x... GRAI=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "setBribeable()" --rpc-url arbitrum --broadcast
 ///   PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "deployCoWCustodian()" --rpc-url arbitrum --broadcast --verify
-///   # deploy only (skip Grinders.set): --sig "deployCoWCustodian(bool)" false
 contract DeployGRAI is Script {
     struct AssetData {
         address asset;
@@ -53,51 +48,21 @@ contract DeployGRAI is Script {
         uint256 defaultMaxStaleness;
     }
 
-    struct Plan {
-        address owner;
-        address weth;
-        bytes32 saltImpl;
-        bytes32 saltProxy;
-        bytes implCode;
-        bytes proxyCode;
-        address impl;
-        address proxy;
-        bytes32 saltTreasuryImpl;
-        bytes32 saltTreasuryProxy;
-        bytes treasuryImplCode;
-        bytes treasuryProxyCode;
-        address treasuryImpl;
-        address treasuryProxy;
-        bytes32 saltGrindersImpl;
-        bytes32 saltGrindersProxy;
-        bytes grindersImplCode;
-        bytes grindersProxyCode;
-        address grindersImpl;
-        address grindersProxy;
-    }
-
-    function predict() external view {
-        Network memory net = _network();
-        Plan memory plan = _plan(net);
-        _log(net, plan, Create3Factory.isAvailable());
-    }
-
     function run() external {
         Network memory net = _network();
-        Plan memory plan = _plan(net);
-        _log(net, plan, Create3Factory.isAvailable());
+        address owner = vm.addr(vm.envUint("PRIVATE_KEY"));
+        address weth = vm.envOr("WETH", net.weth);
+        require(weth != address(0), "WETH required");
 
-        require(Create3Factory.isAvailable(), "CREATE2 factory missing on this chain");
-        require(plan.weth != address(0), "WETH required");
+        _logNetwork(net, owner, weth);
 
         uint256 pk = vm.envUint("PRIVATE_KEY");
-
         vm.startBroadcast(pk);
 
-        GRAI grai = deployGRAI(plan);
-        Treasury treasury = deployTreasury(plan);
+        GRAI grai = deployGRAI(owner, weth);
+        Treasury treasury = deployTreasury(address(grai));
         wireTreasury(grai, address(treasury));
-        Grinders grinders = deployGrinders(plan);
+        Grinders grinders = deployGrinders(owner, address(grai));
         wireGrinders(grai, address(grinders));
 
         initFeeds(grai);
@@ -117,11 +82,10 @@ contract DeployGRAI is Script {
 
         vm.stopBroadcast();
 
-        require(address(treasury) == plan.treasuryProxy, "treasury address mismatch");
         require(address(grai.treasury()) == address(treasury), "treasury not wired");
         require(address(grai.grinders()) == address(grinders), "grinders not wired");
         require(address(grinders.grai()) == address(grai), "grinders.grai mismatch");
-        require(address(grai.weth()) == plan.weth, "weth mismatch");
+        require(address(grai.weth()) == weth, "weth mismatch");
 
         console2.log("Deploy complete.");
         console2.log("GRAI:", address(grai));
@@ -145,27 +109,27 @@ contract DeployGRAI is Script {
         }
     }
 
-    /// @notice CREATE3 GRAI impl + proxy (`initialize(owner, weth)`).
+    /// @notice GRAI impl + proxy (`initialize(owner, weth)`).
     // forge-lint: disable-next-line(mixed-case-function)
-    function deployGRAI(Plan memory plan) public returns (GRAI grai) {
-        address impl = Create3Factory.deploy(plan.saltImpl, plan.implCode);
-        require(impl == plan.impl, "grai impl address mismatch");
-
-        address proxy = Create3Factory.deploy(plan.saltProxy, plan.proxyCode);
-        require(proxy == plan.proxy, "grai proxy address mismatch");
-        grai = GRAI(payable(proxy));
+    function deployGRAI(address owner, address weth) public returns (GRAI grai) {
+        GRAI impl = new GRAI();
+        grai = GRAI(
+            payable(new ERC1967Proxy(address(impl), abi.encodeCall(GRAI.initialize, (owner, weth))))
+        );
+        console2.log("GRAI impl:", address(impl));
+        console2.log("GRAI proxy:", address(grai));
     }
 
     //////////////////// TREASURY ////////////////////
 
-    /// @notice CREATE3 Treasury impl + proxy (`initialize(grai)`).
-    function deployTreasury(Plan memory plan) public returns (Treasury treasury) {
-        address impl = Create3Factory.deploy(plan.saltTreasuryImpl, plan.treasuryImplCode);
-        require(impl == plan.treasuryImpl, "treasury impl address mismatch");
-
-        address proxy = Create3Factory.deploy(plan.saltTreasuryProxy, plan.treasuryProxyCode);
-        require(proxy == plan.treasuryProxy, "treasury proxy address mismatch");
-        treasury = Treasury(payable(proxy));
+    /// @notice Treasury impl + proxy (`initialize(grai)`).
+    function deployTreasury(address grai) public returns (Treasury treasury) {
+        Treasury impl = new Treasury();
+        treasury = Treasury(
+            payable(new ERC1967Proxy(address(impl), abi.encodeCall(Treasury.initialize, (grai))))
+        );
+        console2.log("Treasury impl:", address(impl));
+        console2.log("Treasury proxy:", address(treasury));
     }
 
     /// @notice Wire `GRAI.setTreasury(treasury)`.
@@ -176,14 +140,16 @@ contract DeployGRAI is Script {
 
     //////////////////// GRINDERS ////////////////////
 
-    /// @notice CREATE3 Grinders impl + proxy (`initialize(owner, grai)`).
-    function deployGrinders(Plan memory plan) public returns (Grinders grinders) {
-        address impl = Create3Factory.deploy(plan.saltGrindersImpl, plan.grindersImplCode);
-        require(impl == plan.grindersImpl, "grinders impl address mismatch");
-
-        address proxy = Create3Factory.deploy(plan.saltGrindersProxy, plan.grindersProxyCode);
-        require(proxy == plan.grindersProxy, "grinders proxy address mismatch");
-        grinders = Grinders(payable(proxy));
+    /// @notice Grinders impl + proxy (`initialize(owner, grai)`).
+    function deployGrinders(address owner, address grai) public returns (Grinders grinders) {
+        Grinders impl = new Grinders();
+        grinders = Grinders(
+            payable(
+                new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (owner, grai)))
+            )
+        );
+        console2.log("Grinders impl:", address(impl));
+        console2.log("Grinders proxy:", address(grinders));
     }
 
     /// @notice Wire `GRAI.setGrinders(grinders)`.
@@ -216,8 +182,7 @@ contract DeployGRAI is Script {
     /// @notice Mark `assets[i].bribeable` via `setConfig(BRIBEABLE)` (each must be listed).
     function setBribeable() external {
         Network memory net = _network();
-        Plan memory plan = _plan(net);
-        address graiAddr = vm.envOr("GRAI", plan.proxy);
+        address graiAddr = vm.envAddress("GRAI");
         uint256 pk = vm.envUint("PRIVATE_KEY");
 
         GRAI grai = GRAI(payable(graiAddr));
@@ -245,11 +210,13 @@ contract DeployGRAI is Script {
 
     //////////////////// COW CUSTODIAN ////////////////////
 
+    function deployCoWCustodian() external returns (CoWCustodian) {
+        return deployCoWCustodian(true);
+    }
+
     /// @param setImpl If true, call `Grinders.set(cow, impl)` after deploy.
     function deployCoWCustodian(bool setImpl) public returns (CoWCustodian impl) {
-        Network memory net = _network();
-        Plan memory plan = _plan(net);
-        address grindersAddr = vm.envOr("GRINDERS", plan.grindersProxy);
+        address grindersAddr = vm.envAddress("GRINDERS");
         uint256 pk = vm.envUint("PRIVATE_KEY");
 
         Grinders grinders = Grinders(payable(grindersAddr));
@@ -271,43 +238,6 @@ contract DeployGRAI is Script {
         console2.log("CoWCustodian impl:", address(impl));
         console2.log("COW_SETTLEMENT:", address(impl.COW_SETTLEMENT()));
         console2.log("COW_VAULT_RELAYER:", impl.COW_VAULT_RELAYER());
-    }
-
-    function _plan(Network memory net) internal view returns (Plan memory plan) {
-        plan.owner = vm.addr(vm.envUint("PRIVATE_KEY"));
-        plan.weth = vm.envOr("WETH", net.weth);
-
-        // Per-contract tags keep vanity independent; unset → CREATE3_SALT_TAG → "grindurus".
-        string memory graiTag = _componentSaltTag("CREATE3_SALT_TAG_GRAI");
-        string memory treasuryTag = _componentSaltTag("CREATE3_SALT_TAG_TREASURY");
-        string memory grindersTag = _componentSaltTag("CREATE3_SALT_TAG_GRINDERS");
-
-        plan.saltImpl = Create3Factory.makeSalt("GRAI/impl", graiTag);
-        plan.saltProxy = Create3Factory.makeSalt("GRAI/proxy", graiTag);
-        plan.implCode = type(GRAI).creationCode;
-        plan.impl = Create3Factory.computeAddress(plan.saltImpl);
-        plan.proxyCode = Create3Factory.proxyCreationCode(
-            plan.impl, abi.encodeCall(GRAI.initialize, (plan.owner, plan.weth))
-        );
-        plan.proxy = Create3Factory.computeAddress(plan.saltProxy);
-
-        plan.saltTreasuryImpl = Create3Factory.makeSalt("Treasury/impl", treasuryTag);
-        plan.saltTreasuryProxy = Create3Factory.makeSalt("Treasury/proxy", treasuryTag);
-        plan.treasuryImplCode = type(Treasury).creationCode;
-        plan.treasuryImpl = Create3Factory.computeAddress(plan.saltTreasuryImpl);
-        plan.treasuryProxyCode = Create3Factory.proxyCreationCode(
-            plan.treasuryImpl, abi.encodeCall(Treasury.initialize, (plan.proxy))
-        );
-        plan.treasuryProxy = Create3Factory.computeAddress(plan.saltTreasuryProxy);
-
-        plan.saltGrindersImpl = Create3Factory.makeSalt("Grinders/impl", grindersTag);
-        plan.saltGrindersProxy = Create3Factory.makeSalt("Grinders/proxy", grindersTag);
-        plan.grindersImplCode = type(Grinders).creationCode;
-        plan.grindersImpl = Create3Factory.computeAddress(plan.saltGrindersImpl);
-        plan.grindersProxyCode = Create3Factory.proxyCreationCode(
-            plan.grindersImpl, abi.encodeCall(Grinders.initialize, (plan.owner, plan.proxy))
-        );
-        plan.grindersProxy = Create3Factory.computeAddress(plan.saltGrindersProxy);
     }
 
     function _network() internal view returns (Network memory) {
@@ -402,7 +332,7 @@ contract DeployGRAI is Script {
             net.defaultMaxStaleness = 1 hours;
             return net;
         }
-       
+
         if (chainId == 4663) {
             // https://docs.robinhood.com/chain/protocol-contracts/ (L2 Weth)
             address ethUsd = 0x78F3556b67E17Df817D51Ef5a990cDaF09E8d3A9; // ETH/USD proxy
@@ -457,30 +387,11 @@ contract DeployGRAI is Script {
         revert("unknown chainId");
     }
 
-    function _saltTag() internal view returns (string memory) {
-        try vm.envString("CREATE3_SALT_TAG") returns (string memory tag) {
-            if (bytes(tag).length != 0) return tag;
-        } catch {}
-        return vm.envOr("CREATE2_SALT_TAG", string("grindurus"));
-    }
-
-    /// @dev `CREATE3_SALT_TAG_<COMPONENT>` if set, else shared `_saltTag()`.
-    function _componentSaltTag(string memory envKey) internal view returns (string memory) {
-        try vm.envString(envKey) returns (string memory tag) {
-            if (bytes(tag).length != 0) return tag;
-        } catch {}
-        return _saltTag();
-    }
-
-    function _log(Network memory net, Plan memory plan, bool factoryAvailable) internal view {
+    function _logNetwork(Network memory net, address owner, address weth) internal view {
         console2.log("chain:", net.name);
         console2.log("chainId:", net.chainId);
-        console2.log("CREATE3 factory available:", factoryAvailable);
-        console2.log("CREATE3_SALT_TAG_GRAI:", _componentSaltTag("CREATE3_SALT_TAG_GRAI"));
-        console2.log("CREATE3_SALT_TAG_TREASURY:", _componentSaltTag("CREATE3_SALT_TAG_TREASURY"));
-        console2.log("CREATE3_SALT_TAG_GRINDERS:", _componentSaltTag("CREATE3_SALT_TAG_GRINDERS"));
-        console2.log("OWNER:", plan.owner);
-        console2.log("WETH:", plan.weth);
+        console2.log("OWNER:", owner);
+        console2.log("WETH:", weth);
         console2.log("assets:", net.assets.length);
         for (uint256 i; i < net.assets.length; ++i) {
             console2.log("  asset:", net.assets[i].asset);
@@ -488,12 +399,5 @@ contract DeployGRAI is Script {
             console2.log("  oracle:", net.assets[i].oracle);
             console2.log("  bribeable:", net.assets[i].bribeable);
         }
-        console2.log("GRAI impl:", plan.impl);
-        console2.log("GRAI proxy:", plan.proxy);
-        console2.log("Treasury impl:", plan.treasuryImpl);
-        console2.log("Treasury proxy:", plan.treasuryProxy);
-        console2.log("Grinders impl:", plan.grindersImpl);
-        console2.log("Grinders proxy:", plan.grindersProxy);
     }
-
 }

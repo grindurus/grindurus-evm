@@ -5,11 +5,8 @@ Run from `grindurus-evm/`.
 
 | Script | Role |
 | ------ | ---- |
-| [`DeployGRAI.s.sol`](DeployGRAI.s.sol) | CREATE3 GRAI + Treasury + Grinders, Chainlink feeds, bribeable flags |
-| [`DeployCoWCustodian.s.sol`](DeployCoWCustodian.s.sol) | CoW custodian impl (+ optional Grinders register / mint / standalone) |
+| [`DeployGRAI.s.sol`](DeployGRAI.s.sol) | Direct CREATE: GRAI + Treasury + Grinders, Chainlink feeds, bribeable |
 | [`DeployGRS.s.sol`](DeployGRS.s.sol) | LayerZero OFT GRS (plain `new`) + Solana peer / TGE sales helpers |
-| [`Create3Factory.sol`](Create3Factory.sol) | Nick’s CREATE2 factory helpers |
-| [`vanity-create3/`](vanity-create3/) | Salt grinder for vanity CREATE3 proxies |
 
 ## Prerequisites
 
@@ -28,38 +25,31 @@ Aliases: `--rpc-url sepolia|ethereum|arbitrum|base|robinhood` (from `foundry.tom
 Shared flags:
 
 - `OWNER_MULTISIG=` — start Ownable2Step handoff (multisig must still `acceptOwnership`)
-- `CREATE3_SALT_TAG=` — shared salt fallback (default `grindurus`)
-- `CREATE3_SALT_TAG_GRAI` / `_TREASURY` / `_GRINDERS` — per-contract vanity overrides
-- `DRY_RUN=1` — CoW / GRS: log / predict only, no broadcast
-- `CHAIN=` — CoW / GRS only; must match `--rpc-url` chain id
+- `DRY_RUN=1` — GRS helpers: log only, no broadcast
+- `CHAIN=` — GRS only; must match `--rpc-url` chain id
 
 Network for `DeployGRAI` is taken from `block.chainid` (`--rpc-url`), not `CHAIN=`.
 
 ## Order
 
-1. **GRAI** — CREATE3 GRAI + Treasury + Grinders, feeds, bribeable
-2. **CoWCustodian** — impl + optional `Grinders.set` / `mint`
+1. **GRAI** — impl+proxy for GRAI / Treasury / Grinders, feeds, bribeable
+2. **CoWCustodian** — via `DeployGRAI.deployCoWCustodian()` (needs `GRINDERS=`)
 3. **GRS** (optional) — LayerZero OFT; then `setSolanaPeer` / list sales
 
 ```
-DeployGRAI  →  DeployCoWCustodian  →  (optional) DeployGRS + setSolanaPeer
+DeployGRAI  →  deployCoWCustodian  →  (optional) DeployGRS + setSolanaPeer
 ```
 
-CREATE3 addresses depend **only** on salt tags (+ Nick’s factory on-chain).
-GRS / custodian impl addresses are non-deterministic.
+Addresses are normal CREATE from the deployer EOA (nonce-based), not precomputed.
 
 ---
 
 ## 1. GRAI (+ Treasury + Grinders)
 
-One script deploys and wires all three CREATE3 stacks, sets Chainlink feeds from the
-per-chain asset table, and marks bribeable assets via `setConfig(BRIBEABLE)`.
+Deploys each stack with `new Impl` + `new ERC1967Proxy(...initialize...)`, wires Treasury and
+Grinders, sets Chainlink feeds, marks bribeable assets.
 
 ```bash
-# Predict addresses
-PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "predict()" --rpc-url arbitrum
-
 # Simulate (no broadcast)
 PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
   --rpc-url arbitrum
@@ -73,7 +63,7 @@ PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
   --rpc-url robinhood --broadcast
 ```
 
-Optional: `WETH=`, `MAX_STALENESS=`, `OWNER_MULTISIG=`, salt tags (see below).
+Optional: `WETH=`, `MAX_STALENESS=`, `OWNER_MULTISIG=`.
 
 ### Post-deploy: bribeable
 
@@ -84,7 +74,7 @@ PRIVATE_KEY=0x... GRAI=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
   --sig "setBribeable()" --rpc-url arbitrum --broadcast
 ```
 
-If `GRAI=` is omitted, the CREATE3-predicted GRAI proxy for the current salt tags is used.
+`GRAI=` is required.
 
 ### Network asset defaults
 
@@ -100,31 +90,18 @@ If `GRAI=` is omitted, the CREATE3-predicted GRAI proxy for the current salt tag
 
 ## 2. CoWCustodian
 
-Requires Grinders already deployed (from `DeployGRAI`). Deploys the CoW impl.
-Proxies are minted later with `Grinders.mint` (or set `MINT=true`).
+Requires Grinders already deployed. Deploys the CoW impl and optionally registers it on Grinders.
 
 ```bash
-PRIVATE_KEY=0x... forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
-  --sig "predict()" --rpc-url arbitrum
+PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deployCoWCustodian()" --rpc-url arbitrum --broadcast --verify
 
-PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
-  --rpc-url arbitrum --broadcast --verify
-
-# Register kind + mint one sleeve
-PRIVATE_KEY=0x... GRINDERS=0x... MINT=true REGISTER=true \
-  BASE_ASSET=0x... QUOTE_ASSET=0x... CUSTODIAN_OWNER=0x... \
-  forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
-  --rpc-url arbitrum --broadcast --verify
-
-# Standalone proxy (no Grinders): initialize(admin)
-PRIVATE_KEY=0x... STANDALONE=true \
-  BASE_ASSET=0x... QUOTE_ASSET=0x... \
-  forge script script/DeployCoWCustodian.s.sol:DeployCoWCustodian \
-  --rpc-url ethereum --broadcast --verify
+# Deploy only (skip Grinders.set):
+PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deployCoWCustodian(bool)" false --rpc-url arbitrum --broadcast --verify
 ```
 
-Optional: `GRINDERS=` (else CREATE3-predicted Grinders proxy — use `CREATE3_SALT_TAG_GRINDERS`
-if you overrode the Grinders tag), `REGISTER=true`, `STANDALONE=true`, `DRY_RUN=1`, `CHAIN=`.
+`GRINDERS=` is required.
 
 ---
 
@@ -199,33 +176,6 @@ grs.acceptOwnership(); // also syncs LZ endpoint delegate on GRS
 ```
 
 Treasury is owned via GRAI linkage (`initialize(grai)`), not Ownable2Step from the deploy script.
-
----
-
-## CREATE3 / vanity
-
-- Factory: [`Create3Factory.sol`](Create3Factory.sol) (Nick’s deployer `0x4e59…956C`)
-- Labels: `GRAI/impl|proxy`, `Treasury/impl|proxy`, `Grinders/impl|proxy`
-- Salt grinder: [`vanity-create3/README.md`](vanity-create3/README.md)
-
-Per-contract tags keep vanity independent:
-
-```bash
-# Grind separate tags
-cd script/vanity-create3
-cargo run --release -- --prefix 999999 --suffix '' --label GRAI/proxy
-cargo run --release -- --prefix 77777777 --suffix '' --label Treasury/proxy
-cargo run --release -- --prefix 888888 --suffix '' --label Grinders/proxy
-
-# Put tags in .env, then:
-set -a && source .env && set +a
-PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "predict()" --rpc-url arbitrum
-```
-
-Unset component tags fall back to `CREATE3_SALT_TAG`, then `"grindurus"`.
-
-Sanity check: `forge test --match-contract DeployCreate3Test`.
 
 ---
 

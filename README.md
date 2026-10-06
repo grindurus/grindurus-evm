@@ -10,7 +10,7 @@ wallet shortfall). Protocol yield flows through `distribute` and splits per `Con
 cuts (initialize defaults **50% / 50%**): dividend → unvoted lockers via `claim` /
 `claimAll` (else → treasury); treasury → `treasury`.
 
-Full mechanics: [docs.grindurus.xyz/developers/mechanics](https://docs.grindurus.xyz/developers/mechanics).
+Full mechanics: [docs.grindurus.xyz/protocol/grai/mechanics](https://docs.grindurus.xyz/protocol/grai/mechanics).
 
 ## Model
 
@@ -41,7 +41,7 @@ bribe(voter)               [permissionless]
 | `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
 | `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
 | `PriceOracleRouter` | Base of `GRAI`. Chainlink / Pyth / custom feeds per asset. |
-| `GRS` | Non-upgradeable LayerZero **OFT**. Home mints 1B into bucket inventory (`getAllocations` / `grant` / `vest` / `release`). `quoteBridge` / `bridge`. Spec: [docs.grindurus.xyz → GRS mechanics](https://docs.grindurus.xyz/developers/mechanics/grs). |
+| `GRS` | Non-upgradeable LayerZero **OFT**. Home mints 1B into bucket inventory (`getAllocations` / `grant` / `vest` / `release`). `quoteBridge` / `bridge`. Spec: [docs.grindurus.xyz → GRS mechanics](https://docs.grindurus.xyz/protocol/grs/mechanics). |
 
 Native ETH is `address(0)`. WETH is the fallback when a native ETH push is rejected.
 
@@ -200,44 +200,25 @@ forge fmt
 
 ### Deploy
 
-CREATE3 (Nick's CREATE2 factory + fixed Solmate proxy) places **four** contracts at deterministic
-addresses — `GRAI` impl + ERC-1967 proxy and `Grinders` impl + ERC-1967 proxy — then wires
-`GRAI.setGrinders(grinders)`. Addresses depend only on the salt tag, not on admin / WETH / bytecode.
-`GrinderArt` library lives in `Grinders.sol` (inlined, no separate deploy).
+`DeployGRAI` uses ordinary CREATE from the deployer EOA: GRAI / Treasury / Grinders each get an
+impl + ERC-1967 proxy, then `setTreasury` / `setGrinders`. Addresses are not precomputed.
+`GrinderArt` lives in `Grinders.sol` (inlined). Details: [`script/README.md`](script/README.md).
 
 | Script | Purpose |
 |--------|---------|
-| `script/Deploy.s.sol` | Combined GRAI + Grinders CREATE3 deploy |
-| `script/DeployGRAI.s.sol` | GRAI only (`CHAIN=` / `--rpc-url`); Treasury + feeds |
-| `script/DeployGrinders.s.sol` | Grinders only; wires `GRAI.setGrinders` by default |
-| `script/manual/1_DeployGRAI.s.sol` | GRAI only (legacy staged) |
-| `script/manual/2_DeployGrinders.s.sol` | Grinders only (legacy staged) |
-| `script/manual/3_setGrinders.s.sol` | Wire / retarget `GRAI.setGrinders` |
-| `script/manual/4_DeployCoWCustodian.s.sol` | Deploy + register CoW custodian kind |
+| `script/DeployGRAI.s.sol` | GRAI + Treasury + Grinders (`--rpc-url`); feeds + bribeable |
+| `script/DeployGRS.s.sol` | LayerZero OFT GRS |
 
 ```shell
-# Predict addresses (no broadcast)
-PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy --sig "predict()"
-
-# Deploy (any chain with CREATE2 factory)
-PRIVATE_KEY=0x... forge script script/Deploy.s.sol:Deploy \
-  --rpc-url <your_rpc_url> --broadcast
-
-# Arbitrum One (lists WETH, USDT, native ETH; settlementAsset = USDT)
 PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --rpc-url arbitrum --broadcast --verify
-PRIVATE_KEY=0x... forge script script/DeployGrinders.s.sol:DeployGrinders \
   --rpc-url arbitrum --broadcast --verify
 ```
 
 The deployer (`vm.addr(PRIVATE_KEY)`) becomes initial `owner`. Optional env `OWNER_MULTISIG`
-starts Ownable2Step handoff on both GRAI and Grinders — the multisig must still call
-`acceptOwnership()` on each. `CREATE3_SALT_TAG` (fallback: `CREATE2_SALT_TAG`) changes the salt
-namespace; `DRY_RUN=1` predicts without broadcasting. `DeployGRAI` also accepts
-`MAX_STALENESS` (default 25 hours on Arbitrum / Base for ETH/USD heartbeat).
+starts Ownable2Step handoff on GRAI and Grinders — the multisig must still call
+`acceptOwnership()` on each. `DeployGRAI` also accepts `MAX_STALENESS` and `WETH=`.
 
-After a bare `Deploy.s.sol` run, list each asset by setting its feed (this also registers it in
-`GRAI`), then wire protocol config. All admin calls require `owner` unless noted:
+After deploy, list further assets / tune config as needed. Admin calls require `owner` unless noted:
 
 ```solidity
 // Chainlink (Ethereum mainnet USDC/USD)
@@ -442,9 +423,9 @@ The full list lives on the [Pyth price feed ids page](https://docs.pyth.network/
 
 ## Related
 
-- Tokenomics: [docs.grindurus.xyz → GRAI mechanics](https://docs.grindurus.xyz/developers/mechanics/grai)
-- Grinders / custodians: [docs.grindurus.xyz → Grinders mechanics](https://docs.grindurus.xyz/developers/mechanics/grinders)
-- Bribe ask chart: [docs.grindurus.xyz mechanics](https://docs.grindurus.xyz/developers/mechanics)
+- Tokenomics: [docs.grindurus.xyz → GRAI mechanics](https://docs.grindurus.xyz/protocol/grai/mechanics)
+- Grinders / custodians: [docs.grindurus.xyz → Grinders mechanics](https://docs.grindurus.xyz/protocol/grinders/mechanics)
+- Bribe ask chart: [docs.grindurus.xyz → GRAI mechanics](https://docs.grindurus.xyz/protocol/grai/mechanics) (`bribe-amount-vs-voted`)
 - Solana port: [`../grindurus-solana/`](../grindurus-solana/)
 
 ## License
