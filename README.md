@@ -156,6 +156,8 @@ separate contract), so feed management is `onlyOwner` — there is no separate o
 - `allocate` / `deallocate` / `distribute` / `heartbeat` — ops that refresh the implicit heartbeat (`heartbeatAt`)
 - `setGrindPeriod` — inactivity window before Grinders is stale (1–30 days; default 7)
 - `_authorizeUpgrade` — UUPS implementation swap
+- `upgradeCustodian` — UUPS a registered sleeve to the `set` impl for its kind (also allowed:
+  `grinders.owner()` calling `upgradeToAndCall` directly; EOA `grinders`; not NFT holders)
 
 Permissionless (after windows):
 

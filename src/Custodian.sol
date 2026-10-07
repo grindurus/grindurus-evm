@@ -68,9 +68,10 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
 
     /// @notice Stable identifier for unambiguous custodian routing on Grinders and off-chain backends.
     /// @dev Returned as `keccak256("grindurus.custodian.<name>")` (optionally `...<name>.v2` for
-    ///      incompatible families). Proxies are not UUPS-upgradeable; a new kind + `Grinders.set`
-    ///      only changes the impl used by future `mint`. Bump the string when storage/API breaks.
-    ///      Off-chain code can read `ERC1967Utils.getImplementation(proxy)` for the exact bytecode.
+    ///      incompatible families). UUPS always requires matching `custodianKind` on the new impl;
+    ///      if `grinders.owner()` works → also Grinders owner/`grinders` + registered row; else →
+    ///      caller must be `address(grinders)` (EOA). NFT holders cannot upgrade. Bump the string
+    ///      when storage/API breaks. Off-chain code can read `ERC1967Utils.getImplementation(proxy)`.
     function custodianKind() public view virtual returns (bytes32);
 
     function balance(address asset) public view virtual returns (uint256) {
@@ -190,8 +191,25 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         withdrawn = amount;
     }
 
-    /// @dev Proxies are ERC1967 for `Grinders.mint`; implementation swaps are permanently disabled.
-    function _authorizeUpgrade(address) internal pure override {
-        revert FeatureDisabled();
+    /// @dev UUPS authorization via `grinders.owner()` probe:
+    ///      - Always: `newImplementation.custodianKind() == custodianKind()`.
+    ///      - `owner()` ok → `msg.sender == owner` or `== grinders`, plus registered impl for kind.
+    ///      - `owner()` fails (EOA / no Ownable) → `msg.sender == address(grinders)`.
+    ///      NFT `owner()` cannot upgrade.
+    function _authorizeUpgrade(address newImplementation) internal view override {
+        if (newImplementation == address(0)) revert UnauthorizedImplementation(newImplementation);
+
+        bytes32 kind = custodianKind();
+        bytes32 newKind = ICustodian(payable(newImplementation)).custodianKind();
+        if (newKind != kind) revert UnauthorizedImplementation(newImplementation);
+
+        try grinders.owner() returns (address owner_) {
+            if (msg.sender != owner_ && msg.sender != address(grinders)) revert NotOwner(msg.sender);
+
+            address allowed = grinders.custodianImplementations(kind);
+            if (newImplementation != allowed) revert UnauthorizedImplementation(newImplementation);
+        } catch {
+            if (msg.sender != address(grinders)) revert NotGrinders(msg.sender);
+        }
     }
 }

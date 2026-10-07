@@ -15,6 +15,8 @@ interface ICustodian {
     error NotGrinders(address caller);
     error EthTransferFailed();
     error LiquidationOpen();
+    /// @notice UUPS target is not the Grinders-registered implementation for this kind.
+    error UnauthorizedImplementation(address implementation);
 
     event SetAssets(address indexed baseAsset, address indexed quoteAsset);
     event Deallocate(address indexed asset, uint256 amount);

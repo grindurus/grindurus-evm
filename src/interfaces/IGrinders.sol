@@ -61,6 +61,9 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice Junior capital pulled from `custodian` back to Grinders (`asset == address(0)` = ETH).
     event Deallocate(address indexed custodian, address indexed asset, uint256 amount);
 
+    /// @notice Protocol admin (`Ownable2Step` owner). Gates `set` / `mint` / allocate path and custodian UUPS.
+    function owner() external view returns (address);
+
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
 
@@ -107,6 +110,8 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function register(address custodian, address owner_) external;
     /// @notice Protocol owner sets trading assets on a registered custodian.
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) external;
+    /// @notice Protocol owner UUPS-upgrades a registered custodian to the `set` impl for its kind.
+    function upgradeCustodian(address custodian) external;
     function allocate(address custodian, address asset, uint256 amount) external;
     /// @notice Protocol owner pulls `amount` of `asset` from `custodian`.
     function deallocate(address custodian, address asset, uint256 amount) external;

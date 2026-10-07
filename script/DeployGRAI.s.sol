@@ -387,7 +387,7 @@ contract DeployGRAI is Script {
         revert("unknown chainId");
     }
 
-    function _logNetwork(Network memory net, address owner, address weth) internal view {
+    function _logNetwork(Network memory net, address owner, address weth) internal pure {
         console2.log("chain:", net.name);
         console2.log("chainId:", net.chainId);
         console2.log("OWNER:", owner);

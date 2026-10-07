@@ -180,11 +180,58 @@ contract CustodyCowTest is GRAIFixture {
         grinders.setAssets(address(custodyWallet), address(usdc), address(dai));
     }
 
-    function test_Upgrade_AlwaysReverts() public {
+    bytes32 private constant _IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    function _implementation(address proxy) internal view returns (address) {
+        return address(uint160(uint256(vm.load(proxy, _IMPL_SLOT))));
+    }
+
+    function test_Upgrade_revertsForNftOwner() public {
         CoWCustodian implV2 = new CoWCustodian();
+        bytes32 kind = implV2.custodianKind();
+        vm.prank(admin);
+        grinders.set(kind, address(implV2));
+
         vm.prank(owner);
-        vm.expectRevert(ICustodian.FeatureDisabled.selector);
+        vm.expectRevert(abi.encodeWithSelector(ICustodian.NotOwner.selector, owner));
         custodyWallet.upgradeToAndCall(address(implV2), "");
+    }
+
+    function test_Upgrade_revertsUnregisteredImpl() public {
+        CoWCustodian implV2 = new CoWCustodian();
+
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(ICustodian.UnauthorizedImplementation.selector, address(implV2)));
+        custodyWallet.upgradeToAndCall(address(implV2), "");
+    }
+
+    function test_Upgrade_adminToRegisteredImpl() public {
+        address before = _implementation(address(custodyWallet));
+        CoWCustodian implV2 = new CoWCustodian();
+        bytes32 kind = implV2.custodianKind();
+        assertTrue(address(implV2) != before);
+
+        vm.startPrank(admin);
+        grinders.set(kind, address(implV2));
+        custodyWallet.upgradeToAndCall(address(implV2), "");
+        vm.stopPrank();
+
+        assertEq(_implementation(address(custodyWallet)), address(implV2));
+        assertEq(custodyWallet.baseAsset(), address(usdc));
+        assertEq(custodyWallet.quoteAsset(), address(weth));
+        assertEq(custodyWallet.custodianKind(), kind);
+    }
+
+    function test_Upgrade_viaGrindersUpgradeCustodian() public {
+        CoWCustodian implV2 = new CoWCustodian();
+        bytes32 kind = implV2.custodianKind();
+
+        vm.startPrank(admin);
+        grinders.set(kind, address(implV2));
+        grinders.upgradeCustodian(address(custodyWallet));
+        vm.stopPrank();
+
+        assertEq(_implementation(address(custodyWallet)), address(implV2));
     }
 
     function test_Approve_acceptsTradingAssets() public {

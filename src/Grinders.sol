@@ -2,6 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -210,6 +211,11 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         _heartbeat();
     }
 
+    /// @inheritdoc OwnableUpgradeable
+    function owner() public view override(OwnableUpgradeable, IGrinders) returns (address) {
+        return OwnableUpgradeable.owner();
+    }
+
     /// @notice Retarget the linked GRAI core. Call before `GRAI.setGrinders` when rewiring
     ///         (that setter requires `grinders.grai() == address(grai)`).
     function setGrai(address grai_) public onlyOwner {
@@ -307,6 +313,17 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) public onlyOwner {
         _requireCustodian(custodian);
         ICustodian(payable(custodian)).setAssets(baseAsset_, quoteAsset_);
+    }
+
+    /// @notice UUPS-upgrade a registered custodian to the impl currently `set` for its kind.
+    /// @dev Caller is `address(this)` on the sleeve (`Custodian._authorizeUpgrade` also allows owner).
+    ///      Register the target first via `set(kind, newImplementation)`. No post-upgrade call.
+    function upgradeCustodian(address custodian) public onlyOwner {
+        _requireCustodian(custodian);
+        bytes32 kind = ICustodian(payable(custodian)).custodianKind();
+        address impl = custodianImplementations[kind];
+        if (impl == address(0)) revert UnknownCustodianKind(kind);
+        UUPSUpgradeable(payable(custodian)).upgradeToAndCall(impl, "");
     }
 
     function allocate(address custodian, address asset, uint256 amount) public onlyOwner {

@@ -85,7 +85,9 @@ library GPv2Order {
 ///   always remain on this contract.
 /// - Principal exits only through `deallocate`; yield through `distribute` — both route via GRAI accounting,
 ///   not to an arbitrary owner wallet.
-/// - Owner **cannot** `upgradeTo`: `_authorizeUpgrade` always reverts (`FeatureDisabled`).
+/// - NFT owner **cannot** `upgradeTo`. New impl must share this `custodianKind`. EOA `grinders`
+///   may upgrade directly; Grinders-contract mode: `grinders.owner()` or `Grinders.upgradeCustodian`
+///   after `Grinders.set` for this kind.
 ///
 /// @dev Use the ERC1967Proxy address only, not the implementation.
 ///      VaultRelayer max-allowance for base/quote is set in `setAssets`.
