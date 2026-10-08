@@ -8,6 +8,7 @@ import {GRAI, IGRAI, IPriceOracleRouter} from "../src/GRAI.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {Grinders} from "../src/Grinders.sol";
 import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
+import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 
 /// @title Deploy GRAI on an EVM chain
 /// @notice Direct CREATE: GRAI + Treasury + Grinders (impl + ERC1967 proxy each), feeds.
@@ -32,6 +33,10 @@ import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 ///     --sig "setBribeable()" --rpc-url arbitrum --broadcast
 ///   PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "deployCoWCustodian()" --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "deployLiFiCustodianImpl(bool)" false --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "deployLiFiCustodianProxy()" --rpc-url arbitrum --broadcast --verify
 contract DeployGRAI is Script {
     struct AssetData {
         address asset;
@@ -238,6 +243,75 @@ contract DeployGRAI is Script {
         console2.log("CoWCustodian impl:", address(impl));
         console2.log("COW_SETTLEMENT:", address(impl.COW_SETTLEMENT()));
         console2.log("COW_VAULT_RELAYER:", impl.COW_VAULT_RELAYER());
+    }
+
+    //////////////////// LIFI CUSTODIAN ////////////////////
+
+    function deployLiFiCustodianImpl() external returns (LiFiCustodian) {
+        return deployLiFiCustodianImpl(true);
+    }
+
+    /// @param setImpl If true, call `Grinders.set(lifi, impl)` after deploy (`GRINDERS` required).
+    function deployLiFiCustodianImpl(bool setImpl) public returns (LiFiCustodian impl) {
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        address grindersAddr = vm.envOr("GRINDERS", address(0));
+
+        console2.log("setImpl:", setImpl);
+        if (setImpl) {
+            require(grindersAddr != address(0), "GRINDERS required when setImpl=true");
+            Grinders grinders = Grinders(payable(grindersAddr));
+            console2.log("Grinders:", grindersAddr);
+            console2.log("owner:", grinders.owner());
+            require(grindersAddr.code.length > 0, "GRINDERS not a contract");
+            require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+        }
+
+        vm.startBroadcast(pk);
+        impl = new LiFiCustodian();
+        bytes32 lifiKind = keccak256("grindurus.custodian.lifi");
+        require(impl.custodianKind() == lifiKind, "unexpected custodianKind");
+        if (setImpl) Grinders(payable(grindersAddr)).set(lifiKind, address(impl));
+        vm.stopBroadcast();
+
+        console2.log("Deploy complete.");
+        console2.log("LiFiCustodian impl:", address(impl));
+        console2.log("INPUT_SETTLER_ESCROW:", address(impl.INPUT_SETTLER_ESCROW()));
+        console2.log("PERMIT2:", impl.PERMIT2());
+    }
+
+    /// @notice Deploy LiFiCustodian impl + ERC1967Proxy.
+    /// @dev `initialize` target: `GRINDERS` if set, else deployer EOA (then EOA `register(GRINDERS)`
+    ///      and `Grinders.register` completes the 2-step accept). Does not mint NFT / setAssets /
+    ///      `Grinders.set` — use `deployLiFiCustodianImpl` for impl-only + set.
+    function deployLiFiCustodianProxy() public returns (LiFiCustodian impl, LiFiCustodian proxy) {
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(pk);
+        address grindersAddr = vm.envOr("GRINDERS", address(0));
+        address initGrinders = grindersAddr != address(0) ? grindersAddr : deployer;
+
+        if (grindersAddr != address(0)) require(grindersAddr.code.length > 0, "GRINDERS not a contract");
+
+        bytes32 lifiKind = keccak256("grindurus.custodian.lifi");
+        console2.log("initialize grinders:", initGrinders);
+
+        vm.startBroadcast(pk);
+        impl = new LiFiCustodian();
+        require(impl.custodianKind() == lifiKind, "unexpected custodianKind");
+        proxy = LiFiCustodian(
+            payable(
+                new ERC1967Proxy(address(impl), abi.encodeCall(LiFiCustodian.initialize, (initGrinders)))
+            )
+        );
+        vm.stopBroadcast();
+
+        require(address(proxy.grinders()) == initGrinders, "grinders mismatch");
+        require(proxy.custodianKind() == lifiKind, "proxy kind mismatch");
+
+        console2.log("Deploy complete.");
+        console2.log("LiFiCustodian impl:", address(impl));
+        console2.log("LiFiCustodian proxy:", address(proxy));
+        console2.log("INPUT_SETTLER_ESCROW:", address(proxy.INPUT_SETTLER_ESCROW()));
+        console2.log("PERMIT2:", proxy.PERMIT2());
     }
 
     function _network() internal view returns (Network memory) {
