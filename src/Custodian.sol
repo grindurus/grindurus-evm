@@ -16,12 +16,15 @@ import {ICustodian} from "./interfaces/ICustodian.sol";
 abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     using SafeERC20 for IERC20;
 
+    /// @notice Nominated Grinders awaiting accept via `register` (2-step transfer).
+    IGrinders internal _pendingGrinders;
+
     /// @notice Parent Grinders registry / NFT issuer that minted this custodian.
     IGrinders public grinders;
     
     /// @notice Primary trading asset for this sleeve (ERC20; set via `setAssets`).
     address public baseAsset;
-    
+
     /// @notice Secondary trading asset for this sleeve (ERC20; set via `setAssets`).
     address public quoteAsset;
 
@@ -100,6 +103,25 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         } catch {
             return false;
         }
+    }
+
+    /// @notice 2-step parent Grinders handoff (nominate + accept in one entrypoint).
+    /// @dev Nominate: current `grinders` calls `register(newGrinders)`.
+    ///      Accept: pending Grinders calls `register(address(this))` (from `Grinders.register`).
+    ///      Duplicate NFT registration is enforced on `Grinders.register` (`CustodianAlreadyRegistered`).
+    function register(address grinders_) public virtual {
+        if (msg.sender == address(_pendingGrinders)) {
+            if (grinders_ != msg.sender) revert GrindersZero();
+            grinders = IGrinders(msg.sender);
+            _pendingGrinders = IGrinders(address(0));
+            emit RegisterApproved(msg.sender);
+            return;
+        }
+
+        _onlyGrinders();
+        if (grinders_ == address(0)) revert GrindersZero();
+        _pendingGrinders = IGrinders(grinders_);
+        emit RegisterPending(address(grinders), grinders_);
     }
 
     //////////////////// ONLY GRINDERS ////////////////////

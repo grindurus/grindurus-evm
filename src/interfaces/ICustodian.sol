@@ -18,6 +18,8 @@ interface ICustodian {
     /// @notice UUPS target is not the Grinders-registered implementation for this kind.
     error UnauthorizedImplementation(address implementation);
 
+    event RegisterPending(address indexed previousGrinders, address indexed pendingGrinders);
+    event RegisterApproved(address indexed grinders);
     event SetAssets(address indexed baseAsset, address indexed quoteAsset);
     event Deallocate(address indexed asset, uint256 amount);
     event Distribute(address indexed asset, uint256 amount);
@@ -28,6 +30,8 @@ interface ICustodian {
     function grinders() external view returns (IGrinders);
     function baseAsset() external view returns (address);
     function quoteAsset() external view returns (address);
+    /// @notice 2-step grinders handoff: current `grinders` nominates; pending accepts with `register(self)`.
+    function register(address newGrinders) external;
     function setAssets(address baseAsset_, address quoteAsset_) external;
     function deallocate(address asset, uint256 amount) external;
     function distribute(address asset, uint256 yieldAmount) external;

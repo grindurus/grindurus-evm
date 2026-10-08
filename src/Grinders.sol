@@ -293,11 +293,18 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
+    /// @dev Reverts if already registered here. If the custodian still points at another `grinders`
+    ///      (e.g. deploy-time EOA), completes the 2-step handoff via `ICustodian.register(this)`.
     function register(address custodian, address owner_) public onlyOwner {
         if (custodian == address(0)) revert CustodianZero();
         if (owner_ == address(0)) owner_ = owner();
         if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
-        if (address(ICustodian(payable(custodian)).grinders()) != address(this)) revert GrindersMismatch();
+
+        ICustodian c = ICustodian(payable(custodian));
+        if (address(c.grinders()) != address(this)) {
+            c.register(address(this));
+        }
+        if (address(c.grinders()) != address(this)) revert GrindersMismatch();
 
         uint256 custodianId = totalSupply();
         if (custodians[custodianId] != address(0)) revert CustodianAlreadyRegistered(custodianId);
@@ -316,7 +323,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     }
 
     /// @notice UUPS-upgrade a registered custodian to the impl currently `set` for its kind.
-    /// @dev Caller is `address(this)` on the sleeve (`Custodian._authorizeUpgrade` also allows owner).
+    /// @dev Caller is `address(this)` on the custodian (`Custodian._authorizeUpgrade` also allows owner).
     ///      Register the target first via `set(kind, newImplementation)`. No post-upgrade call.
     function upgradeCustodian(address custodian) public onlyOwner {
         _requireCustodian(custodian);
@@ -366,7 +373,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     /// @dev Permissionless while `liquidation()` (GRAI flips to REDEMPTION before its open-time
     ///      sweeps). Does **not** check `grinding` — keepers must page freely after open. Pages
     ///      custodians by registered id, pulls eth/base/quote into this contract, then forwards
-    ///      those amounts to GRAI. Per-custodian `try/catch` keeps earlier pulls if one sleeve
+    ///      those amounts to GRAI. Per-custodian `try/catch` keeps earlier pulls if one custodian
     ///      reverts. Return amounts are trusted: only registered custodian wallets are iterated,
     ///      under the Grinders NFT custody model.
     function liquidate(uint256 fromId, uint256 toId) public {
