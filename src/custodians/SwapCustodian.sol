@@ -37,9 +37,9 @@ contract SwapCustodian is Custodian {
     );
 
     /// @inheritdoc Custodian
-    function custodianKind() public pure override returns (bytes32) {
-        // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256("grindurus.custodian.explicit_swap");
+    /// @dev `grinder.custodian.swap@eip155:<chainid>` via `super._labelName()` + `.swap`.
+    function _labelName() internal pure override returns (string memory) {
+        return string.concat(super._labelName(), ".swap");
     }
 
     function initialize(address grinders_) public override initializer {

@@ -85,7 +85,7 @@ library GPv2Order {
 ///   always remain on this contract.
 /// - Principal exits only through `deallocate`; yield through `distribute` — both route via GRAI accounting,
 ///   not to an arbitrary owner wallet.
-/// - NFT owner **cannot** `upgradeTo`. New impl must share this `custodianKind`. EOA `grinders`
+/// - NFT owner **cannot** `upgradeTo`. New impl must share this `label`. EOA `grinders`
 ///   may upgrade directly; Grinders-contract mode: `grinders.owner()` or `Grinders.upgradeCustodian`
 ///   after `Grinders.set` for this kind.
 ///
@@ -115,9 +115,9 @@ contract CoWCustodian is Custodian, IERC1271 {
     }
 
     /// @inheritdoc Custodian
-    function custodianKind() public pure override returns (bytes32) {
-        // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256("grindurus.custodian.cow");
+    /// @dev `grinder.custodian.cow@eip155:<chainid>` via `super._labelName()` + `.cow`.
+    function _labelName() internal pure override returns (string memory) {
+        return string.concat(super._labelName(), ".cow");
     }
 
     /// @inheritdoc IERC1271

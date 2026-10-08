@@ -55,9 +55,9 @@ contract AaveV3Custodian is Custodian {
     }
 
     /// @inheritdoc Custodian
-    function custodianKind() public pure override returns (bytes32) {
-        // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256("grindurus.custodian.aave_v3");
+    /// @dev `grinder.custodian.aave_v3@eip155:<chainid>` via `super._labelName()` + `.aave_v3`.
+    function _labelName() internal pure override returns (string memory) {
+        return string.concat(super._labelName(), ".aave_v3");
     }
 
     /// @notice Aave V3 Pool proxy from the bound aToken (`IAToken(baseAsset).POOL()`).

@@ -234,8 +234,7 @@ contract DeployGRAI is Script {
 
         vm.startBroadcast(pk);
         impl = new CoWCustodian();
-        bytes32 cowKind = keccak256("grindurus.custodian.cow");
-        require(impl.custodianKind() == cowKind, "unexpected custodianKind");
+        bytes32 cowKind = impl.label();
         if (setImpl) grinders.set(cowKind, address(impl));
         vm.stopBroadcast();
 
@@ -268,8 +267,7 @@ contract DeployGRAI is Script {
 
         vm.startBroadcast(pk);
         impl = new LiFiCustodian();
-        bytes32 lifiKind = keccak256("grindurus.custodian.lifi");
-        require(impl.custodianKind() == lifiKind, "unexpected custodianKind");
+        bytes32 lifiKind = impl.label();
         if (setImpl) Grinders(payable(grindersAddr)).set(lifiKind, address(impl));
         vm.stopBroadcast();
 
@@ -291,12 +289,10 @@ contract DeployGRAI is Script {
 
         if (grindersAddr != address(0)) require(grindersAddr.code.length > 0, "GRINDERS not a contract");
 
-        bytes32 lifiKind = keccak256("grindurus.custodian.lifi");
         console2.log("initialize grinders:", initGrinders);
 
         vm.startBroadcast(pk);
         impl = new LiFiCustodian();
-        require(impl.custodianKind() == lifiKind, "unexpected custodianKind");
         proxy = LiFiCustodian(
             payable(
                 new ERC1967Proxy(address(impl), abi.encodeCall(LiFiCustodian.initialize, (initGrinders)))
@@ -305,7 +301,7 @@ contract DeployGRAI is Script {
         vm.stopBroadcast();
 
         require(address(proxy.grinders()) == initGrinders, "grinders mismatch");
-        require(proxy.custodianKind() == lifiKind, "proxy kind mismatch");
+        require(proxy.label() == impl.label(), "proxy kind mismatch");
 
         console2.log("Deploy complete.");
         console2.log("LiFiCustodian impl:", address(impl));

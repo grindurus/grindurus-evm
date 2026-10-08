@@ -26,7 +26,8 @@ interface ICustodian {
     event Liquidate(uint256 ethOut, uint256 baseOut, uint256 quoteOut);
 
     function initialize(address grinders_) external;
-    function custodianKind() external view returns (bytes32);
+    function labelId() external view returns (string memory);
+    function label() external view returns (bytes32);
     function grinders() external view returns (IGrinders);
     function baseAsset() external view returns (address);
     function quoteAsset() external view returns (address);

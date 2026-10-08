@@ -34,7 +34,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         address custodian;
         uint256 id;
         address owner;
-        bytes32 kind;
+        bytes32 label;
         address baseAsset;
         address quoteAsset;
         uint256 ethBalance;
@@ -93,18 +93,18 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
 
     function isCustodian(address custodian) external view returns (bool);
 
-    function custodianKindOf(address custodian) external view returns (bytes32);
+    function labelOf(address custodian) external view returns (bytes32);
 
     /// @notice Custodian snapshots for NFT ids in `[fromId, toId)` (`totalSupply` clipped).
     ///         Empty slots (`custodians[id] == 0`) return a zeroed row with that `id`.
     function getCustodiansData(uint256 fromId, uint256 toId) external view returns (CustodianData[] memory list);
 
-    function set(bytes32 custodianKind, address implementation) external;
+    function set(bytes32 label, address implementation) external;
     /// @notice Retarget the linked GRAI core (liquidation checks / asset routing).
     function setGrai(address grai_) external;
     /// @notice Set the inactivity window for the liquidation heartbeat (1–30 days).
     function setGrindPeriod(uint32 grindPeriod_) external;
-    function mint(bytes32 custodianKind, address owner_, address baseAsset_, address quoteAsset_)
+    function mint(bytes32 label_, address owner_, address baseAsset_, address quoteAsset_)
         external
         returns (address custodian);
     function register(address custodian, address owner_) external;

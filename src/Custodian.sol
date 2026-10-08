@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 import {IGrinders} from "./interfaces/IGrinders.sol";
 import {IGRAI} from "./interfaces/IGRAI.sol";
@@ -69,13 +70,26 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         }
     }
 
-    /// @notice Stable identifier for unambiguous custodian routing on Grinders and off-chain backends.
-    /// @dev Returned as `keccak256("grindurus.custodian.<name>")` (optionally `...<name>.v2` for
-    ///      incompatible families). UUPS always requires matching `custodianKind` on the new impl;
-    ///      if `grinders.owner()` works → also Grinders owner/`grinders` + registered row; else →
-    ///      caller must be `address(grinders)` (EOA). NFT holders cannot upgrade. Bump the string
-    ///      when storage/API breaks. Off-chain code can read `ERC1967Utils.getImplementation(proxy)`.
-    function custodianKind() public view virtual returns (bytes32);
+    /// @dev Local CAIP `name` (no `@` / chain). Override to specialize, e.g. append `.cow`.
+    function _labelName() internal pure virtual returns (string memory) {
+        return "grinder.custodian";
+    }
+
+    /// @notice CAIP Label ID: `{_labelName()}@eip155:<chain_id>`.
+    function labelId() public view virtual returns (string memory) {
+        return string.concat(_labelName(), "@eip155:", Strings.toString(block.chainid));
+    }
+
+    /// @notice Stable label hash for unambiguous custodian routing on Grinders and off-chain backends.
+    /// @dev `keccak256(utf8(labelId()))` per Label ID Spec. UUPS always requires matching `label`
+    ///      on the new impl; if `grinders.owner()` works → also Grinders owner/`grinders` + registered
+    ///      row; else → caller must be `address(grinders)` (EOA). NFT holders cannot upgrade.
+    ///      Override `labelId` when storage/API breaks. Off-chain code can read
+    ///      `ERC1967Utils.getImplementation(proxy)`.
+    function label() public view virtual returns (bytes32) {
+        // forge-lint: disable-next-line(asm-keccak256)
+        return keccak256(bytes(labelId()));
+    }
 
     function balance(address asset) public view virtual returns (uint256) {
         if (asset == address(0)) return address(this).balance;
@@ -214,21 +228,21 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
     }
 
     /// @dev UUPS authorization via `grinders.owner()` probe:
-    ///      - Always: `newImplementation.custodianKind() == custodianKind()`.
+    ///      - Always: `newImplementation.label() == label()`.
     ///      - `owner()` ok → `msg.sender == owner` or `== grinders`, plus registered impl for kind.
     ///      - `owner()` fails (EOA / no Ownable) → `msg.sender == address(grinders)`.
     ///      NFT `owner()` cannot upgrade.
     function _authorizeUpgrade(address newImplementation) internal view override {
         if (newImplementation == address(0)) revert UnauthorizedImplementation(newImplementation);
 
-        bytes32 kind = custodianKind();
-        bytes32 newKind = ICustodian(payable(newImplementation)).custodianKind();
-        if (newKind != kind) revert UnauthorizedImplementation(newImplementation);
+        bytes32 label_ = label();
+        bytes32 newLabel = ICustodian(payable(newImplementation)).label();
+        if (newLabel != label_) revert UnauthorizedImplementation(newImplementation);
 
         try grinders.owner() returns (address owner_) {
             if (msg.sender != owner_ && msg.sender != address(grinders)) revert NotOwner(msg.sender);
 
-            address allowed = grinders.custodianImplementations(kind);
+            address allowed = grinders.custodianImplementations(label_);
             if (newImplementation != allowed) revert UnauthorizedImplementation(newImplementation);
         } catch {
             if (msg.sender != address(grinders)) revert NotGrinders(msg.sender);

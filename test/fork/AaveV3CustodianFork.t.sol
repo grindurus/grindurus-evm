@@ -49,8 +49,8 @@ contract AaveV3CustodianForkTest is ForkFixture {
         assertEq(sleeve.quoteAsset(), USDC);
         assertEq(address(sleeve.pool()), AAVE_POOL);
         assertEq(
-            sleeve.custodianKind(),
-            keccak256("grindurus.custodian.aave_v3")
+            sleeve.labelId(),
+            string.concat("grinder.custodian.aave_v3@eip155:", vm.toString(block.chainid))
         );
         assertEq(sleeve.balance(USDC), AMOUNT);
         assertEq(sleeve.balance(A_USDC), 0);

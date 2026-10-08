@@ -19,8 +19,8 @@ contract GrindersTest is GRAIFixture {
         vm.startPrank(admin);
         CoWCustodian cowImpl = new CoWCustodian();
         LiFiCustodian lifiImpl = new LiFiCustodian();
-        cowKind = cowImpl.custodianKind();
-        lifiKind = lifiImpl.custodianKind();
+        cowKind = cowImpl.label();
+        lifiKind = lifiImpl.label();
         grinders.set(cowKind, address(cowImpl));
         grinders.set(lifiKind, address(lifiImpl));
         vm.stopPrank();
@@ -196,7 +196,7 @@ contract GrindersTest is GRAIFixture {
         assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
         assertEq(weth.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), type(uint256).max);
         assertEq(custodyWallet.custodianId(), 0);
-        assertEq(custodyWallet.custodianKind(), cowKind);
+        assertEq(custodyWallet.label(), cowKind);
         assertEq(grinders.custodians(0), address(custodyWallet));
         assertEq(grinders.custodianIds(address(custodyWallet)), 0);
         assertEq(grinders.ownerOf(0), grinder);
@@ -225,7 +225,7 @@ contract GrindersTest is GRAIFixture {
         assertEq(custodyWallet.baseAsset(), address(usdc));
         assertEq(custodyWallet.quoteAsset(), address(weth));
         assertEq(custodyWallet.custodianId(), 0);
-        assertEq(custodyWallet.custodianKind(), lifiKind);
+        assertEq(custodyWallet.label(), lifiKind);
         assertTrue(grinders.custodianImplementations(lifiKind) != address(0));
     }
 

@@ -188,7 +188,7 @@ contract CustodyCowTest is GRAIFixture {
 
     function test_Upgrade_revertsForNftOwner() public {
         CoWCustodian implV2 = new CoWCustodian();
-        bytes32 kind = implV2.custodianKind();
+        bytes32 kind = implV2.label();
         vm.prank(admin);
         grinders.set(kind, address(implV2));
 
@@ -208,7 +208,7 @@ contract CustodyCowTest is GRAIFixture {
     function test_Upgrade_adminToRegisteredImpl() public {
         address before = _implementation(address(custodyWallet));
         CoWCustodian implV2 = new CoWCustodian();
-        bytes32 kind = implV2.custodianKind();
+        bytes32 kind = implV2.label();
         assertTrue(address(implV2) != before);
 
         vm.startPrank(admin);
@@ -219,12 +219,12 @@ contract CustodyCowTest is GRAIFixture {
         assertEq(_implementation(address(custodyWallet)), address(implV2));
         assertEq(custodyWallet.baseAsset(), address(usdc));
         assertEq(custodyWallet.quoteAsset(), address(weth));
-        assertEq(custodyWallet.custodianKind(), kind);
+        assertEq(custodyWallet.label(), kind);
     }
 
     function test_Upgrade_viaGrindersUpgradeCustodian() public {
         CoWCustodian implV2 = new CoWCustodian();
-        bytes32 kind = implV2.custodianKind();
+        bytes32 kind = implV2.label();
 
         vm.startPrank(admin);
         grinders.set(kind, address(implV2));

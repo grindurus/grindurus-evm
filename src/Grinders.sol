@@ -257,27 +257,27 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         _heartbeat();
     }
 
-    function set(bytes32 custodianKind, address implementation) public onlyOwner {
+    function set(bytes32 label, address implementation) public onlyOwner {
         if (implementation == address(0)) revert ZeroAddress();
-        bytes32 implKind = ICustodian(payable(implementation)).custodianKind();
-        if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
-        custodianImplementations[custodianKind] = implementation;
-        emit CustodianImplementationUpdated(custodianKind, implementation);
+        bytes32 implLabel = ICustodian(payable(implementation)).label();
+        if (implLabel != label) revert CustodianKindMismatch(label, implLabel);
+        custodianImplementations[label] = implementation;
+        emit CustodianImplementationUpdated(label, implementation);
     }
 
     /// @notice Deploy a custodian proxy, mint its Grinder NFT, and register it with `owner_`.
     function mint(
-        bytes32 custodianKind,
+        bytes32 label_,
         address owner_,
         address baseAsset_,
         address quoteAsset_
     ) public onlyOwner returns (address custodian) {
         if (owner_ == address(0)) owner_ = owner();
 
-        address impl = custodianImplementations[custodianKind];
-        if (impl == address(0)) revert UnknownCustodianKind(custodianKind);
-        bytes32 implKind = ICustodian(payable(impl)).custodianKind();
-        if (implKind != custodianKind) revert CustodianKindMismatch(custodianKind, implKind);
+        address impl = custodianImplementations[label_];
+        if (impl == address(0)) revert UnknownCustodianKind(label_);
+        bytes32 implLabel = ICustodian(payable(impl)).label();
+        if (implLabel != label_) revert CustodianKindMismatch(label_, implLabel);
 
         uint256 custodianId = totalSupply();
 
@@ -289,7 +289,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
 
         ICustodian(payable(custodian)).setAssets(baseAsset_, quoteAsset_);
 
-        emit CustodianDeployed(custodianKind, custodian, owner_, baseAsset_, quoteAsset_);
+        emit CustodianDeployed(label_, custodian, owner_, baseAsset_, quoteAsset_);
     }
 
     /// @notice Register a pre-deployed custodian proxy and mint its Grinder NFT.
@@ -327,9 +327,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
     ///      Register the target first via `set(kind, newImplementation)`. No post-upgrade call.
     function upgradeCustodian(address custodian) public onlyOwner {
         _requireCustodian(custodian);
-        bytes32 kind = ICustodian(payable(custodian)).custodianKind();
-        address impl = custodianImplementations[kind];
-        if (impl == address(0)) revert UnknownCustodianKind(kind);
+        bytes32 label = ICustodian(payable(custodian)).label();
+        address impl = custodianImplementations[label];
+        if (impl == address(0)) revert UnknownCustodianKind(label);
         UUPSUpgradeable(payable(custodian)).upgradeToAndCall(impl, "");
     }
 
@@ -441,7 +441,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
             if (custodian != address(0)) {
                 ICustodian c = ICustodian(payable(custodian));
                 list[i].owner = _ownerOf(id);
-                list[i].kind = custodianKindOf(custodian);
+                list[i].label = labelOf(custodian);
                 list[i].baseAsset = c.baseAsset();
                 list[i].quoteAsset = c.quoteAsset();
                 list[i].ethBalance = custodian.balance;
@@ -456,13 +456,13 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         }
     }
 
-    function custodianKindOf(address custodian) public view returns (bytes32 kind) {
-        if (custodian == address(0)) return kind;
+    function labelOf(address custodian) public view returns (bytes32 label) {
+        if (custodian == address(0)) return label;
         if (custodian.code.length == 0) return bytes32(0);
-        try ICustodian(payable(custodian)).custodianKind() returns (bytes32 k) {
+        try ICustodian(payable(custodian)).label() returns (bytes32 k) {
             return k;
         } catch {
-            return kind;
+            return label;
         }
     }
 
@@ -485,7 +485,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, Ownable2StepUpgrade
         if (custodian == address(0)) revert CustodianNonexistent(custodianId);
         return string.concat(
             "data:application/json;base64,",
-            Base64.encode(bytes(GrinderArt.tokenJson(custodianId, custodian, custodianKindOf(custodian))))
+            Base64.encode(bytes(GrinderArt.tokenJson(custodianId, custodian, labelOf(custodian))))
         );
     }
 

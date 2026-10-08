@@ -135,9 +135,9 @@ contract LiFiCustodian is Custodian, IERC1271 {
     }
 
     /// @inheritdoc Custodian
-    function custodianKind() public pure override returns (bytes32) {
-        // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256("grindurus.custodian.lifi");
+    /// @dev `grinder.custodian.lifi@eip155:<chainid>` via `super._labelName()` + `.lifi`.
+    function _labelName() internal pure override returns (string memory) {
+        return string.concat(super._labelName(), ".lifi");
     }
 
     /// @inheritdoc IERC1271
