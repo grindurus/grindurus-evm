@@ -28,7 +28,7 @@ contract DumpGrinderArtTest is Test {
         Grinders grinders = Grinders(
             payable(address(
                     new ERC1967Proxy(
-                        address(new Grinders()), abi.encodeCall(Grinders.initialize, (admin, address(grai)))
+                        address(new Grinders()), abi.encodeCall(Grinders.initialize, (address(grai), admin))
                     )
                 ))
         );

@@ -16,7 +16,7 @@ forge build
 
 | Env | Required | Notes |
 | --- | -------- | ----- |
-| `PRIVATE_KEY` | yes | Deployer; becomes initial `owner` |
+| `PRIVATE_KEY` | yes | Deployer; GRAI `owner` + Grinders `boss` |
 | `ETHERSCAN_API_KEY` / `ARBISCAN_API_KEY` / `BASESCAN_API_KEY` | for `--verify` | See `[etherscan]` in `foundry.toml` |
 | `ETH_RPC_URL` / `ARBITRUM_RPC_URL` / `BASE_RPC_URL` / `ROBINHOOD_RPC_URL` | for those aliases | Sepolia has a public default in `foundry.toml` |
 
@@ -167,15 +167,14 @@ Example logs: [`logs/v1_deploy_grs.md`](logs/v1_deploy_grs.md),
 
 ## Ownership handoff
 
-If you set `OWNER_MULTISIG` during deploy, the multisig must accept on each contract:
+If you set `OWNER_MULTISIG` during deploy, the multisig must accept on GRAI (and GRS if deployed):
 
 ```solidity
 grai.acceptOwnership();
-grinders.acceptOwnership();
 grs.acceptOwnership(); // also syncs LZ endpoint delegate on GRS
 ```
 
-Treasury is owned via GRAI linkage (`initialize(grai)`), not Ownable2Step from the deploy script.
+Treasury and Grinders have no local Ownable2Step — admin is `GRAI.owner()` (Grinders also has a separate `boss` ops role set at deploy to the deployer EOA).
 
 ---
 

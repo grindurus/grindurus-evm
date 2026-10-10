@@ -221,11 +221,6 @@ contract GRAI is
     //////////////////// GETTERS ////////////////////
 
     /// @inheritdoc IGRAI
-    function beneficiar() public view returns (address) {
-        return treasury.beneficiar();
-    }
-
-    /// @inheritdoc IGRAI
     function getAssets() external view returns (address[] memory list) {
         list = assetList;
     }
@@ -1053,7 +1048,7 @@ contract GRAI is
     /// @dev Pulls `amount` from `from` to `to` and returns tokens actually credited (FoT-safe for ERC20)
     ///      plus any ETH excess (`refund`). ETH is funded by `msg.value`; when `toRefund` is true the
     ///      excess is sent to `msg.sender`, otherwise the caller must send `refund` later.
-    ///      Stray `msg.value` on an ERC20 path is forwarded to `beneficiar()`.
+    ///      Stray `msg.value` on an ERC20 path is forwarded to Grinders.
     function _pay(address from, address to, address asset, uint256 amount, bool toRefund) internal returns (uint256 paid, uint256 refund) {
         if (asset == address(0)) {
             if (msg.value < amount) revert ValueMismatch();
@@ -1062,7 +1057,7 @@ contract GRAI is
             if (toRefund) _sendEth(msg.sender, refund);
             paid = amount;
         } else {
-            if (msg.value > 0) _sendEth(beneficiar(), msg.value);
+            if (msg.value > 0) _sendEth(address(grinders), msg.value);
             uint256 before = IERC20(asset).balanceOf(to);
             IERC20(asset).safeTransferFrom(from, to, amount);
             paid = IERC20(asset).balanceOf(to) - before;
@@ -1076,8 +1071,8 @@ contract GRAI is
             try weth.deposit{value: amount}() {
                 weth.safeTransfer(to, amount);
             } catch {
-                (bool treasuryOk,) = payable(beneficiar()).call{value: amount}("");
-                if (!treasuryOk) revert EthTransferFailed();
+                (bool ownerOk,) = payable(owner()).call{value: amount}("");
+                if (!ownerOk) revert EthTransferFailed();
             }
         }
     }

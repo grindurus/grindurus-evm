@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
 import {GRAIFixture} from "./GRAIFixture.sol";
 import {Grinders} from "../src/Grinders.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
@@ -179,9 +181,16 @@ contract GrindersTest is GRAIFixture {
 
     function test_Liquidation_OpenWhenGraiHasNoCode() public {
         address eoa = makeAddr("notGrai");
-        vm.prank(admin);
-        grinders.setGrai(eoa);
-        assertTrue(grinders.liquidation());
+        Grinders fresh = Grinders(
+            payable(
+                address(
+                    new ERC1967Proxy(
+                        address(new Grinders()), abi.encodeCall(Grinders.initialize, (eoa, admin))
+                    )
+                )
+            )
+        );
+        assertTrue(fresh.liquidation());
     }
 
     function test_MintCoWCustodian() public {

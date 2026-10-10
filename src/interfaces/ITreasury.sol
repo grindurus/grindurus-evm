@@ -46,13 +46,15 @@ interface ITreasury {
         LockerBook book;
     }
 
+    /// @notice Protocol admin — `grai.owner()`, or `address(grai)` if that call fails / returns zero.
+    function owner() external view returns (address);
+
     function grai() external view returns (IGRAI);
 
     /// @notice Protocol fee recipient for the non-affiliate slice of claim-time treasury income.
-    /// @dev Returns the configured address, or `grai.owner()` when unset (`address(0)`).
     function beneficiar() external view returns (address);
 
-    /// @notice Secondary-sale royalty in bps (ERC-2981), paid to `beneficiar()`.
+    /// @notice Secondary-sale royalty in bps (ERC-2981), paid to `beneficiar`.
     function royaltyBps() external view returns (uint16);
 
     /// @notice Per-level split of claim-time revenue share (bps; sum must equal 10_000).
@@ -86,7 +88,7 @@ interface ITreasury {
         view
         returns (address[] memory referrers, uint256[] memory shares);
 
-    function initialize(address grai_) external;
+    function initialize(address grai_, address beneficiar_) external;
 
     /// @notice Retarget the protocol fee recipient.
     function setBeneficiar(address beneficiar_) external;

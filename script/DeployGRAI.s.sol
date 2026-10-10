@@ -15,8 +15,9 @@ import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 ///         Network from `block.chainid` (`--rpc-url`). Addresses are not precomputed.
 ///
 /// Env:
-///   PRIVATE_KEY       — deployer / initial owner
-///   OWNER_MULTISIG    — optional Ownable2Step handoff (`acceptOwnership` required)
+///   PRIVATE_KEY       — deployer; GRAI initial owner + Grinders boss
+///   OWNER_MULTISIG    — optional GRAI Ownable2Step handoff (`acceptOwnership` required);
+///                       Grinders.owner() follows GRAI (no separate Grinders handoff)
 ///   MAX_STALENESS     — optional seconds (default per-chain)
 ///   WETH              — optional override of network WETH
 ///   GRAI / GRINDERS   — required for post-deploy helpers
@@ -65,9 +66,10 @@ contract DeployGRAI is Script {
         vm.startBroadcast(pk);
 
         GRAI grai = deployGRAI(owner, weth);
-        Treasury treasury = deployTreasury(address(grai));
+        Treasury treasury = deployTreasury(address(grai), owner);
         wireTreasury(grai, address(treasury));
-        Grinders grinders = deployGrinders(owner, address(grai));
+        // Grinders has no local Ownable — `owner()` reads `grai.owner()`. `boss` = deployer EOA.
+        Grinders grinders = deployGrinders(address(grai), owner);
         wireGrinders(grai, address(grinders));
 
         initFeeds(grai);
@@ -81,8 +83,7 @@ contract DeployGRAI is Script {
         address ownerMultisig = vm.envOr("OWNER_MULTISIG", address(0));
         if (ownerMultisig != address(0)) {
             grai.transferOwnership(ownerMultisig);
-            grinders.transferOwnership(ownerMultisig);
-            console2.log("Pending GRAI/Grinders owner (call acceptOwnership):", ownerMultisig);
+            console2.log("Pending GRAI owner (call acceptOwnership); Grinders.owner() follows GRAI:", ownerMultisig);
         }
 
         vm.stopBroadcast();
@@ -127,11 +128,11 @@ contract DeployGRAI is Script {
 
     //////////////////// TREASURY ////////////////////
 
-    /// @notice Treasury impl + proxy (`initialize(grai)`).
-    function deployTreasury(address grai) public returns (Treasury treasury) {
+    /// @notice Treasury impl + proxy (`initialize(grai, beneficiar)`).
+    function deployTreasury(address grai, address beneficiar) public returns (Treasury treasury) {
         Treasury impl = new Treasury();
         treasury = Treasury(
-            payable(new ERC1967Proxy(address(impl), abi.encodeCall(Treasury.initialize, (grai))))
+            payable(new ERC1967Proxy(address(impl), abi.encodeCall(Treasury.initialize, (grai, beneficiar))))
         );
         console2.log("Treasury impl:", address(impl));
         console2.log("Treasury proxy:", address(treasury));
@@ -145,16 +146,17 @@ contract DeployGRAI is Script {
 
     //////////////////// GRINDERS ////////////////////
 
-    /// @notice Grinders impl + proxy (`initialize(owner, grai)`).
-    function deployGrinders(address owner, address grai) public returns (Grinders grinders) {
+    /// @notice Grinders impl + proxy (`initialize(grai, boss)`).
+    function deployGrinders(address grai, address boss) public returns (Grinders grinders) {
         Grinders impl = new Grinders();
         grinders = Grinders(
             payable(
-                new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (owner, grai)))
+                new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (grai, boss)))
             )
         );
         console2.log("Grinders impl:", address(impl));
         console2.log("Grinders proxy:", address(grinders));
+        console2.log("Grinders boss:", boss);
     }
 
     /// @notice Wire `GRAI.setGrinders(grinders)`.

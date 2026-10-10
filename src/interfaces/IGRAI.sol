@@ -171,9 +171,6 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     function treasury() external view returns (ITreasury);
 
-    /// @notice Protocol fee recipient on the linked `Treasury` (`treasury.beneficiar()`).
-    function beneficiar() external view returns (address);
-
     function owner() external view returns (address);
 
     function totalValue() external view returns (uint256);

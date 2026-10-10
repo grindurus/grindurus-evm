@@ -9,12 +9,14 @@ import {Grinders} from "../src/Grinders.sol";
 import {GRAI} from "../src/GRAI.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {IGRAI} from "../src/interfaces/IGRAI.sol";
+import {IGrinders} from "../src/interfaces/IGrinders.sol";
 import {IPriceOracleRouter} from "../src/interfaces/IPriceOracleRouter.sol";
 import {MockAggregator} from "./mocks/MockAggregator.sol";
 import {MockMultisig} from "./mocks/MockMultisig.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 
-/// @dev Ownable2Step handoff: deployer → ownerMultisig (GRAI + Grinders ownership).
+/// @dev Ownable2Step handoff on GRAI: deployer → ownerMultisig. Grinders.owner() follows GRAI;
+///      deployer remains Grinders.boss.
 contract GRAIRolesTest is Test {
     address internal constant DEPLOYER = address(0xA11CE);
 
@@ -44,19 +46,19 @@ contract GRAIRolesTest is Test {
         Grinders impl = new Grinders();
         grinders = Grinders(
             payable(address(
-                    new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (DEPLOYER, address(grai))))
+                    new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (address(grai), DEPLOYER)))
                 ))
         );
 
         vm.startPrank(DEPLOYER);
         grai.setGrinders(address(grinders));
         grai.transferOwnership(address(ownerMultisig));
-        grinders.transferOwnership(address(ownerMultisig));
         vm.stopPrank();
 
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.acceptOwnership, ()));
-        _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.acceptOwnership, ()));
+        // Grinders has no local Ownable — admin tracks GRAI.owner(); DEPLOYER stays boss.
         assertEq(grinders.owner(), address(ownerMultisig));
+        assertEq(grinders.boss(), DEPLOYER);
     }
 
     //////////////////// OWNERSHIP ////////////////////
@@ -79,17 +81,17 @@ contract GRAIRolesTest is Test {
         assertEq(grai.pendingOwner(), address(0));
     }
 
-    function test_AcceptOwnershipDoesNotResetHeartbeat() public {
+    function test_GraiOwnershipHandoffDoesNotResetHeartbeat() public {
         assertTrue(grinders.grinding());
         uint48 before = grinders.heartbeatAt();
 
         address next = makeAddr("nextOwner");
-        _exec(ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.transferOwnership, (next)));
+        _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.transferOwnership, (next)));
         vm.prank(next);
-        grinders.acceptOwnership();
+        grai.acceptOwnership();
 
         assertEq(grinders.owner(), next);
-        assertEq(grinders.heartbeatAt(), before, "ownership handoff must not bump or clear heartbeat");
+        assertEq(grinders.heartbeatAt(), before, "GRAI ownership handoff must not bump Grinders heartbeat");
         assertTrue(grinders.grinding());
     }
 
@@ -225,7 +227,7 @@ contract GRAIRolesTest is Test {
     function test_OwnerCanSetTreasuryAndVaults() public {
         Treasury nextImpl = new Treasury();
         address nextTreasury = address(
-            new ERC1967Proxy(address(nextImpl), abi.encodeCall(Treasury.initialize, (address(grai))))
+            new ERC1967Proxy(address(nextImpl), abi.encodeCall(Treasury.initialize, (address(grai), DEPLOYER)))
         );
         MockAggregator ethFeed = new MockAggregator(8, 1000e8);
         _setFeedAsOwner(address(0), ethFeed);
@@ -287,12 +289,13 @@ contract GRAIRolesTest is Test {
     function test_DeployerCannotUpgradeGrinders() public {
         Grinders newImpl = new Grinders();
 
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, DEPLOYER));
+        // Deployer is boss, not GRAI owner after handoff.
+        vm.expectRevert(IGrinders.NotOwner.selector);
         vm.prank(DEPLOYER);
         grinders.upgradeToAndCall(address(newImpl), "");
     }
 
-    //////////////////// GRINDERS OWNABLE ////////////////////
+    //////////////////// GRINDERS OWNER / BOSS ////////////////////
 
     function test_OwnerCanAllocateGate_RevertsUnknownCustodian() public {
         vm.expectRevert();
@@ -304,12 +307,26 @@ contract GRAIRolesTest is Test {
         );
     }
 
-    function test_StrangerCannotTransferOwnership() public {
+    function test_BossCanAllocateGate_RevertsUnknownCustodian() public {
+        vm.expectRevert();
+        vm.prank(DEPLOYER);
+        grinders.allocate(makeAddr("unknown"), address(0), 1);
+    }
+
+    function test_StrangerCannotSetBoss() public {
         Grinders fresh = _deployFreshGrinders();
 
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("stranger")));
+        vm.expectRevert(IGrinders.NotOwner.selector);
         vm.prank(makeAddr("stranger"));
-        fresh.transferOwnership(makeAddr("other"));
+        fresh.setBoss(makeAddr("other"));
+    }
+
+    function test_OwnerCanSetBoss() public {
+        address nextBoss = makeAddr("nextBoss");
+        _exec(
+            ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.setBoss, (nextBoss))
+        );
+        assertEq(grinders.boss(), nextBoss);
     }
 
     function test_NonOwnerCannotDriveOwnerMultisig() public {
@@ -361,7 +378,7 @@ contract GRAIRolesTest is Test {
         );
         Grinders impl = new Grinders();
         fresh = Grinders(
-            payable(address(new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (DEPLOYER, graiAddr)))))
+            payable(address(new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (graiAddr, DEPLOYER)))))
         );
     }
 

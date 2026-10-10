@@ -8,26 +8,22 @@ import {IGRAI} from "./IGRAI.sol";
 
 interface IGrinders is IERC721Enumerable, IERC1046 {
     error ZeroAddress();
-    error OwnerZero();
-    error GraiTokenZero();
     error AmountZero();
     error EthTransferFailed();
-    error ValueMismatch();
-    error UnexpectedValue();
     error UnknownCustodianKind(bytes32 custodianKind);
     error CustodianKindMismatch(bytes32 expected, bytes32 actual);
     error CustodianZero();
     error UnknownCustodian();
-    error NotCustodianOwner();
     error InsufficientReserve();
     error CustodianNonexistent(uint256 custodianId);
     error CustodianAlreadyRegistered(uint256 custodianId);
     error GrindersMismatch();
     error LiquidationNotOpen();
-    error InvalidLiquidationRange(uint256 fromId, uint256 toId);
     error InvalidCustodianRange(uint256 fromId, uint256 toId);
     error InvalidGrindPeriod();
     error NotGrai();
+    error NotOwner();
+    error NotBoss();
 
     /// @notice View row for `getCustodiansData`.
     struct CustodianData {
@@ -42,7 +38,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         uint256 quoteBalance;
     }
 
-    event GraiTokenUpdate(address indexed graiToken);
     event Heartbeat(uint48 timestamp);
     event GrindPeriodUpdate(uint32 grindPeriod);
     event Liquidate(uint256 fromId, uint256 toId);
@@ -61,8 +56,16 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     /// @notice Junior capital pulled from `custodian` back to Grinders (`asset == address(0)` = ETH).
     event Deallocate(address indexed custodian, address indexed asset, uint256 amount);
 
-    /// @notice Protocol admin (`Ownable2Step` owner). Gates `set` / `mint` / allocate path and custodian UUPS.
+    /// @notice Protocol admin — `grai.owner()`, or `address(grai)` if that call fails / returns zero.
+    ///         Gates `set` / `setBoss` / UUPS / `upgradeCustodian`.
     function owner() external view returns (address);
+
+    /// @notice Ops role for `mint` / `allocate` / `deallocate` / `distribute` / `register` / `setAssets`.
+    ///         Protocol `owner()` may also call those functions.
+    function boss() external view returns (address);
+
+    /// @notice Set the ops `boss` (protocol owner only).
+    function setBoss(address boss_) external;
 
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
@@ -100,22 +103,20 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function getCustodiansData(uint256 fromId, uint256 toId) external view returns (CustodianData[] memory list);
 
     function set(bytes32 label, address implementation) external;
-    /// @notice Retarget the linked GRAI core (liquidation checks / asset routing).
-    function setGrai(address grai_) external;
     /// @notice Set the inactivity window for the liquidation heartbeat (1–30 days).
     function setGrindPeriod(uint32 grindPeriod_) external;
-    function mint(bytes32 label_, address owner_, address baseAsset_, address quoteAsset_)
+    function mint(bytes32 label_, address nftOwner_, address baseAsset_, address quoteAsset_)
         external
         returns (address custodian);
-    function register(address custodian, address owner_) external;
-    /// @notice Protocol owner sets trading assets on a registered custodian.
+    function register(address custodian, address nftOwner_) external;
+    /// @notice Boss / owner sets trading assets on a registered custodian.
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) external;
     /// @notice Protocol owner UUPS-upgrades a registered custodian to the `set` impl for its kind.
     function upgradeCustodian(address custodian) external;
     function allocate(address custodian, address asset, uint256 amount) external;
-    /// @notice Protocol owner pulls `amount` of `asset` from `custodian`.
+    /// @notice Boss / owner pulls `amount` of `asset` from `custodian`.
     function deallocate(address custodian, address asset, uint256 amount) external;
-    /// @notice Protocol owner forwards yield `amount` of `asset` from `custodian` to GRAI.
+    /// @notice Boss / owner forwards yield `amount` of `asset` from `custodian` to GRAI.
     function distribute(address custodian, address asset, uint256 amount) external;
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and

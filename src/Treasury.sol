@@ -12,6 +12,148 @@ import {IGRAI} from "./interfaces/IGRAI.sol";
 import {ITreasury} from "./interfaces/ITreasury.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 
+/// @title On-chain Treasury locker card (pixel UI) for cashflow NFTs.
+/// @dev Inlined into `Treasury` (internal library — no separate deploy / link).
+library TreasuryArt {
+    using Strings for uint256;
+    using Strings for address;
+
+    /// @dev Book amounts are GRAI `USD_DECIMALS` (6).
+    uint256 private constant USD_DECIMALS = 1e6;
+
+    function tokenJson(
+        address locker,
+        address cashflowOwner,
+        address referrer,
+        uint256 ownValue,
+        uint256 l1Value,
+        uint256 l2Value
+    ) internal pure returns (string memory) {
+        bool root = referrer == locker;
+        return string.concat(
+            '{"name":"Treasury Locker ',
+            _short(locker),
+            '","description":"Tradable claim on GRAI revenue share for a depositor locker.",',
+            '"image":"data:image/svg+xml;base64,',
+            Base64.encode(bytes(_svg(locker, cashflowOwner, referrer, root, ownValue, l1Value, l2Value))),
+            '","attributes":[{"trait_type":"Locker","value":"',
+            locker.toHexString(),
+            '"},{"trait_type":"CashflowOwner","value":"',
+            cashflowOwner.toHexString(),
+            '"},{"trait_type":"Referrer","value":"',
+            referrer.toHexString(),
+            '"},{"trait_type":"Root","value":"',
+            root ? "true" : "false",
+            '"},{"trait_type":"OWN","value":"',
+            _usd(ownValue),
+            '"},{"trait_type":"L1","value":"',
+            _usd(l1Value),
+            '"},{"trait_type":"L2","value":"',
+            _usd(l2Value),
+            '"}]}'
+        );
+    }
+
+    function _svg(
+        address locker,
+        address cashflowOwner,
+        address referrer,
+        bool root,
+        uint256 ownValue,
+        uint256 l1Value,
+        uint256 l2Value
+    ) private pure returns (string memory) {
+        return string.concat(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 148' shape-rendering='crispEdges'>",
+            "<rect width='320' height='148' fill='#000'/>",
+            "<rect x='3' y='3' width='314' height='142' fill='none' stroke='#ff2d8c' stroke-width='2'/>",
+            "<circle cx='160' cy='3' r='3' fill='#ff2d8c'/>",
+            "<circle cx='160' cy='145' r='3' fill='#ff2d8c'/>",
+            "<text x='16' y='30' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#fff'>Locker</text>",
+            "<text x='74' y='30' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
+            _short(locker),
+            "</text>",
+            root
+                ? "<text x='304' y='30' text-anchor='end' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#ff2d8c'>ROOT</text>"
+                : "",
+            "<text x='16' y='50' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#fff'>Owner:</text>",
+            "<text x='82' y='50' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
+            _short(cashflowOwner),
+            "</text>",
+            "<text x='16' y='70' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#fff'>Referrer:</text>",
+            "<text x='102' y='70' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
+            _short(referrer),
+            "</text>",
+            "<line x1='16' y1='82' x2='304' y2='82' stroke='#ff2d8c' stroke-width='2'/>",
+            _col(53, "OWN", ownValue),
+            _col(160, "L1", l1Value),
+            _col(267, "L2", l2Value),
+            "</svg>"
+        );
+    }
+
+    function _col(uint256 x, string memory label, uint256 amount) private pure returns (string memory) {
+        string memory xs = x.toString();
+        return string.concat(
+            "<text x='",
+            xs,
+            "' y='106' text-anchor='middle' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='13' fill='#8a8a8a'>",
+            label,
+            "</text>",
+            "<text x='",
+            xs,
+            "' y='128' text-anchor='middle' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='16' font-weight='700' fill='#fff'>",
+            _usd(amount),
+            "</text>"
+        );
+    }
+
+    /// @dev `0xabcdef…1234` → `0xabcdef...1234` (`0x` + 6 + `...` + 4).
+    function _short(address account) private pure returns (string memory) {
+        bytes memory h = bytes(account.toHexString());
+        bytes memory o = new bytes(15);
+        o[0] = "0";
+        o[1] = "x";
+        o[2] = h[2];
+        o[3] = h[3];
+        o[4] = h[4];
+        o[5] = h[5];
+        o[6] = h[6];
+        o[7] = h[7];
+        o[8] = ".";
+        o[9] = ".";
+        o[10] = ".";
+        o[11] = h[38];
+        o[12] = h[39];
+        o[13] = h[40];
+        o[14] = h[41];
+        return string(o);
+    }
+
+    /// @dev Compact USD: `$N[.xx]` under 1K; else `$N[.x]K` / `M` / `B` (1 dp, trailing zero trimmed).
+    function _usd(uint256 amount) private pure returns (string memory) {
+        if (amount >= 1e15) return _compact(amount, 1e15, "B"); // >= $1B
+        if (amount >= 1e12) return _compact(amount, 1e12, "M"); // >= $1M
+        if (amount >= 1_000 * USD_DECIMALS) return _compact(amount, 1_000 * USD_DECIMALS, "K"); // >= $1K
+
+        uint256 whole = amount / USD_DECIMALS;
+        uint256 frac2 = (amount % USD_DECIMALS) / 1e4;
+        if (frac2 == 0) return string.concat("$", whole.toString());
+        if (frac2 % 10 == 0) {
+            return string.concat("$", whole.toString(), ".", (frac2 / 10).toString());
+        }
+        if (frac2 < 10) return string.concat("$", whole.toString(), ".0", frac2.toString());
+        return string.concat("$", whole.toString(), ".", frac2.toString());
+    }
+
+    function _compact(uint256 amount, uint256 unit, string memory suffix) private pure returns (string memory) {
+        uint256 whole = amount / unit;
+        uint256 frac1 = ((amount % unit) * 10) / unit;
+        if (frac1 == 0) return string.concat("$", whole.toString(), suffix);
+        return string.concat("$", whole.toString(), ".", frac1.toString(), suffix);
+    }
+}
+
 /// @title Treasury
 /// @notice Protocol fee sink, sticky referrer tree, and claim-time split between affiliates and `beneficiar`.
 /// @dev Three layers:
@@ -28,13 +170,13 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     /// @notice Basis-point denominator (`100_00` = 100%).
     uint16 internal constant BPS = 100_00;
 
-    /// @notice Stored protocol fee recipient; use `beneficiar()` (falls back to `grai` when unset).
-    address internal _beneficiar;
-
     /// @notice Linked GRAI that may call `mint` / `rebind` / `distribute`; upgrades authorized by its `owner`.
     IGRAI public grai;
 
-    /// @notice Shared ERC-2981 royalty fraction (bps of sale price → `beneficiar()`).
+    /// @notice Protocol fee recipient for the non-affiliate slice of claim-time treasury income.
+    address public beneficiar;
+
+    /// @notice Shared ERC-2981 royalty fraction (bps of sale price → `beneficiar`).
     uint16 public royaltyBps;
 
     /// @notice Per-level claim revenue-share weights in bps (`length == 2`, `sum == BPS`).
@@ -49,27 +191,42 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
     }
 
     /// @inheritdoc ITreasury
-    function initialize(address grai_) external initializer {
-        if (grai_ == address(0)) revert ZeroAddress();
+    /// @param beneficiar_ Protocol fee recipient; `address(0)` defaults to `owner()`.
+    function initialize(address grai_, address beneficiar_) external initializer {
+        if (grai_ == address(0)) grai_ = msg.sender;
+        if (beneficiar_ == address(0)) beneficiar_ = msg.sender;
         __ERC721_init("Treasury", "T-GRAI");
         __ERC721Enumerable_init();
         __ERC2981_init();
         __UUPSUpgradeable_init();
         grai = IGRAI(grai_);
+        beneficiar = beneficiar_;
         royaltyBps = 500; // 5%
         revenueShareBps.push(8000); // L1 80%
         revenueShareBps.push(2000); // L2 20%
     }
 
+    /// @notice Protocol admin — `grai.owner()`, or `address(grai)` if that call fails / returns zero.
+    /// @dev Same pattern as `Grinders.owner()`.
+    function owner() public view returns (address) {
+        address grai_ = address(grai);
+        if (grai_.code.length == 0) return grai_;
+        try grai.owner() returns (address o) {
+            if (o != address(0)) return o;
+        } catch {}
+        return grai_;
+    }
+
     /// @inheritdoc ITreasury
     function setBeneficiar(address beneficiar_) public {
-        _onlyGraiOwner();
-        _beneficiar = beneficiar_;
+        _onlyOwner();
+        if (beneficiar_ == address(0)) revert ZeroAddress();
+        beneficiar = beneficiar_;
     }
 
     /// @inheritdoc ITreasury
     function setRoyaltyBps(uint16 royaltyBps_) external {
-        _onlyGraiOwner();
+        _onlyOwner();
         if (royaltyBps_ > BPS) revert BpsTooHigh();
         royaltyBps = royaltyBps_;
         emit RoyaltyBpsUpdate(royaltyBps_);
@@ -77,7 +234,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
 
     /// @inheritdoc ITreasury
     function setRevenueShareBps(uint16[] memory shares) external {
-        _onlyGraiOwner();
+        _onlyOwner();
         uint256 len = shares.length;
         if (len != 2) revert InvalidShares();
         uint256 sum;
@@ -250,7 +407,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         }
 
         uint256 netProfitShare = grossProfitShare - revenueShare;
-        address to = beneficiar();
+        address to = beneficiar;
         if (_trySend(to, asset, netProfitShare)) {
             emit Distribute(asset, to, netProfitShare);
         }
@@ -290,7 +447,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         }
     }
 
-    /// @dev Shared `royaltyBps` for all tokens; receiver is `beneficiar()` (same as Solana
+    /// @dev Shared `royaltyBps` for all tokens; receiver is `beneficiar` (same as Solana
     ///      Metaplex creator / `royalty_info` — not the locker).
     function royaltyInfo(uint256 tokenId, uint256 salePrice)
         public
@@ -299,20 +456,8 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         returns (address receiver, uint256 amount)
     {
         if (_ownerOf(tokenId) == address(0)) return (address(0), 0);
-        receiver = beneficiar();
+        receiver = beneficiar;
         amount = (salePrice * royaltyBps) / BPS;
-    }
-
-    /// @inheritdoc ITreasury
-    /// @dev Unset (`address(0)`) reads as `grai.owner()`, or `address(grai)` if that call fails.
-    function beneficiar() public view returns (address) {
-        address b = _beneficiar;
-        if (b != address(0)) return b;
-        try grai.owner() returns (address o) {
-            return o;
-        } catch {
-            return address(grai);
-        }
     }
 
     /// @inheritdoc ITreasury
@@ -364,23 +509,13 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         // casting to 'uint160' is safe because tokenId is always uint256(uint160(locker)) from mint
         // forge-lint: disable-next-line(unsafe-typecast)
         address locker = address(uint160(tokenId));
-        address affiliate = ownerOf(tokenId);
-        address upline = referrerOf(locker);
+        LockerBook memory book = lockerBooks[locker];
         return string.concat(
             "data:application/json;base64,",
             Base64.encode(
                 bytes(
-                    string.concat(
-                        '{"name":"Treasury 0x',
-                        tokenId.toString(),
-                        '","description":"Tradable claim on GRAI revenue share for a depositor locker.",',
-                        '"attributes":[{"trait_type":"Locker","value":"',
-                        locker.toHexString(),
-                        '"},{"trait_type":"CashflowOwner","value":"',
-                        affiliate.toHexString(),
-                        '"},{"trait_type":"Referrer","value":"',
-                        upline.toHexString(),
-                        '"}]}'
+                    TreasuryArt.tokenJson(
+                        locker, ownerOf(tokenId), book.referrer, book.value, book.l1Value, book.l2Value
                     )
                 )
             )
@@ -482,19 +617,11 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         if (msg.sender != address(grai)) revert NotGrai();
     }
 
-    /// @dev Prefer `grai.owner()`; if `grai` has no code or the call reverts, treat `address(grai)`
-    ///      as owner (e.g. unwired / non-Ownable stub during setup).
-    function _onlyGraiOwner() internal view {
-        address owner_ = address(grai);
-        if (owner_.code.length != 0) {
-            try grai.owner() returns (address o) {
-                owner_ = o;
-            } catch {}
-        }
-        if (msg.sender != owner_) revert NotGraiOwner();
+    function _onlyOwner() internal view {
+        if (msg.sender != owner()) revert NotGraiOwner();
     }
 
     function _authorizeUpgrade(address) internal view override {
-        _onlyGraiOwner();
+        _onlyOwner();
     }
 }

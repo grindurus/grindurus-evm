@@ -49,7 +49,7 @@ abstract contract GRAIFixture is Test {
             payable(
                 address(
                     new ERC1967Proxy(
-                        address(treasuryImpl), abi.encodeCall(Treasury.initialize, (tokenAddr))
+                        address(treasuryImpl), abi.encodeCall(Treasury.initialize, (tokenAddr, admin))
                     )
                 )
             )
@@ -57,7 +57,7 @@ abstract contract GRAIFixture is Test {
         grai.setTreasury(address(treasury));
 
         Grinders impl = new Grinders();
-        bytes memory init = abi.encodeCall(Grinders.initialize, (admin, tokenAddr));
+        bytes memory init = abi.encodeCall(Grinders.initialize, (tokenAddr, admin));
         grinders = Grinders(payable(address(new ERC1967Proxy(address(impl), init))));
 
         usdc = new MockERC20("USD Coin", "USDC", 6);
