@@ -15,7 +15,7 @@ import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 ///         Network from `block.chainid` (`--rpc-url`). Addresses are not precomputed.
 ///
 /// Env:
-///   PRIVATE_KEY       — deployer; GRAI initial owner + Grinders boss
+///   PRIVATE_KEY       — deployer; GRAI initial owner + Grinders toreador
 ///   OWNER_MULTISIG    — optional GRAI Ownable2Step handoff (`acceptOwnership` required);
 ///                       Grinders.owner() follows GRAI (no separate Grinders handoff)
 ///   MAX_STALENESS     — optional seconds (default per-chain)
@@ -68,7 +68,6 @@ contract DeployGRAI is Script {
         GRAI grai = deployGRAI(owner, weth);
         Treasury treasury = deployTreasury(address(grai), owner);
         wireTreasury(grai, address(treasury));
-        // Grinders has no local Ownable — `owner()` reads `grai.owner()`. `boss` = deployer EOA.
         Grinders grinders = deployGrinders(address(grai), owner);
         wireGrinders(grai, address(grinders));
 
@@ -146,17 +145,17 @@ contract DeployGRAI is Script {
 
     //////////////////// GRINDERS ////////////////////
 
-    /// @notice Grinders impl + proxy (`initialize(grai, boss)`).
-    function deployGrinders(address grai, address boss) public returns (Grinders grinders) {
+    /// @notice Grinders impl + proxy (`initialize(grai, toreador)`).
+    function deployGrinders(address grai, address toreador) public returns (Grinders grinders) {
         Grinders impl = new Grinders();
         grinders = Grinders(
             payable(
-                new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (grai, boss)))
+                new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (grai, toreador)))
             )
         );
         console2.log("Grinders impl:", address(impl));
         console2.log("Grinders proxy:", address(grinders));
-        console2.log("Grinders boss:", boss);
+        console2.log("Grinders toreador:", toreador);
     }
 
     /// @notice Wire `GRAI.setGrinders(grinders)`.

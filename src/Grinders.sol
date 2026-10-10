@@ -169,7 +169,7 @@ library GrinderArt {
 /// @notice Protocol registry: custodian NFTs and junior capital from GRAI.
 /// @dev Do not call this contract directly. Use the ERC1967Proxy address only.
 ///      Protocol admin is `GRAI.owner()` (or `address(grai)` if that call fails) — not local Ownable.
-///      Day-to-day ops (`allocate` / mint / …) are gated by `boss` (owner may also call).
+///      Day-to-day ops (`allocate` / mint / …) are gated by `toreador` only (not `owner()`).
 contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
@@ -177,7 +177,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     IGRAI public grai;
 
     /// @notice Hot-wallet / keeper role for allocate, mint, and other ops. Set by `owner()`.
-    address public boss;
+    address public toreador;
 
     /// @notice Last successful operational touch (`distribute` / `allocate` / `deallocate` / `heartbeat`).
     /// @dev GRAI liquidation requires quorum and `!grinding()`. Keepers' sweeps do not check `grinding`.
@@ -202,15 +202,15 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     }
 
     /// @param grai_ Linked GRAI (required). Protocol `owner()` is read from it.
-    /// @param boss_ Ops role; `address(0)` defaults to `msg.sender`.
-    function initialize(address grai_, address boss_) public initializer {
+    /// @param toreador_ Ops role; `address(0)` defaults to `msg.sender`.
+    function initialize(address grai_, address toreador_) public initializer {
         if (grai_ == address(0)) grai_ = msg.sender;
-        if (boss_ == address(0)) boss_ = msg.sender;
+        if (toreador_ == address(0)) toreador_ = msg.sender;
         __ERC721_init("Grinders Custodians", "GRINDERS");
         __ERC721Enumerable_init();
         __UUPSUpgradeable_init();
         grai = IGRAI(grai_);
-        boss = boss_;
+        toreador = toreador_;
         grindPeriod = uint32(7 days);
         _heartbeat();
     }
@@ -227,11 +227,11 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         return grai_;
     }
 
-    /// @notice Set the ops `boss` (protocol owner only).
-    function setBoss(address boss_) public {
+    /// @notice Set the ops `toreador` (protocol owner only).
+    function setToreador(address toreador_) public {
         _onlyOwner();
-        if (boss_ == address(0)) revert ZeroAddress();
-        boss = boss_;
+        if (toreador_ == address(0)) revert ZeroAddress();
+        toreador = toreador_;
     }
 
     /// @notice Set the inactivity window for the liquidation heartbeat (1–30 days).
@@ -267,7 +267,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         address baseAsset_,
         address quoteAsset_
     ) public returns (address custodian) {
-        _onlyBoss();
+        _onlyToreador();
         if (nftOwner_ == address(0)) nftOwner_ = owner();
 
         address impl = custodianImplementations[label_];
@@ -292,9 +292,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     /// @dev Reverts if already registered here. If the custodian still points at another `grinders`
     ///      (e.g. deploy-time EOA), completes the 2-step handoff via `ICustodian.register(this)`.
     function register(address custodian, address nftOwner_) public {
-        _onlyBoss();
-        if (custodian == address(0)) revert CustodianZero();
-        if (nftOwner_ == address(0)) nftOwner_ = boss;
+        _onlyToreador();
+        if (custodian == address(0)) revert ZeroAddress();
+        if (nftOwner_ == address(0)) nftOwner_ = toreador;
         if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
 
         ICustodian c = ICustodian(payable(custodian));
@@ -313,9 +313,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         emit CustodianRegistered(custodian, nftOwner_, custodianId);
     }
 
-    /// @notice Set trading assets on a registered custodian (boss / owner).
+    /// @notice Set trading assets on a registered custodian (`toreador` only).
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) public {
-        _onlyBoss();
+        _onlyToreador();
         _requireCustodian(custodian);
         ICustodian(payable(custodian)).setAssets(baseAsset_, quoteAsset_);
     }
@@ -333,7 +333,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     }
 
     function allocate(address custodian, address asset, uint256 amount) public {
-        _onlyBoss();
+        _onlyToreador();
         _requireCustodian(custodian);
         if (balance(asset) < amount) revert InsufficientReserve();
 
@@ -349,10 +349,10 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     }
 
     /// @notice Pull `amount` of `asset` from a custodian back to this contract.
-    /// @dev Boss / owner. Not capped by prior allocations — after swaps the returned
+    /// @dev `toreador` only. Not capped by prior allocations — after swaps the returned
     ///      token/size need not match what was sent. Track `Allocate` / `Deallocate` off-chain.
     function deallocate(address custodian, address asset, uint256 amount) public {
-        _onlyBoss();
+        _onlyToreador();
         _requireCustodian(custodian);
         if (amount == 0) revert AmountZero();
 
@@ -363,9 +363,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     }
 
     /// @notice Forward custodian yield `amount` of `asset` to GRAI.distribute.
-    /// @dev Boss / owner.
+    /// @dev `toreador` only.
     function distribute(address custodian, address asset, uint256 yieldAmount) public {
-        _onlyBoss();
+        _onlyToreador();
         _requireCustodian(custodian);
         ICustodian(payable(custodian)).distribute(asset, yieldAmount);
         _heartbeat();
@@ -542,9 +542,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         if (msg.sender != owner()) revert NotOwner();
     }
 
-    /// @dev Boss, or protocol owner (so multisig can always ops without rotating boss).
-    function _onlyBoss() internal view {
-        if (msg.sender != boss && msg.sender != owner()) revert NotBoss();
+    /// @dev `msg.sender == toreador` only — protocol `owner()` cannot substitute.
+    function _onlyToreador() internal view {
+        if (msg.sender != toreador) revert NotToreador();
     }
 
     function _authorizeUpgrade(address) internal view override {

@@ -12,7 +12,6 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error EthTransferFailed();
     error UnknownCustodianKind(bytes32 custodianKind);
     error CustodianKindMismatch(bytes32 expected, bytes32 actual);
-    error CustodianZero();
     error UnknownCustodian();
     error InsufficientReserve();
     error CustodianNonexistent(uint256 custodianId);
@@ -23,7 +22,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error InvalidGrindPeriod();
     error NotGrai();
     error NotOwner();
-    error NotBoss();
+    error NotToreador();
 
     /// @notice View row for `getCustodiansData`.
     struct CustodianData {
@@ -57,15 +56,15 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     event Deallocate(address indexed custodian, address indexed asset, uint256 amount);
 
     /// @notice Protocol admin — `grai.owner()`, or `address(grai)` if that call fails / returns zero.
-    ///         Gates `set` / `setBoss` / UUPS / `upgradeCustodian`.
+    ///         Gates `set` / `setToreador` / UUPS / `upgradeCustodian`.
     function owner() external view returns (address);
 
     /// @notice Ops role for `mint` / `allocate` / `deallocate` / `distribute` / `register` / `setAssets`.
-    ///         Protocol `owner()` may also call those functions.
-    function boss() external view returns (address);
+    ///         Protocol `owner()` cannot call those — only `toreador`.
+    function toreador() external view returns (address);
 
-    /// @notice Set the ops `boss` (protocol owner only).
-    function setBoss(address boss_) external;
+    /// @notice Set the ops `toreador` (protocol owner only).
+    function setToreador(address toreador_) external;
 
     /// @notice The GRAI token this yield pool backs.
     function grai() external view returns (IGRAI);
@@ -109,14 +108,14 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         external
         returns (address custodian);
     function register(address custodian, address nftOwner_) external;
-    /// @notice Boss / owner sets trading assets on a registered custodian.
+    /// @notice `toreador` sets trading assets on a registered custodian.
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) external;
     /// @notice Protocol owner UUPS-upgrades a registered custodian to the `set` impl for its kind.
     function upgradeCustodian(address custodian) external;
     function allocate(address custodian, address asset, uint256 amount) external;
-    /// @notice Boss / owner pulls `amount` of `asset` from `custodian`.
+    /// @notice `toreador` pulls `amount` of `asset` from `custodian`.
     function deallocate(address custodian, address asset, uint256 amount) external;
-    /// @notice Boss / owner forwards yield `amount` of `asset` from `custodian` to GRAI.
+    /// @notice `toreador` forwards yield `amount` of `asset` from `custodian` to GRAI.
     function distribute(address custodian, address asset, uint256 amount) external;
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and

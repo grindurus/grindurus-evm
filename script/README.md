@@ -16,7 +16,7 @@ forge build
 
 | Env | Required | Notes |
 | --- | -------- | ----- |
-| `PRIVATE_KEY` | yes | Deployer; GRAI `owner` + Grinders `boss` |
+| `PRIVATE_KEY` | yes | Deployer; GRAI `owner` + Grinders `toreador` |
 | `ETHERSCAN_API_KEY` / `ARBISCAN_API_KEY` / `BASESCAN_API_KEY` | for `--verify` | See `[etherscan]` in `foundry.toml` |
 | `ETH_RPC_URL` / `ARBITRUM_RPC_URL` / `BASE_RPC_URL` / `ROBINHOOD_RPC_URL` | for those aliases | Sepolia has a public default in `foundry.toml` |
 
@@ -174,7 +174,7 @@ grai.acceptOwnership();
 grs.acceptOwnership(); // also syncs LZ endpoint delegate on GRS
 ```
 
-Treasury and Grinders have no local Ownable2Step — admin is `GRAI.owner()` (Grinders also has a separate `boss` ops role set at deploy to the deployer EOA).
+Treasury and Grinders have no local Ownable2Step — admin is `GRAI.owner()` (Grinders also has a separate `toreador` ops role set at deploy to the deployer EOA).
 
 ---
 

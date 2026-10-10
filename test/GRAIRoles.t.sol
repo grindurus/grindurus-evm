@@ -16,7 +16,7 @@ import {MockMultisig} from "./mocks/MockMultisig.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 
 /// @dev Ownable2Step handoff on GRAI: deployer → ownerMultisig. Grinders.owner() follows GRAI;
-///      deployer remains Grinders.boss.
+///      deployer remains Grinders.toreador.
 contract GRAIRolesTest is Test {
     address internal constant DEPLOYER = address(0xA11CE);
 
@@ -56,9 +56,9 @@ contract GRAIRolesTest is Test {
         vm.stopPrank();
 
         _exec(ownerMultisig, ownerSigner, address(grai), abi.encodeCall(grai.acceptOwnership, ()));
-        // Grinders has no local Ownable — admin tracks GRAI.owner(); DEPLOYER stays boss.
+        // Grinders has no local Ownable — admin tracks GRAI.owner(); DEPLOYER stays toreador.
         assertEq(grinders.owner(), address(ownerMultisig));
-        assertEq(grinders.boss(), DEPLOYER);
+        assertEq(grinders.toreador(), DEPLOYER);
     }
 
     //////////////////// OWNERSHIP ////////////////////
@@ -289,16 +289,16 @@ contract GRAIRolesTest is Test {
     function test_DeployerCannotUpgradeGrinders() public {
         Grinders newImpl = new Grinders();
 
-        // Deployer is boss, not GRAI owner after handoff.
+        // Deployer is toreador, not GRAI owner after handoff.
         vm.expectRevert(IGrinders.NotOwner.selector);
         vm.prank(DEPLOYER);
         grinders.upgradeToAndCall(address(newImpl), "");
     }
 
-    //////////////////// GRINDERS OWNER / BOSS ////////////////////
+    //////////////////// GRINDERS OWNER / TOREADOR ////////////////////
 
-    function test_OwnerCanAllocateGate_RevertsUnknownCustodian() public {
-        vm.expectRevert();
+    function test_OwnerCannotAllocate_NotToreador() public {
+        vm.expectRevert(IGrinders.NotToreador.selector);
         _exec(
             ownerMultisig,
             ownerSigner,
@@ -307,26 +307,26 @@ contract GRAIRolesTest is Test {
         );
     }
 
-    function test_BossCanAllocateGate_RevertsUnknownCustodian() public {
+    function test_ToreadorCanAllocateGate_RevertsUnknownCustodian() public {
         vm.expectRevert();
         vm.prank(DEPLOYER);
         grinders.allocate(makeAddr("unknown"), address(0), 1);
     }
 
-    function test_StrangerCannotSetBoss() public {
+    function test_StrangerCannotSetToreador() public {
         Grinders fresh = _deployFreshGrinders();
 
         vm.expectRevert(IGrinders.NotOwner.selector);
         vm.prank(makeAddr("stranger"));
-        fresh.setBoss(makeAddr("other"));
+        fresh.setToreador(makeAddr("other"));
     }
 
-    function test_OwnerCanSetBoss() public {
-        address nextBoss = makeAddr("nextBoss");
+    function test_OwnerCanSetToreador() public {
+        address nextToreador = makeAddr("nextToreador");
         _exec(
-            ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.setBoss, (nextBoss))
+            ownerMultisig, ownerSigner, address(grinders), abi.encodeCall(grinders.setToreador, (nextToreador))
         );
-        assertEq(grinders.boss(), nextBoss);
+        assertEq(grinders.toreador(), nextToreador);
     }
 
     function test_NonOwnerCannotDriveOwnerMultisig() public {
