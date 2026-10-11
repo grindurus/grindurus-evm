@@ -217,6 +217,10 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         return grai_;
     }
 
+    receive() external payable {}
+
+    //////////////////// ONLY OWNER ////////////////////
+
     /// @inheritdoc ITreasury
     function setBeneficiar(address beneficiar_) public {
         _onlyOwner();
@@ -246,7 +250,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
         emit RevenueShareUpdate(shares);
     }
 
-    receive() external payable {}
+    //////////////////// ONLY GRAI ////////////////////
 
     /// @inheritdoc ITreasury
     /// @dev First call sticky-binds `referrer` when unset (or `locker` if zero), mints cashflow NFT

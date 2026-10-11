@@ -59,8 +59,9 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     ///         Gates `set` / `setToreador` / UUPS / `upgradeCustodian`.
     function owner() external view returns (address);
 
-    /// @notice Ops role for `mint` / `allocate` / `deallocate` / `distribute` / `register` / `setAssets`.
+    /// @notice Ops role for `allocate` / `deallocate` / `distribute`.
     ///         Protocol `owner()` cannot call those — only `toreador`.
+    ///         `mint` / `register` / `setAssets` are owner-gated.
     function toreador() external view returns (address);
 
     /// @notice Set the ops `toreador` (protocol owner only).
@@ -101,6 +102,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     ///         Empty slots (`custodians[id] == 0`) return a zeroed row with that `id`.
     function getCustodiansData(uint256 fromId, uint256 toId) external view returns (CustodianData[] memory list);
 
+    /// @notice Register or replace the UUPS implementation for custodian kind `label`.
     function set(bytes32 label, address implementation) external;
     /// @notice Set the inactivity window for the liquidation heartbeat (1–30 days).
     function setGrindPeriod(uint32 grindPeriod_) external;
@@ -108,7 +110,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         external
         returns (address custodian);
     function register(address custodian, address nftOwner_) external;
-    /// @notice `toreador` sets trading assets on a registered custodian.
+    /// @notice Protocol owner sets trading assets on a registered custodian.
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) external;
     /// @notice Protocol owner UUPS-upgrades a registered custodian to the `set` impl for its kind.
     function upgradeCustodian(address custodian) external;

@@ -121,7 +121,7 @@ contract GRAIRolesTest is Test {
         address asset = makeAddr("opsAsset");
         _setFeedAsOwner(asset, new MockAggregator(8, 1e8));
 
-        (, uint32 id,,,) = grai.assets(asset);
+        (, uint32 id,,,,) = grai.assets(asset);
         assertEq(grai.assetList(id), asset);
     }
 
@@ -244,7 +244,7 @@ contract GRAIRolesTest is Test {
 
         assertEq(address(grai.treasury()), nextTreasury);
         assertEq(address(grai.grinders()), address(grinders));
-        (,, bool ethBribeable,,) = grai.assets(address(0));
+        (,, bool ethBribeable,,,) = grai.assets(address(0));
         assertTrue(ethBribeable);
     }
 

@@ -206,8 +206,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
         emit Liquidate(ethOut, baseOut, quoteOut);
     }
 
-    //////////////////// ONLY OWNER ////////////////////
-
     function _onlyOwner() internal view {
         if (msg.sender != owner()) revert NotOwner(msg.sender);
     }

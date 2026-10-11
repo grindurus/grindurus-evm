@@ -56,9 +56,9 @@ contract GRAI is
     /// @notice Listed assets eligible for deposit, yield distribution, and liquidation redemption.
     address[] public assetList;
 
-    /// @notice Per-asset listing + dividend state (`id` / `bribeable` / `accShare` / `totalClaimable`).
+    /// @notice Per-asset listing + dividend state (`id` / `bribeable` / `accShare` / `totalClaimable` / `totalYielded`).
     /// @dev Deposit pause lives on `feeds[asset].paused` (gates deposits only — not distribute or claim).
-    mapping(address asset => AssetConfig) public assets;
+    mapping(address asset => Asset) public assets;
 
     /// @notice Accounts with `escrows[locker].locked > 0`; `lockerId` is the index here.
     /// @dev Full unlock clears list membership only — escrow storage is kept.
@@ -304,6 +304,7 @@ contract GRAI is
 
         (uint256 received, uint256 refund) = _pay(msg.sender, address(this), asset, yieldAmount, false);
         positions[msg.sender][asset].yielded += received;
+        assets[asset].totalYielded += received;
 
         // Floor the dividend slice; remainder → treasury so claim asks
         // `claimed * treasuryCutBps / dividendCutBps` stay ≤ funded inventory.
@@ -927,7 +928,7 @@ contract GRAI is
             return;
         }
 
-        AssetConfig storage div = assets[asset];
+        Asset storage div = assets[asset];
         uint256 oldShare = div.accShare;
         uint256 newShare = oldShare + indexIncrease;
         uint256 reserved = (newShare * eligible) / PRECISION - (oldShare * eligible) / PRECISION;
@@ -972,7 +973,9 @@ contract GRAI is
         if (existingId < assetList.length && assetList[existingId] == asset) return;
 
         uint32 id = uint32(assetList.length);
-        assets[asset] = AssetConfig({asset: asset, id: id, bribeable: false, accShare: 0, totalClaimable: 0});
+        assets[asset] = Asset({
+            asset: asset, id: id, bribeable: false, accShare: 0, totalClaimable: 0, totalYielded: 0
+        });
         assetList.push(asset);
         emit AssetUpdate(asset, true);
     }

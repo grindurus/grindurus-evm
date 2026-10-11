@@ -227,6 +227,10 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         return grai_;
     }
 
+    receive() external payable {}
+
+    //////////////////// ONLY OWNER ////////////////////
+
     /// @notice Set the ops `toreador` (protocol owner only).
     function setToreador(address toreador_) public {
         _onlyOwner();
@@ -242,15 +246,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         emit GrindPeriodUpdate(grindPeriod_);
     }
 
-    receive() external payable {}
-
-    /// @notice Refresh the liquidation heartbeat without an allocate / deallocate / distribute.
-    /// @dev Only linked GRAI (e.g. on `revive`) so the fund restarts with a fresh window.
-    function heartbeat() public {
-        _onlyGrai();
-        _heartbeat();
-    }
-
+    /// @notice Register or replace the UUPS implementation for custodian kind `label`.
+    /// @dev `implementation.label()` must equal `label`. Used by `mint` and `upgradeCustodian`.
     function set(bytes32 label, address implementation) public {
         _onlyOwner();
         if (implementation == address(0)) revert ZeroAddress();
@@ -267,7 +264,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         address baseAsset_,
         address quoteAsset_
     ) public returns (address custodian) {
-        _onlyToreador();
+        _onlyOwner();
         if (nftOwner_ == address(0)) nftOwner_ = owner();
 
         address impl = custodianImplementations[label_];
@@ -292,7 +289,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     /// @dev Reverts if already registered here. If the custodian still points at another `grinders`
     ///      (e.g. deploy-time EOA), completes the 2-step handoff via `ICustodian.register(this)`.
     function register(address custodian, address nftOwner_) public {
-        _onlyToreador();
+        _onlyOwner();
         if (custodian == address(0)) revert ZeroAddress();
         if (nftOwner_ == address(0)) nftOwner_ = toreador;
         if (isCustodian(custodian)) revert CustodianAlreadyRegistered(custodianIds[custodian]);
@@ -313,9 +310,9 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         emit CustodianRegistered(custodian, nftOwner_, custodianId);
     }
 
-    /// @notice Set trading assets on a registered custodian (`toreador` only).
+    /// @notice Set trading assets on a registered custodian (protocol owner only).
     function setAssets(address custodian, address baseAsset_, address quoteAsset_) public {
-        _onlyToreador();
+        _onlyOwner();
         _requireCustodian(custodian);
         ICustodian(payable(custodian)).setAssets(baseAsset_, quoteAsset_);
     }
@@ -331,6 +328,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         if (impl == address(0)) revert UnknownCustodianKind(label);
         UUPSUpgradeable(payable(custodian)).upgradeToAndCall(impl, "");
     }
+
+    //////////////////// ONLY TOREADOR ////////////////////
 
     function allocate(address custodian, address asset, uint256 amount) public {
         _onlyToreador();
@@ -371,6 +370,8 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         _heartbeat();
     }
 
+    //////////////////// ANYBODY ////////////////////
+
     /// @inheritdoc IGrinders
     /// @dev Permissionless while `liquidation()` (GRAI flips to REDEMPTION before its open-time
     ///      sweeps). Does **not** check `grinding` — keepers must page freely after open. Pages
@@ -379,7 +380,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     ///      reverts. Return amounts are trusted: only registered custodian wallets are iterated,
     ///      under the Grinders NFT custody model.
     function liquidate(uint256 fromId, uint256 toId) public {
-        if (!liquidation()) revert LiquidationNotOpen();
+        _onlyLiquidation();
         address grai_ = address(grai);
         if (fromId >= toId) {
             fromId = type(uint256).max;
@@ -427,6 +428,17 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
             IERC20(asset).safeTransfer(grai_, amount);
         }
     }
+
+    //////////////////// ONLY GRAI ////////////////////
+
+    /// @notice Refresh the liquidation heartbeat without an allocate / deallocate / distribute.
+    /// @dev Only linked GRAI (e.g. on `revive`) so the fund restarts with a fresh window.
+    function heartbeat() public {
+        _onlyGrai();
+        _heartbeat();
+    }
+
+    //////////////////// VIEW FUNCTIONS ////////////////////
 
     /// @inheritdoc IGrinders
     function getCustodiansData(uint256 fromId, uint256 toId) public view returns (CustodianData[] memory list) {
@@ -545,6 +557,11 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     /// @dev `msg.sender == toreador` only — protocol `owner()` cannot substitute.
     function _onlyToreador() internal view {
         if (msg.sender != toreador) revert NotToreador();
+    }
+
+    /// @dev GRAI reports open liquidation (or unavailable → treated as open).
+    function _onlyLiquidation() internal view {
+        if (!liquidation()) revert LiquidationNotOpen();
     }
 
     function _authorizeUpgrade(address) internal view override {

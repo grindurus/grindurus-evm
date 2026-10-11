@@ -209,7 +209,7 @@ contract DeployGRAI is Script {
 
         for (uint256 i; i < net.assets.length; ++i) {
             if (!net.assets[i].bribeable) continue;
-            (,, bool bribeable,,) = grai.assets(net.assets[i].asset);
+            (,, bool bribeable,,,) = grai.assets(net.assets[i].asset);
             require(bribeable, "asset not bribeable");
         }
     }

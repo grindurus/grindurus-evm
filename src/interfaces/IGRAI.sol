@@ -31,7 +31,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     error InvalidCuts();
     error GrindersGrinding();
     error InvalidRange(uint256 fromId, uint256 toId);
-    /// @notice Bribe payment asset is not marked `bribeable` on its `AssetConfig`.
+    /// @notice Bribe payment asset is not marked `bribeable` on its `Asset`.
     error NotBribeable();
     /// @notice Fund lifecycle: normal ops → redeem window (after consolidation delay) → grinding.
     enum Regime {
@@ -57,8 +57,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         POACH_FEE
     }
 
-    struct AssetConfig {
-        /// @notice The asset this config belongs to (mirrors the `assets` mapping key).
+    struct Asset {
+        /// @notice Token address (mirrors the `assets` mapping key).
         address asset;
         /// @notice Index of this asset in `assetList` while listed.
         uint32 id;
@@ -69,6 +69,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint256 accShare;
         /// @notice Tokens reserved for locker claims (excluded from redeem / revive).
         uint256 totalClaimable;
+        /// @notice Lifetime yield credited via `distribute` for this asset (never decreases).
+        uint256 totalYielded;
     }
 
     /// @notice Per-account, per-asset ledger: locker dividends (`debt`/`claimable`), custodian yield (`yielded`).
@@ -247,7 +249,14 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function assets(address asset)
         external
         view
-        returns (address asset_, uint32 id, bool bribeable, uint256 accShare, uint256 totalClaimable);
+        returns (
+            address asset_,
+            uint32 id,
+            bool bribeable,
+            uint256 accShare,
+            uint256 totalClaimable,
+            uint256 totalYielded
+        );
 
     function assetList(uint256 index) external view returns (address);
 
