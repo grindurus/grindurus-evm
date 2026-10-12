@@ -94,7 +94,7 @@ library GPv2Order {
 contract CoWCustodian is Custodian, IERC1271 {
     using SafeERC20 for IERC20;
 
-    bytes4 internal constant _EIP1271_MAGIC = 0x1626ba7e;
+    bytes4 public constant _EIP1271_MAGIC = 0x1626ba7e;
 
     IGPv2Settlement public constant COW_SETTLEMENT = IGPv2Settlement(0x9008D19f58AAbD9eD0D60971565AA8510560ab41);
     address public constant COW_VAULT_RELAYER = 0xC92E8bdf79f0507f65a392b0ab4667716BFE0110;
@@ -108,13 +108,13 @@ contract CoWCustodian is Custodian, IERC1271 {
         )
     );
 
-    function initialize(address grinders_) public override initializer {
+    function initialize(address grinders_) public virtual override initializer {
         __Custodian_init(grinders_);
     }
 
     /// @inheritdoc Custodian
     /// @dev `grinder.custodian.cow@eip155:<chainid>` via `super._labelName()` + `.cow`.
-    function _labelName() internal pure override returns (string memory) {
+    function _labelName() internal pure virtual override returns (string memory) {
         return string.concat(super._labelName(), ".cow");
     }
 
@@ -161,18 +161,12 @@ contract CoWCustodian is Custodian, IERC1271 {
         signature = abi.encode(ecdsaSig, order);
     }
 
-    function approve(address token, uint256 amount) public {
-        _onlyOwner();
-        if (token != baseAsset && token != quoteAsset) revert AssetsMismatch();
-        IERC20(token).forceApprove(COW_VAULT_RELAYER, amount);
-    }
-
-    function setAssets(address baseAsset_, address quoteAsset_) public override {
+    function setAssets(address baseAsset_, address quoteAsset_) public virtual override {
         super.setAssets(baseAsset_, quoteAsset_);
-        _approveVaultRelayer(baseAsset_, quoteAsset_);
+        _approveCoWVaultRelayer(baseAsset_, quoteAsset_);
     }
 
-    function _approveVaultRelayer(address base_, address quote_) internal {
+    function _approveCoWVaultRelayer(address base_, address quote_) internal {
         IERC20(base_).forceApprove(COW_VAULT_RELAYER, type(uint256).max);
         IERC20(quote_).forceApprove(COW_VAULT_RELAYER, type(uint256).max);
     }

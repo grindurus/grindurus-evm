@@ -38,11 +38,11 @@ contract PathCustodian is Custodian {
 
     /// @inheritdoc Custodian
     /// @dev `grinder.custodian.path@eip155:<chainid>` via `super._labelName()` + `.path`.
-    function _labelName() internal pure override returns (string memory) {
+    function _labelName() internal pure virtual override returns (string memory) {
         return string.concat(super._labelName(), ".path");
     }
 
-    function initialize(address grinders_) public override initializer {
+    function initialize(address grinders_) public virtual override initializer {
         __Custodian_init(grinders_);
     }
 
@@ -51,11 +51,12 @@ contract PathCustodian is Custodian {
     /// @return baseDelta Absolute change in base balance.
     /// @return quoteDelta Absolute change in quote balance.
     /// @return executionPrice `quote per 1 base` (18 decimals).
+    /// @return ok Low-level `target.call` success flag (always `true` if this returns; else `SwapFailed`).
     /// @return result Router returndata.
     /// @dev Only the Grinder NFT owner may call. ETH value is not forwarded; use WETH routers when needed.
     function swap(uint256 limitPrice, address target, bytes calldata data)
         external
-        returns (uint256 baseDelta, uint256 quoteDelta, uint256 executionPrice, bytes memory result)
+        returns (uint256 baseDelta, uint256 quoteDelta, uint256 executionPrice, bool ok, bytes memory result)
     {
         _onlyOwner();
         if (target == address(0)) revert TargetZero();
@@ -67,7 +68,6 @@ contract PathCustodian is Custodian {
         IERC20(baseAsset).forceApprove(target, type(uint256).max);
         IERC20(quoteAsset).forceApprove(target, type(uint256).max);
 
-        bool ok;
         (ok, result) = target.call(data);
 
         IERC20(baseAsset).forceApprove(target, 0);

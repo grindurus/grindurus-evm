@@ -170,14 +170,14 @@ contract CustodyCowTest is GRAIFixture {
         grinders.setAssets(address(custodyWallet), address(usdc), address(usdc));
     }
 
-    function test_SetAssets_revertsNonZeroBalance() public {
+    function test_SetAssets_allowsNonZeroBalance() public {
         usdc.mint(address(custodyWallet), 1e6);
 
         MockERC20 dai = new MockERC20("DAI", "DAI", 18);
 
         vm.prank(admin);
-        vm.expectRevert(ICustodian.NonZeroBalance.selector);
         grinders.setAssets(address(custodyWallet), address(usdc), address(dai));
+        assertEq(custodyWallet.quoteAsset(), address(dai));
     }
 
     bytes32 private constant _IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -234,21 +234,4 @@ contract CustodyCowTest is GRAIFixture {
         assertEq(_implementation(address(custodyWallet)), address(implV2));
     }
 
-    function test_Approve_acceptsTradingAssets() public {
-        vm.startPrank(owner);
-        custodyWallet.approve(address(usdc), 1e6);
-        custodyWallet.approve(address(weth), 1e18);
-        vm.stopPrank();
-
-        assertEq(usdc.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), 1e6);
-        assertEq(weth.allowance(address(custodyWallet), custodyWallet.COW_VAULT_RELAYER()), 1e18);
-    }
-
-    function test_Approve_revertsOtherToken() public {
-        MockERC20 dai = new MockERC20("DAI", "DAI", 18);
-
-        vm.prank(owner);
-        vm.expectRevert(ICustodian.AssetsMismatch.selector);
-        custodyWallet.approve(address(dai), 1e18);
-    }
 }

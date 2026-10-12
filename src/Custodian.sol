@@ -142,7 +142,6 @@ abstract contract Custodian is Initializable, UUPSUpgradeable, ICustodian {
 
     function setAssets(address baseAsset_, address quoteAsset_) public virtual {
         _onlyGrinders();
-        if (balance(baseAsset) != 0 || balance(quoteAsset) != 0) revert NonZeroBalance();
         if (baseAsset_ == address(0)) revert BaseZero();
         if (quoteAsset_ == address(0)) revert QuoteZero();
         if (baseAsset_ == quoteAsset_) revert SameAsset();
