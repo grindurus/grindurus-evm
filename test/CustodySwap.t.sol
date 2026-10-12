@@ -6,7 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAIFixture} from "./GRAIFixture.sol";
-import {SwapCustodian} from "../src/custodians/SwapCustodian.sol";
+import {PathCustodian} from "../src/custodians/PathCustodian.sol";
 import {ICustodian} from "../src/interfaces/ICustodian.sol";
 
 contract MockSwapRouter {
@@ -32,7 +32,7 @@ contract MockSwapRouter {
 }
 
 contract CustodySwapTest is GRAIFixture {
-    SwapCustodian custodyWallet;
+    PathCustodian custodyWallet;
     MockSwapRouter router;
 
     address owner = makeAddr("custodyOwner");
@@ -50,10 +50,10 @@ contract CustodySwapTest is GRAIFixture {
         super.setUp();
         router = new MockSwapRouter();
 
-        SwapCustodian impl = new SwapCustodian();
-        custodyWallet = SwapCustodian(
+        PathCustodian impl = new PathCustodian();
+        custodyWallet = PathCustodian(
             payable(address(
-                    new ERC1967Proxy(address(impl), abi.encodeCall(SwapCustodian.initialize, (address(grinders))))
+                    new ERC1967Proxy(address(impl), abi.encodeCall(PathCustodian.initialize, (address(grinders))))
                 ))
         );
         vm.startPrank(admin);
@@ -81,7 +81,7 @@ contract CustodySwapTest is GRAIFixture {
     function test_swap_sellBase_revertsPriceLimit() public {
         bytes memory data = abi.encodeCall(MockSwapRouter.sellBaseForQuote, (usdc, weth, SELL_BASE_IN, SELL_QUOTE_OUT));
         vm.prank(owner);
-        vm.expectRevert(SwapCustodian.ExceededPriceLimit.selector);
+        vm.expectRevert(PathCustodian.ExceededPriceLimit.selector);
         custodyWallet.swap(SELL_EXEC_PRICE + 1, address(router), data);
     }
 
@@ -97,13 +97,13 @@ contract CustodySwapTest is GRAIFixture {
     function test_swap_buyBase_revertsPriceLimit() public {
         bytes memory data = abi.encodeCall(MockSwapRouter.buyBaseWithQuote, (usdc, weth, BUY_QUOTE_IN, BUY_BASE_OUT));
         vm.prank(owner);
-        vm.expectRevert(SwapCustodian.ExceededPriceLimit.selector);
+        vm.expectRevert(PathCustodian.ExceededPriceLimit.selector);
         custodyWallet.swap(BUY_EXEC_PRICE - 1, address(router), data);
     }
 
     function test_swap_revertsNoTradeWhenBalancesUnchanged() public {
         vm.prank(owner);
-        vm.expectRevert(SwapCustodian.NoTrade.selector);
+        vm.expectRevert(PathCustodian.NoTrade.selector);
         custodyWallet.swap(0, address(router), abi.encodeCall(MockSwapRouter.noop, ()));
     }
 
@@ -117,19 +117,19 @@ contract CustodySwapTest is GRAIFixture {
 
     function test_swap_revertsTargetZero() public {
         vm.prank(owner);
-        vm.expectRevert(SwapCustodian.TargetZero.selector);
+        vm.expectRevert(PathCustodian.TargetZero.selector);
         custodyWallet.swap(0, address(0), abi.encodeCall(MockSwapRouter.alwaysRevert, ()));
     }
 
     function test_swap_revertsDataEmpty() public {
         vm.prank(owner);
-        vm.expectRevert(SwapCustodian.DataEmpty.selector);
+        vm.expectRevert(PathCustodian.DataEmpty.selector);
         custodyWallet.swap(0, address(router), "");
     }
 
     function test_swap_revertsOnTargetFailure() public {
         vm.prank(owner);
-        vm.expectRevert(SwapCustodian.SwapFailed.selector);
+        vm.expectRevert(PathCustodian.SwapFailed.selector);
         custodyWallet.swap(0, address(router), abi.encodeCall(MockSwapRouter.alwaysRevert, ()));
     }
 }

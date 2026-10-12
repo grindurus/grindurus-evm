@@ -248,7 +248,7 @@ contract CustodyCowTest is GRAIFixture {
         MockERC20 dai = new MockERC20("DAI", "DAI", 18);
 
         vm.prank(owner);
-        vm.expectRevert(CoWCustodian.NotTradingAsset.selector);
+        vm.expectRevert(ICustodian.AssetsMismatch.selector);
         custodyWallet.approve(address(dai), 1e18);
     }
 }

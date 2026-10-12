@@ -94,9 +94,7 @@ library GPv2Order {
 contract CoWCustodian is Custodian, IERC1271 {
     using SafeERC20 for IERC20;
 
-    error NotTradingAsset();
-
-    bytes4 private constant _EIP1271_MAGIC = 0x1626ba7e;
+    bytes4 internal constant _EIP1271_MAGIC = 0x1626ba7e;
 
     IGPv2Settlement public constant COW_SETTLEMENT = IGPv2Settlement(0x9008D19f58AAbD9eD0D60971565AA8510560ab41);
     address public constant COW_VAULT_RELAYER = 0xC92E8bdf79f0507f65a392b0ab4667716BFE0110;
@@ -125,7 +123,7 @@ contract CoWCustodian is Custodian, IERC1271 {
     ///      65-byte owner ECDSA over `hash`, plus the full order used to recompute and constrain the digest.
     function isValidSignature(bytes32 hash, bytes memory signature) public view returns (bytes4 magicValue) {
         if (signature.length < 224) return bytes4(0xffffffff);
-        (bytes memory ecdsaSig, GPv2Order.Data memory order) = decodeEip1271Signature(signature);
+        (bytes memory ecdsaSig, GPv2Order.Data memory order) = decodeGPv2Order(signature);
         if (ecdsaSig.length != 65) return bytes4(0xffffffff);
         if (!_isConstrainedCustodyOrder(hash, order)) return bytes4(0xffffffff);
         address signer = ECDSA.recover(hash, ecdsaSig);
@@ -146,7 +144,7 @@ contract CoWCustodian is Custodian, IERC1271 {
     }
 
     /// @notice Parse the EIP-1271 `signature` bytes produced for custody orders.
-    function decodeEip1271Signature(bytes memory signature)
+    function decodeGPv2Order(bytes memory signature)
         public
         pure
         returns (bytes memory ecdsaSig, GPv2Order.Data memory order)
@@ -155,7 +153,7 @@ contract CoWCustodian is Custodian, IERC1271 {
     }
 
     /// @notice Build the EIP-1271 `signature` bytes expected by CoW API for custody orders.
-    function encodeEip1271Signature(bytes memory ecdsaSig, GPv2Order.Data calldata order)
+    function encodeGPv2Order(bytes memory ecdsaSig, GPv2Order.Data calldata order)
         public
         pure
         returns (bytes memory signature)
@@ -165,7 +163,7 @@ contract CoWCustodian is Custodian, IERC1271 {
 
     function approve(address token, uint256 amount) public {
         _onlyOwner();
-        if (token != baseAsset && token != quoteAsset) revert NotTradingAsset();
+        if (token != baseAsset && token != quoteAsset) revert AssetsMismatch();
         IERC20(token).forceApprove(COW_VAULT_RELAYER, amount);
     }
 

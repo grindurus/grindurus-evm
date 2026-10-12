@@ -86,7 +86,6 @@ interface IPermit2Domain {
 contract LiFiCustodian is Custodian, IERC1271 {
     using SafeERC20 for IERC20;
 
-    error NotTradingAsset();
     error BadUser();
     error BadInputToken();
     error BadOrder();
@@ -235,7 +234,7 @@ contract LiFiCustodian is Custodian, IERC1271 {
     /// @notice Owner can retarget ERC20 allowance for Permit2 and/or the input settler.
     function approve(address token, uint256 amount) public {
         _onlyOwner();
-        if (token != baseAsset && token != quoteAsset) revert NotTradingAsset();
+        if (token != baseAsset && token != quoteAsset) revert AssetsMismatch();
         IERC20(token).forceApprove(PERMIT2, amount);
         IERC20(token).forceApprove(address(INPUT_SETTLER_ESCROW), amount);
     }

@@ -39,7 +39,7 @@ bribe(voter)               [permissionless]
 | `GRAI` | UUPS ERC20 fund share + oracle router + lock/vote/dividends + liquidation. Implements [ERC-1046](https://eips.ethereum.org/EIPS/eip-1046). |
 | `Grinders` | UUPS ERC-721 **Grinders Custodians** collection, custodian proxy wallets, `allocate` / `deallocate`. On-chain NFT art via embedded `GrinderArt` library. |
 | `Custodian` | Per-NFT wallet base class: `distribute`, `deallocate`, `liquidate`. |
-| `*Custodian` | Kind-specific swap modules (`SwapCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
+| `*Custodian` | Kind-specific swap modules (`PathCustodian`, `CoWCustodian`, `LiFiCustodian`, …). |
 | `PriceOracleRouter` | Base of `GRAI`. Chainlink / Pyth / custom feeds per asset. |
 | `GRS` | Non-upgradeable LayerZero **OFT**. Home mints 1B into bucket inventory (`getAllocations` / `grant` / `vest` / `release`). `quoteBridge` / `bridge`. Spec: [docs.grindurus.xyz → GRS mechanics](https://docs.grindurus.xyz/protocol/grs/mechanics). |
 
@@ -59,7 +59,7 @@ Each `Grinders.mint(custodianKind, base, quote, owner)` deploys an ERC-1967 prox
 
 | Kind constant | Implementation | Swap path |
 |---------------|----------------|-----------|
-| `keccak256("grindurus.custodian.explicit_swap")` | `SwapCustodian` | Arbitrary router `call` + on-chain price limit |
+| `keccak256("grindurus.custodian.explicit_swap")` | `PathCustodian` | Arbitrary router `call` + on-chain price limit |
 | `keccak256("grindurus.custodian.cow")` | `CoWCustodian` | CoW Protocol EIP-1271 orders |
 | `keccak256("grindurus.custodian.lifi")` | `LiFiCustodian` | LiFi routing |
 
@@ -277,7 +277,7 @@ To **delist** an asset, `setFeed` with `paused: true`, drain its balance, then
 Register custodian kinds on Grinders (owner), then mint custodian NFTs:
 
 ```solidity
-grinders.set(keccak256("grindurus.custodian.explicit_swap"), swapCustodianImpl);
+grinders.set(keccak256("grindurus.custodian.explicit_swap"), pathCustodianImpl);
 address custodian = grinders.mint(
     keccak256("grindurus.custodian.explicit_swap"),
     USDC,

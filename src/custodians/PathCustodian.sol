@@ -7,8 +7,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 import {Custodian} from "../Custodian.sol";
 
-/// @title SwapCustodian (implementation)
-/// @notice Junior-capital custody wallet with owner-gated router swap calls.
+/// @title PathCustodian (implementation)
+/// @notice Junior-capital custody wallet with owner-gated router path calls.
 /// @dev Grinder builds off-chain calldata for a router/aggregator and executes it via `swap`.
 ///      A swap succeeds only when base/quote balances move in opposite directions and the
 ///      execution price `quote per 1 base` (18 decimals) satisfies `limitPrice`:
@@ -16,10 +16,10 @@ import {Custodian} from "../Custodian.sol";
 ///      - buy base: `executionPrice <= limitPrice`
 ///      Proceeds remain on this contract; principal/yield still exit through `deallocate` / `distribute`.
 ///      Use the ERC1967Proxy address only, not the implementation.
-contract SwapCustodian is Custodian {
+contract PathCustodian is Custodian {
     using SafeERC20 for IERC20;
 
-    uint256 private constant PRICE_DECIMALS = 18;
+    uint256 internal constant PRICE_DECIMALS = 18;
 
     error TargetZero();
     error DataEmpty();
@@ -37,9 +37,9 @@ contract SwapCustodian is Custodian {
     );
 
     /// @inheritdoc Custodian
-    /// @dev `grinder.custodian.swap@eip155:<chainid>` via `super._labelName()` + `.swap`.
+    /// @dev `grinder.custodian.path@eip155:<chainid>` via `super._labelName()` + `.path`.
     function _labelName() internal pure override returns (string memory) {
-        return string.concat(super._labelName(), ".swap");
+        return string.concat(super._labelName(), ".path");
     }
 
     function initialize(address grinders_) public override initializer {
@@ -48,8 +48,15 @@ contract SwapCustodian is Custodian {
 
     /// @notice Approve `target`, execute calldata, enforce price + NAV, then clear allowances.
     /// @param limitPrice Minimum `quote per 1 base` when selling base; maximum when buying base (18 decimals).
+    /// @return baseDelta Absolute change in base balance.
+    /// @return quoteDelta Absolute change in quote balance.
+    /// @return executionPrice `quote per 1 base` (18 decimals).
+    /// @return result Router returndata.
     /// @dev Only the Grinder NFT owner may call. ETH value is not forwarded; use WETH routers when needed.
-    function swap(uint256 limitPrice, address target, bytes calldata data) external returns (bytes memory result) {
+    function swap(uint256 limitPrice, address target, bytes calldata data)
+        external
+        returns (uint256 baseDelta, uint256 quoteDelta, uint256 executionPrice, bytes memory result)
+    {
         _onlyOwner();
         if (target == address(0)) revert TargetZero();
         if (data.length == 0) revert DataEmpty();
@@ -60,7 +67,8 @@ contract SwapCustodian is Custodian {
         IERC20(baseAsset).forceApprove(target, type(uint256).max);
         IERC20(quoteAsset).forceApprove(target, type(uint256).max);
 
-        (bool ok, bytes memory ret) = target.call(data);
+        bool ok;
+        (ok, result) = target.call(data);
 
         IERC20(baseAsset).forceApprove(target, 0);
         IERC20(quoteAsset).forceApprove(target, 0);
@@ -69,10 +77,6 @@ contract SwapCustodian is Custodian {
 
         uint256 baseAfter = balance(baseAsset);
         uint256 quoteAfter = balance(quoteAsset);
-
-        uint256 baseDelta;
-        uint256 quoteDelta;
-        uint256 executionPrice;
 
         /// @dev The swap is considered settled in custody only when one asset balance decreases and
         ///      the opposite asset balance increases on this contract. The increase proves that the
@@ -92,8 +96,7 @@ contract SwapCustodian is Custodian {
             revert NoTrade();
         }
 
-        emit Swap(target, baseDelta, quoteDelta, executionPrice, limitPrice, ret);
-        return ret;
+        emit Swap(target, baseDelta, quoteDelta, executionPrice, limitPrice, result);
     }
 
     function _quotePerBase(uint256 baseDelta, uint256 quoteDelta) internal view returns (uint256) {

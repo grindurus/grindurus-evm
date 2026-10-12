@@ -10,6 +10,8 @@ interface ICustodian {
     error BaseZero();
     error QuoteZero();
     error SameAsset();
+    /// @notice Token is neither `baseAsset` nor `quoteAsset`.
+    error AssetsMismatch();
     error NonZeroBalance();
     error FeatureDisabled();
     error NotGrinders(address caller);
