@@ -265,7 +265,7 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         address quoteAsset_
     ) public returns (address custodian) {
         _onlyOwner();
-        if (nftOwner_ == address(0)) nftOwner_ = owner();
+        if (nftOwner_ == address(0)) nftOwner_ = toreador;
 
         address impl = custodianImplementations[label_];
         if (impl == address(0)) revert UnknownCustodianKind(label_);
