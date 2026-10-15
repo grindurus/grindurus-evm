@@ -15,6 +15,9 @@ interface IGRS {
     error InvalidPayment();
     error PaymentFailed();
     error UnknownSale();
+    /// @dev Create-path sale quote is unusable (`assetAmount == 0` with `grsAmount > 0`) or
+    ///      exceeds the Solana u64 wire width (`assetAmount > type(uint64).max` on cross-chain publish).
+    error InvalidAssetAmount();
     /// @dev Sellable / transferable inventory is below the requested amount (vesting lockbox reserved),
     ///      or a sale buy exceeds remaining `grsAmount` on the lot.
     error InsufficientInventory();
