@@ -71,8 +71,12 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///         to `DEFAULT_LZ_RECEIVE_GAS` / `value = 0`. Non-EVM chains (Solana, Aptos, …) set `value`.
     mapping(uint32 eid => PeerLzReceiveBudget) public peerLzReceiveBudget;
 
-    /// @notice List of all sales. Each sale represents an open lot for asset-for-GRS exchange.
-    Sale[] internal _sales;
+    /// @notice 1-based sale book. Sparse on spokes (no pad loop for high ids).
+    mapping(uint256 id => Sale) internal _sales;
+    /// @notice Highest sale id written (home append or spoke accept). Pagination length for `getSales`.
+    uint256 internal _saleCount;
+    /// @notice Spoke: id has accepted at least one LZ sale message (distinguishes close from never-opened).
+    mapping(uint256 id => bool) internal _saleReceived;
 
     /// @notice List of all vesting schedules. Each vesting contains information about locked GRS allocations.
     Vesting[] internal _vestings;
@@ -147,14 +151,16 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         _bridgeFrom(msg.sender, dstEid, to, amountLd);
     }
 
-    /// @notice Home: create or close a sale. `id == 0` appends (`_sales.length + 1`); `id != 0` closes
+    /// @notice Home: create or close a sale. `id == 0` appends (`_saleCount + 1`); `id != 0` closes
     ///         that lot (`assetAmount` / `grsAmount` → 0) and releases any local `salesReserved`.
     ///         Create: `asset = 0` is native ETH; `recipient = 0` pays `owner()` at buy; `recipient` is
-    ///         32 bytes (EVM address left-padded; Solana pubkey as-is). `dstEid == 0` is local only
-    ///         (`msg.value` must be 0). Else burns `grsAmount` from TokenSales and LZ-publishes so the
-    ///         spoke mints escrow; home row is then closed so home `buy` cannot fill the same lot.
-    ///         Close: create args are ignored; `dstEid == 0` closes home only; else LZ-publishes a
-    ///         zeroed row so the spoke unlists (frees spoke `salesReserved`; escrow stays as float).
+    ///         32 bytes (EVM address left-padded; Solana pubkey as-is). Buyable lots need
+    ///         `assetAmount > 0`; cross-chain quotes must fit `uint64` (Solana wire). `dstEid == 0`
+    ///         is local only (`msg.value` must be 0). Else burns `grsAmount` from TokenSales and
+    ///         LZ-publishes so the spoke mints escrow; home row is then closed so home `buy` cannot
+    ///         fill the same lot. Close: create args are ignored; `dstEid == 0` closes home only;
+    ///         else LZ-publishes a zeroed row so the spoke unlists, frees `salesReserved`, and burns
+    ///         remaining escrow (inventory is not stranded as float).
     function sale(
         uint256 id,
         bytes32 asset,
@@ -168,6 +174,10 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             _closeSale(id, dstEid);
             return id;
         }
+        // Unbuyable open lots (`assetAmount == 0` with inventory) are rejected; `0/0` placeholders OK.
+        if (grsAmount != 0 && assetAmount == 0) revert InvalidAssetAmount();
+        // Solana (and shared u64 codec) cannot decode assetAmount above uint64.max.
+        if (dstEid != 0 && assetAmount > type(uint64).max) revert InvalidAssetAmount();
         if (dstEid == 0) {
             if (msg.value != 0) revert InvalidPayment();
             // Earmark float so overlapping local lots cannot oversubscribe `_freeInventory`.
@@ -187,7 +197,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         id = _appendSale(asset, assetAmount, grsAmount, recipient);
         if (dstEid != 0) {
             _openSale(id, dstEid);
-            Sale storage published = _sales[id - 1];
+            Sale storage published = _sales[id];
             published.grsAmount = 0;
             published.assetAmount = 0;
         }
@@ -297,7 +307,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         if (dstEid == 0) return 0;
         bytes memory message;
         if (id == 0) {
-            message = _encodeSale(_sales.length + 1, asset, assetAmount, grsAmount, recipient);
+            message = _encodeSale(_saleCount + 1, asset, assetAmount, grsAmount, recipient);
         } else {
             Sale storage s = _saleAt(id);
             message = _encodeSale(id, s.asset, 0, 0, s.recipient);
@@ -366,7 +376,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     ///         Reverts `UnknownSale` if `offset >=` book length; `ZeroAmount` if `limit == 0`.
     ///         A short page (length `< limit`) means the end of the book — there is no `saleCount`.
     function getSales(uint256 offset, uint256 limit) public view returns (Sale[] memory listed) {
-        uint256 n = _sales.length;
+        uint256 n = _saleCount;
         if (limit == 0) revert ZeroAmount();
         if (offset >= n) revert UnknownSale();
         uint256 end = offset + limit;
@@ -374,7 +384,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         uint256 len = end - offset;
         listed = new Sale[](len);
         for (uint256 i; i < len; ++i) {
-            listed[i] = _sales[offset + i];
+            listed[i] = _sales[offset + i + 1];
         }
     }
 
@@ -470,17 +480,30 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             (uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient) = _decodeSale(message);
             // id == 0 is the OFT-compose forgery path (append + remint); home always publishes id ≥ 1.
             if (id == 0) revert UnknownSale();
-            uint256 previous = (id > 0 && id <= _sales.length) ? _sales[id - 1].grsAmount : 0;
+            bool known = _saleReceived[id];
+            uint256 previous = known ? _sales[id].grsAmount : 0;
+            // Unordered LZ: Close then Open — keep the closed row; never remint a revoked lot.
+            if (known && previous == 0 && grsAmount != 0) {
+                return;
+            }
             _acceptSale(id, asset, assetAmount, grsAmount, recipient);
-            if (previous == 0) {
+            _saleReceived[id] = true;
+            if (!known) {
                 if (grsAmount != 0) {
                     _credit(address(this), grsAmount, origin.srcEid);
                     salesReserved += grsAmount;
                 }
             } else if (grsAmount != previous) {
-                // Republish adjusts earmark; escrow balance is not reminted on this path.
-                if (grsAmount > previous) salesReserved += grsAmount - previous;
-                else salesReserved -= previous - grsAmount;
+                // Republish: mint delta on increase; burn escrow on decrease/close so inventory is not stranded.
+                if (grsAmount > previous) {
+                    uint256 minted = grsAmount - previous;
+                    _credit(address(this), minted, origin.srcEid);
+                    salesReserved += minted;
+                } else {
+                    uint256 burned = previous - grsAmount;
+                    salesReserved -= burned;
+                    _burn(address(this), burned);
+                }
             }
             return;
         }
@@ -605,8 +628,8 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function _saleAt(uint256 id) internal view returns (Sale storage s) {
-        if (id == 0 || id > _sales.length) revert UnknownSale();
-        return _sales[id - 1];
+        if (id == 0 || id > _saleCount) revert UnknownSale();
+        return _sales[id];
     }
 
     function _quoteCost(Sale storage s, uint256 grsAmount) internal view returns (uint256 cost) {
@@ -629,26 +652,24 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return address(uint160(n));
     }
 
-    /// @dev Home: push a new lot; id = `_sales.length` (1-based).
+    /// @dev Home: append a new lot; id = `_saleCount + 1` (1-based).
     function _appendSale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
         internal
         returns (uint256 id)
     {
         if (recipient == bytes32(uint256(uint160(address(this))))) revert InvalidRecipient();
-        _sales.push(Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient}));
-        id = _sales.length;
+        id = ++_saleCount;
+        _sales[id] = Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient});
         emit SaleSet(id, asset, assetAmount, grsAmount, recipient);
     }
 
-    /// @dev Spoke: write/overwrite lot `id` from an LZ sale message (pads holes if needed).
+    /// @dev Spoke: write/overwrite lot `id` from an LZ sale message (sparse — no gas pad for holes).
     function _acceptSale(uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
         internal
     {
         if (recipient == bytes32(uint256(uint160(address(this))))) revert InvalidRecipient();
-        while (_sales.length < id) {
-            _sales.push(Sale({asset: bytes32(0), assetAmount: 0, grsAmount: 0, recipient: bytes32(0)}));
-        }
-        _sales[id - 1] = Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient});
+        if (id > _saleCount) _saleCount = id;
+        _sales[id] = Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient});
         emit SaleAccepted(id, asset, assetAmount, grsAmount, recipient);
     }
 
@@ -673,7 +694,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
     }
 
     function _openSale(uint256 id, uint32 dstEid) internal {
-        Sale storage s = _sales[id - 1];
+        Sale storage s = _sales[id];
         bytes memory message = _encodeSale(id, s.asset, s.assetAmount, s.grsAmount, s.recipient);
         bytes memory options = _saleOptions(dstEid);
         address inspector = msgInspector;
@@ -693,7 +714,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         uint32 dstEid
     ) internal returns (uint256 vestingId) {
         _requireHome();
-        if (to == bytes32(0)) revert InvalidRecipient();
+        if (to == bytes32(0) || to == bytes32(uint256(uint160(address(this))))) revert InvalidRecipient();
         if (amount == 0) revert ZeroAmount();
         if (cliffSeconds > MAX_CLIFF || durationSeconds > MAX_DURATION) revert InvalidSchedule();
 
@@ -712,12 +733,19 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             return vestingId;
         }
 
+        // Scheduled grant on an EVM spoke calls `_evm(to)` after credit — validate before burn.
+        // Non-EVM peers (Solana etc.) set `peerLzReceiveBudget[eid].value != 0` and accept raw pubkeys.
+        bool scheduled = cliffSeconds != 0 || durationSeconds != 0;
+        if (scheduled && peerLzReceiveBudget[dstEid].value == 0) {
+            _evm(to);
+        }
+
         uint256 sendable = _removeDust(amount);
         if (sendable != amount) revert IOFT.SlippageExceeded(sendable, amount);
         _requireFreeInventory(amount);
         _takeBucket(bucket, amount);
 
-        if (cliffSeconds == 0 && durationSeconds == 0) {
+        if (!scheduled) {
             _bridgeFrom(address(this), dstEid, to, amount);
             emit Granted(bucket, to, amount, 0);
             return 0;
