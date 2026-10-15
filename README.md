@@ -202,8 +202,8 @@ forge fmt
 
 ### Deploy
 
-`DeployGRAI` uses ordinary CREATE from the deployer EOA: GRAI / Treasury / Grinders each get an
-impl + ERC-1967 proxy, then `setTreasury` / `setGrinders`. Addresses are not precomputed.
+`DeployGRAI` uses CreateX CREATE3: GRAI / Treasury / Grinders each get an impl + ERC-1967 proxy
+(permissioned salt; `initialize` in proxy initcode), then `setTreasury` / `setGrinders`.
 `GrinderArt` lives in `Grinders.sol` (inlined). Details: [`script/README.md`](script/README.md).
 
 | Script | Purpose |

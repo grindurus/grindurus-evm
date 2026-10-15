@@ -5,7 +5,7 @@ Run from `grindurus-evm/`.
 
 | Script | Role |
 | ------ | ---- |
-| [`DeployGRAI.s.sol`](DeployGRAI.s.sol) | Direct CREATE: GRAI + Treasury + Grinders, Chainlink feeds, bribeable |
+| [`DeployGRAI.s.sol`](DeployGRAI.s.sol) | CreateX CREATE3: GRAI + Treasury + Grinders, Chainlink feeds, bribeable |
 | [`DeployGRS.s.sol`](DeployGRS.s.sol) | LayerZero OFT GRS (plain `new`) + Solana peer / TGE sales helpers |
 
 ## Prerequisites
@@ -33,20 +33,40 @@ Network for `DeployGRAI` is taken from `block.chainid` (`--rpc-url`), not `CHAIN
 ## Order
 
 1. **GRAI** — impl+proxy for GRAI / Treasury / Grinders, feeds, bribeable
-2. **CoWCustodian** — via `DeployGRAI.deployCoWCustodian()` (needs `GRINDERS=`)
+2. **CoWCustodian** / **SwapCustodian** — via `deployCoWCustodian()` / `deploySwapCustodian()` (needs `GRINDERS=`)
 3. **GRS** (optional) — LayerZero OFT; then `setSolanaPeer` / list sales
 
 ```
-DeployGRAI  →  deployCoWCustodian  →  (optional) DeployGRS + setSolanaPeer
+DeployGRAI  →  deployCoWCustodian / deploySwapCustodian  →  (optional) DeployGRS + setSolanaPeer
 ```
 
-Addresses are normal CREATE from the deployer EOA (nonce-based), not precomputed.
+Addresses are CreateX **CREATE3** with a permissioned salt (`deployer ‖ 0x00 ‖ id`): only
+`PRIVATE_KEY` can occupy the salt; proxy `initialize` is in ERC1967 creation bytecode (atomic).
+Canonical CreateX: `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed` (override with `CREATEX=`).
+
+Vanity GRAI proxy (e.g. `0x999999…`): mine the free `uint88` id (~16⁷ tries for 6 hex chars), then deploy:
+
+```bash
+# fast offline miner (permissioned salt: deployer ‖ 0x00 ‖ id)
+python3 -m venv .venv && . .venv/bin/activate
+pip install eth_hash pycryptodome eth_account
+PRIVATE_KEY=0x... python script/mine_create3.py --prefix 999999
+# → GRAI_PROXY_SALT_ID=<id>
+PRIVATE_KEY=0x... python script/mine_create3.py --prefix 777777 \
+  --env-name TREASURY_PROXY_SALT_ID
+PRIVATE_KEY=0x... python script/mine_create3.py --prefix 888888 \
+  --env-name GRINDERS_PROXY_SALT_ID
+
+PRIVATE_KEY=0x... GRAI_PROXY_SALT_ID=<id> TREASURY_PROXY_SALT_ID=<id> \
+  GRINDERS_PROXY_SALT_ID=<id> \
+  forge script script/DeployGRAI.s.sol:DeployGRAI --rpc-url arbitrum --broadcast --verify
+```
 
 ---
 
 ## 1. GRAI (+ Treasury + Grinders)
 
-Deploys each stack with `new Impl` + `new ERC1967Proxy(...initialize...)`, wires Treasury and
+Deploys each stack via CreateX CREATE3 (`Impl` + `ERC1967Proxy(...initialize...)`), wires Treasury and
 Grinders, sets Chainlink feeds, marks bribeable assets.
 
 ```bash
@@ -102,6 +122,20 @@ PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI
 ```
 
 `GRINDERS=` is required.
+
+---
+
+## 2b. SwapCustodian
+
+Same pattern as CoW (impl + optional `Grinders.set` for kind `grinder.custodian.swap`).
+
+```bash
+PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deploySwapCustodian()" --rpc-url arbitrum --broadcast --verify
+
+PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deploySwapCustodian(bool)" false --rpc-url arbitrum --broadcast --verify
+```
 
 ---
 
