@@ -40,9 +40,10 @@ Network for `DeployGRAI` is taken from `block.chainid` (`--rpc-url`), not `CHAIN
 DeployGRAI  →  deployCoWCustodian / deploySwapCustodian  →  (optional) DeployGRS + setSolanaPeer
 ```
 
-Addresses are CreateX **CREATE3** with a permissioned salt (`deployer ‖ 0x00 ‖ id`): only
-`PRIVATE_KEY` can occupy the salt; proxy `initialize` is in ERC1967 creation bytecode (atomic).
-Canonical CreateX: `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed` (override with `CREATEX=`).
+If CreateX is on-chain, addresses are **CREATE3** with a permissioned salt
+(`deployer ‖ 0x00 ‖ id`): only `PRIVATE_KEY` can occupy the salt; proxy `initialize` is in
+ERC1967 creation bytecode (atomic). If CreateX is missing, falls back to plain `new` CREATE
+(no vanity). Canonical CreateX: `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed` (`CREATEX=`).
 
 Vanity GRAI proxy (e.g. `0x999999…`): mine the free `uint88` id (~16⁷ tries for 6 hex chars), then deploy:
 
@@ -66,8 +67,8 @@ PRIVATE_KEY=0x... GRAI_PROXY_SALT_ID=<id> TREASURY_PROXY_SALT_ID=<id> \
 
 ## 1. GRAI (+ Treasury + Grinders)
 
-Deploys each stack via CreateX CREATE3 (`Impl` + `ERC1967Proxy(...initialize...)`), wires Treasury and
-Grinders, sets Chainlink feeds, marks bribeable assets.
+Deploys each stack (`Impl` + `ERC1967Proxy(...initialize...)`) via CreateX CREATE3 when present,
+else `new`; wires Treasury and Grinders, sets Chainlink feeds, marks bribeable assets.
 
 ```bash
 # Simulate (no broadcast)
@@ -90,11 +91,9 @@ Optional: `WETH=`, `MAX_STALENESS=`, `OWNER_MULTISIG=`.
 Re-apply bribeable flags for the current network’s asset table (owner = `PRIVATE_KEY`):
 
 ```bash
-PRIVATE_KEY=0x... GRAI=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "setBribeable()" --rpc-url arbitrum --broadcast
+PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "setBribeable(address)" 0xGRAI --rpc-url arbitrum --broadcast
 ```
-
-`GRAI=` is required.
 
 ### Network asset defaults
 
@@ -110,31 +109,34 @@ PRIVATE_KEY=0x... GRAI=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 
 ## 2. CoWCustodian
 
-Requires Grinders already deployed. Deploys the CoW impl and optionally registers it on Grinders.
+Requires Grinders already deployed. Deploys/registers CoW impl (`impl=0` → new) and optionally a proxy.
 
 ```bash
-PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "deployCoWCustodian()" --rpc-url arbitrum --broadcast --verify
+# New impl + Grinders.set, no proxy:
+PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deployCoWCustodian(address,address,bool)" 0xGrinders 0x0000000000000000000000000000000000000000 false \
+  --rpc-url arbitrum --broadcast --verify
 
-# Deploy only (skip Grinders.set):
-PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "deployCoWCustodian(bool)" false --rpc-url arbitrum --broadcast --verify
+# Existing impl + proxy:
+PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deployCoWCustodian(address,address,bool)" 0xGrinders 0xImpl true \
+  --rpc-url arbitrum --broadcast --verify
 ```
-
-`GRINDERS=` is required.
 
 ---
 
-## 2b. SwapCustodian
+## 2b. SwapCustodian / LiFiCustodian
 
-Same pattern as CoW (impl + optional `Grinders.set` for kind `grinder.custodian.swap`).
+Same pattern as CoW (`impl=0` → new, always `Grinders.set`, optional proxy).
 
 ```bash
-PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "deploySwapCustodian()" --rpc-url arbitrum --broadcast --verify
+PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deploySwapCustodian(address,address,bool)" 0xGrinders 0x0000000000000000000000000000000000000000 false \
+  --rpc-url arbitrum --broadcast --verify
 
-PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-  --sig "deploySwapCustodian(bool)" false --rpc-url arbitrum --broadcast --verify
+PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+  --sig "deployLiFiCustodian(address,address,bool)" 0xGrinders 0x0000000000000000000000000000000000000000 true \
+  --rpc-url arbitrum --broadcast --verify
 ```
 
 ---

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.30;
 
-import {Script, console2} from "forge-std/Script.sol";
+import {console2} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {GRAI, IGRAI, IPriceOracleRouter} from "../src/GRAI.sol";
@@ -9,17 +9,31 @@ import {Treasury} from "../src/Treasury.sol";
 import {Grinders} from "../src/Grinders.sol";
 import {CoWCustodian} from "../src/custodians/CoWCustodian.sol";
 import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
+import {SwapCustodian} from "../src/custodians/SwapCustodian.sol";
+import {CreateXDeploy} from "./CreateXDeploy.sol";
 
 /// @title Deploy GRAI on an EVM chain
-/// @notice Direct CREATE: GRAI + Treasury + Grinders (impl + ERC1967 proxy each), feeds.
-///         Network from `block.chainid` (`--rpc-url`). Addresses are not precomputed.
+/// @notice GRAI + Treasury + Grinders (impl + ERC1967 proxy each), feeds.
+///         Network from `block.chainid` (`--rpc-url`).
+///         If CreateX is on-chain → CREATE3 (vanity salts); else plain `new` CREATE.
+///
+/// CREATE3 frontrun / initcode protection (CreateX `_guard`, when CreateX present):
+///   - salt[0:20] = deployer (`PRIVATE_KEY` addr) → only that EOA can use the salt
+///   - salt[20]   = `0x00` → same address across chains (no chainId in guarded salt)
+///   - salt[21:32]= per-contract id (`keccak256(label)` truncated to u88)
+///   - Proxy `initialize(...)` is baked into ERC1967Proxy creation bytecode → atomic with deploy
+///     (no uninitialized-proxy window).
 ///
 /// Env:
-///   PRIVATE_KEY       — deployer; GRAI initial owner + Grinders toreador
+///   PRIVATE_KEY       — deployer; GRAI initial owner + Grinders toreador; salt guardian
 ///   OWNER_MULTISIG    — optional GRAI Ownable2Step handoff (`acceptOwnership` required);
 ///                       Grinders.owner() follows GRAI (no separate Grinders handoff)
 ///   MAX_STALENESS     — optional seconds (default per-chain)
 ///   WETH              — optional override of network WETH
+///   CREATEX           — optional CreateX override (default canonical)
+///   GRAI_PROXY_SALT_ID — optional uint88 CreateX salt id for GRAI proxy (vanity; from mine_create3.py)
+///   TREASURY_PROXY_SALT_ID — optional uint88 for Treasury proxy vanity
+///   GRINDERS_PROXY_SALT_ID — optional uint88 for Grinders proxy vanity
 ///   GRAI / GRINDERS   — required for post-deploy helpers
 ///
 /// Simulate (no broadcast):
@@ -30,15 +44,18 @@ import {LiFiCustodian} from "../src/custodians/LiFiCustodian.sol";
 ///     --rpc-url arbitrum --broadcast --verify
 ///
 /// Post-deploy helpers (owner = `PRIVATE_KEY`):
-///   PRIVATE_KEY=0x... GRAI=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-///     --sig "setBribeable()" --rpc-url arbitrum --broadcast
-///   PRIVATE_KEY=0x... GRINDERS=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-///     --sig "deployCoWCustodian()" --rpc-url arbitrum --broadcast --verify
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-///     --sig "deployLiFiCustodianImpl(bool)" false --rpc-url arbitrum --broadcast --verify
+///     --sig "setBribeable(address)" 0xGRAI --rpc-url arbitrum --broadcast
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
-///     --sig "deployLiFiCustodianProxy()" --rpc-url arbitrum --broadcast --verify
-contract DeployGRAI is Script {
+///     --sig "deployCoWCustodian(address,address,bool)" 0xGrinders 0x0 true \
+///     --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "deploySwapCustodian(address,address,bool)" 0xGrinders 0x0 true \
+///     --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "deployLiFiCustodian(address,address,bool)" 0xGrinders 0x0 true \
+///     --rpc-url arbitrum --broadcast --verify
+contract DeployGRAI is CreateXDeploy {
     struct AssetData {
         address asset;
         IPriceOracleRouter.FeedType oracleType;
@@ -59,6 +76,11 @@ contract DeployGRAI is Script {
         address owner = vm.addr(vm.envUint("PRIVATE_KEY"));
         address weth = vm.envOr("WETH", net.weth);
         require(weth != address(0), "WETH required");
+        if (_hasCreateX()) {
+            console2.log("Deploy mode: CreateX CREATE3", address(_createX()));
+        } else {
+            console2.log("Deploy mode: CREATE (CreateX missing on chain)");
+        }
 
         _logNetwork(net, owner, weth);
 
@@ -66,10 +88,12 @@ contract DeployGRAI is Script {
         vm.startBroadcast(pk);
 
         GRAI grai = deployGRAI(owner, weth);
+        
         Treasury treasury = deployTreasury(address(grai), owner);
-        wireTreasury(grai, address(treasury));
+        setTreasury(grai, address(treasury));
+        
         Grinders grinders = deployGrinders(address(grai), owner);
-        wireGrinders(grai, address(grinders));
+        setGrinders(grai, address(grinders));
 
         initFeeds(grai);
         for (uint256 i; i < net.assets.length; ++i) {
@@ -114,52 +138,91 @@ contract DeployGRAI is Script {
         }
     }
 
-    /// @notice GRAI impl + proxy (`initialize(owner, weth)`).
+    //////////////////// GRAI ////////////////////
+
+    /// @notice GRAI impl + proxy (`initialize` in proxy initcode). CreateX CREATE3 if available, else `new`.
     // forge-lint: disable-next-line(mixed-case-function)
     function deployGRAI(address owner, address weth) public returns (GRAI grai) {
-        GRAI impl = new GRAI();
-        grai = GRAI(
-            payable(new ERC1967Proxy(address(impl), abi.encodeCall(GRAI.initialize, (owner, weth))))
-        );
-        console2.log("GRAI impl:", address(impl));
+        address impl;
+        if (_hasCreateX()) {
+            impl = _deployCreate3("grindurus.grai.impl.v1", type(GRAI).creationCode);
+            bytes memory proxyInitCode = abi.encodePacked(
+                type(ERC1967Proxy).creationCode,
+                abi.encode(impl, abi.encodeCall(GRAI.initialize, (owner, weth)))
+            );
+            uint88 proxySaltId = uint88(
+                vm.envOr("GRAI_PROXY_SALT_ID", uint256(_saltId("grindurus.grai.proxy")))
+            );
+            grai = GRAI(payable(_deployCreate3("grindurus.grai.proxy", proxySaltId, proxyInitCode)));
+        } else {
+            impl = address(new GRAI());
+            grai = GRAI(
+                payable(new ERC1967Proxy(impl, abi.encodeCall(GRAI.initialize, (owner, weth))))
+            );
+        }
+        console2.log("GRAI impl:", impl);
         console2.log("GRAI proxy:", address(grai));
     }
 
     //////////////////// TREASURY ////////////////////
 
-    /// @notice Treasury impl + proxy (`initialize(grai, beneficiar)`).
+    /// @notice Treasury impl + proxy (`initialize` in proxy initcode). CreateX CREATE3 if available, else `new`.
     function deployTreasury(address grai, address beneficiar) public returns (Treasury treasury) {
-        Treasury impl = new Treasury();
-        treasury = Treasury(
-            payable(new ERC1967Proxy(address(impl), abi.encodeCall(Treasury.initialize, (grai, beneficiar))))
-        );
-        console2.log("Treasury impl:", address(impl));
+        address impl;
+        if (_hasCreateX()) {
+            impl = _deployCreate3("grindurus.treasury.impl.v1", type(Treasury).creationCode);
+            bytes memory proxyInitCode = abi.encodePacked(
+                type(ERC1967Proxy).creationCode,
+                abi.encode(impl, abi.encodeCall(Treasury.initialize, (grai, beneficiar)))
+            );
+            uint88 proxySaltId = uint88(
+                vm.envOr("TREASURY_PROXY_SALT_ID", uint256(_saltId("grindurus.treasury.proxy")))
+            );
+            treasury = Treasury(payable(_deployCreate3("grindurus.treasury.proxy", proxySaltId, proxyInitCode)));
+        } else {
+            impl = address(new Treasury());
+            treasury = Treasury(
+                payable(new ERC1967Proxy(impl, abi.encodeCall(Treasury.initialize, (grai, beneficiar))))
+            );
+        }
+        console2.log("Treasury impl:", impl);
         console2.log("Treasury proxy:", address(treasury));
     }
 
     /// @notice Wire `GRAI.setTreasury(treasury)`.
-    function wireTreasury(GRAI grai, address treasury) public {
+    function setTreasury(GRAI grai, address treasury) public {
         grai.setTreasury(treasury);
         console2.log("Wired GRAI.setTreasury:", treasury);
     }
 
     //////////////////// GRINDERS ////////////////////
 
-    /// @notice Grinders impl + proxy (`initialize(grai, toreador)`).
+    /// @notice Grinders impl + proxy (`initialize` in proxy initcode). CreateX CREATE3 if available, else `new`.
     function deployGrinders(address grai, address toreador) public returns (Grinders grinders) {
-        Grinders impl = new Grinders();
-        grinders = Grinders(
-            payable(
-                new ERC1967Proxy(address(impl), abi.encodeCall(Grinders.initialize, (grai, toreador)))
-            )
-        );
-        console2.log("Grinders impl:", address(impl));
+        address impl;
+        if (_hasCreateX()) {
+            impl = _deployCreate3("grindurus.grinders.impl.v1", type(Grinders).creationCode);
+            bytes memory proxyInitCode = abi.encodePacked(
+                type(ERC1967Proxy).creationCode,
+                abi.encode(impl, abi.encodeCall(Grinders.initialize, (grai, toreador)))
+            );
+            uint88 proxySaltId = uint88(
+                vm.envOr("GRINDERS_PROXY_SALT_ID", uint256(_saltId("grindurus.grinders.proxy")))
+            );
+            grinders = Grinders(payable(_deployCreate3("grindurus.grinders.proxy", proxySaltId, proxyInitCode)));
+        } else {
+            impl = address(new Grinders());
+            grinders = Grinders(
+                payable(new ERC1967Proxy(impl, abi.encodeCall(Grinders.initialize, (grai, toreador))))
+            );
+        }
+        console2.log("Grinders impl:", impl);
         console2.log("Grinders proxy:", address(grinders));
         console2.log("Grinders toreador:", toreador);
     }
 
     /// @notice Wire `GRAI.setGrinders(grinders)`.
-    function wireGrinders(GRAI grai, address grinders) public {
+    function setGrinders(GRAI grai, address grinders) public {
         grai.setGrinders(grinders);
         console2.log("Wired GRAI.setGrinders:", grinders);
     }
@@ -186,13 +249,12 @@ contract DeployGRAI is Script {
     }
 
     /// @notice Mark `assets[i].bribeable` via `setConfig(BRIBEABLE)` (each must be listed).
-    function setBribeable() external {
+    /// @param grai GRAI proxy.
+    function setBribeable(GRAI grai) external {
         Network memory net = _network();
-        address graiAddr = vm.envAddress("GRAI");
         uint256 pk = vm.envUint("PRIVATE_KEY");
 
-        GRAI grai = GRAI(payable(graiAddr));
-        console2.log("GRAI:", graiAddr);
+        console2.log("GRAI:", address(grai));
         console2.log("assets:", net.assets.length);
         console2.log("owner:", grai.owner());
 
@@ -216,99 +278,143 @@ contract DeployGRAI is Script {
 
     //////////////////// COW CUSTODIAN ////////////////////
 
-    function deployCoWCustodian() external returns (CoWCustodian) {
-        return deployCoWCustodian(true);
-    }
-
-    /// @param setImpl If true, call `Grinders.set(cow, impl)` after deploy.
-    function deployCoWCustodian(bool setImpl) public returns (CoWCustodian impl) {
-        address grindersAddr = vm.envAddress("GRINDERS");
+    /// @param grindersAddr Grinders proxy — registers impl via `Grinders.set` and used for proxy `initialize`.
+    /// @param impl Existing CoW impl, or `address(0)` to deploy a new one.
+    /// @param deployProxy If true, also deploy an ERC1967 proxy (`initialize(grindersAddr)`).
+    function deployCoWCustodian(address grindersAddr, address impl, bool deployProxy)
+        public
+        returns (CoWCustodian implementation, CoWCustodian proxy)
+    {
         uint256 pk = vm.envUint("PRIVATE_KEY");
 
         Grinders grinders = Grinders(payable(grindersAddr));
         console2.log("Grinders:", grindersAddr);
         console2.log("owner:", grinders.owner());
-        console2.log("setImpl:", setImpl);
+        console2.log("impl:", impl);
+        console2.log("deployProxy:", deployProxy);
 
         require(grindersAddr.code.length > 0, "GRINDERS not a contract");
-        if (setImpl) require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+        require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
 
         vm.startBroadcast(pk);
-        impl = new CoWCustodian();
-        bytes32 cowKind = impl.label();
-        if (setImpl) grinders.set(cowKind, address(impl));
+        if (impl == address(0)) {
+            implementation = new CoWCustodian();
+        } else {
+            require(impl.code.length > 0, "impl not a contract");
+            implementation = CoWCustodian(payable(impl));
+        }
+        grinders.set(implementation.label(), address(implementation));
+
+        if (deployProxy) {
+            proxy = CoWCustodian(
+                payable(
+                    new ERC1967Proxy(
+                        address(implementation), abi.encodeCall(CoWCustodian.initialize, (grindersAddr))
+                    )
+                )
+            );
+        }
         vm.stopBroadcast();
 
         console2.log("Deploy complete.");
-        console2.log("CoWCustodian impl:", address(impl));
-        console2.log("COW_SETTLEMENT:", address(impl.COW_SETTLEMENT()));
-        console2.log("COW_VAULT_RELAYER:", impl.COW_VAULT_RELAYER());
+        console2.log("CoWCustodian impl:", address(implementation));
+        if (deployProxy) console2.log("CoWCustodian proxy:", address(proxy));
+        console2.log("COW_SETTLEMENT:", address(implementation.COW_SETTLEMENT()));
+        console2.log("COW_VAULT_RELAYER:", implementation.COW_VAULT_RELAYER());
+    }
+
+    //////////////////// SWAP CUSTODIAN ////////////////////
+
+    /// @param grindersAddr Grinders proxy — registers impl via `Grinders.set` and used for proxy `initialize`.
+    /// @param impl Existing Swap impl, or `address(0)` to deploy a new one.
+    /// @param deployProxy If true, also deploy an ERC1967 proxy (`initialize(grindersAddr)`).
+    function deploySwapCustodian(address grindersAddr, address impl, bool deployProxy)
+        public
+        returns (SwapCustodian implementation, SwapCustodian proxy)
+    {
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+
+        Grinders grinders = Grinders(payable(grindersAddr));
+        console2.log("Grinders:", grindersAddr);
+        console2.log("owner:", grinders.owner());
+        console2.log("impl:", impl);
+        console2.log("deployProxy:", deployProxy);
+
+        require(grindersAddr.code.length > 0, "GRINDERS not a contract");
+        require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+
+        vm.startBroadcast(pk);
+        if (impl == address(0)) {
+            implementation = new SwapCustodian();
+        } else {
+            require(impl.code.length > 0, "impl not a contract");
+            implementation = SwapCustodian(payable(impl));
+        }
+        grinders.set(implementation.label(), address(implementation));
+
+        if (deployProxy) {
+            proxy = SwapCustodian(
+                payable(
+                    new ERC1967Proxy(
+                        address(implementation), abi.encodeCall(SwapCustodian.initialize, (grindersAddr))
+                    )
+                )
+            );
+        }
+        vm.stopBroadcast();
+
+        console2.log("Deploy complete.");
+        console2.log("SwapCustodian impl:", address(implementation));
+        if (deployProxy) console2.log("SwapCustodian proxy:", address(proxy));
+        console2.log("COW_SETTLEMENT:", address(implementation.COW_SETTLEMENT()));
+        console2.log("COW_VAULT_RELAYER:", implementation.COW_VAULT_RELAYER());
     }
 
     //////////////////// LIFI CUSTODIAN ////////////////////
 
-    function deployLiFiCustodianImpl() external returns (LiFiCustodian) {
-        return deployLiFiCustodianImpl(true);
-    }
-
-    /// @param setImpl If true, call `Grinders.set(lifi, impl)` after deploy (`GRINDERS` required).
-    function deployLiFiCustodianImpl(bool setImpl) public returns (LiFiCustodian impl) {
+    /// @param grindersAddr Grinders proxy — registers impl via `Grinders.set` and used for proxy `initialize`.
+    /// @param impl Existing LiFi impl, or `address(0)` to deploy a new one.
+    /// @param deployProxy If true, also deploy an ERC1967 proxy (`initialize(grindersAddr)`).
+    function deployLiFiCustodian(address grindersAddr, address impl, bool deployProxy)
+        public
+        returns (LiFiCustodian implementation, LiFiCustodian proxy)
+    {
         uint256 pk = vm.envUint("PRIVATE_KEY");
-        address grindersAddr = vm.envOr("GRINDERS", address(0));
 
-        console2.log("setImpl:", setImpl);
-        if (setImpl) {
-            require(grindersAddr != address(0), "GRINDERS required when setImpl=true");
-            Grinders grinders = Grinders(payable(grindersAddr));
-            console2.log("Grinders:", grindersAddr);
-            console2.log("owner:", grinders.owner());
-            require(grindersAddr.code.length > 0, "GRINDERS not a contract");
-            require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+        Grinders grinders = Grinders(payable(grindersAddr));
+        console2.log("Grinders:", grindersAddr);
+        console2.log("owner:", grinders.owner());
+        console2.log("impl:", impl);
+        console2.log("deployProxy:", deployProxy);
+
+        require(grindersAddr.code.length > 0, "GRINDERS not a contract");
+        require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+
+        vm.startBroadcast(pk);
+        if (impl == address(0)) {
+            implementation = new LiFiCustodian();
+        } else {
+            require(impl.code.length > 0, "impl not a contract");
+            implementation = LiFiCustodian(payable(impl));
         }
+        grinders.set(implementation.label(), address(implementation));
 
-        vm.startBroadcast(pk);
-        impl = new LiFiCustodian();
-        bytes32 lifiKind = impl.label();
-        if (setImpl) Grinders(payable(grindersAddr)).set(lifiKind, address(impl));
+        if (deployProxy) {
+            proxy = LiFiCustodian(
+                payable(
+                    new ERC1967Proxy(
+                        address(implementation), abi.encodeCall(LiFiCustodian.initialize, (grindersAddr))
+                    )
+                )
+            );
+        }
         vm.stopBroadcast();
 
         console2.log("Deploy complete.");
-        console2.log("LiFiCustodian impl:", address(impl));
-        console2.log("INPUT_SETTLER_ESCROW:", address(impl.INPUT_SETTLER_ESCROW()));
-        console2.log("PERMIT2:", impl.PERMIT2());
-    }
-
-    /// @notice Deploy LiFiCustodian impl + ERC1967Proxy.
-    /// @dev `initialize` target: `GRINDERS` if set, else deployer EOA (then EOA `register(GRINDERS)`
-    ///      and `Grinders.register` completes the 2-step accept). Does not mint NFT / setAssets /
-    ///      `Grinders.set` — use `deployLiFiCustodianImpl` for impl-only + set.
-    function deployLiFiCustodianProxy() public returns (LiFiCustodian impl, LiFiCustodian proxy) {
-        uint256 pk = vm.envUint("PRIVATE_KEY");
-        address deployer = vm.addr(pk);
-        address grindersAddr = vm.envOr("GRINDERS", address(0));
-        address initGrinders = grindersAddr != address(0) ? grindersAddr : deployer;
-
-        if (grindersAddr != address(0)) require(grindersAddr.code.length > 0, "GRINDERS not a contract");
-
-        console2.log("initialize grinders:", initGrinders);
-
-        vm.startBroadcast(pk);
-        impl = new LiFiCustodian();
-        proxy = LiFiCustodian(
-            payable(
-                new ERC1967Proxy(address(impl), abi.encodeCall(LiFiCustodian.initialize, (initGrinders)))
-            )
-        );
-        vm.stopBroadcast();
-
-        require(address(proxy.grinders()) == initGrinders, "grinders mismatch");
-        require(proxy.label() == impl.label(), "proxy kind mismatch");
-
-        console2.log("Deploy complete.");
-        console2.log("LiFiCustodian impl:", address(impl));
-        console2.log("LiFiCustodian proxy:", address(proxy));
-        console2.log("INPUT_SETTLER_ESCROW:", address(proxy.INPUT_SETTLER_ESCROW()));
-        console2.log("PERMIT2:", proxy.PERMIT2());
+        console2.log("LiFiCustodian impl:", address(implementation));
+        if (deployProxy) console2.log("LiFiCustodian proxy:", address(proxy));
+        console2.log("INPUT_SETTLER_ESCROW:", address(implementation.INPUT_SETTLER_ESCROW()));
+        console2.log("PERMIT2:", implementation.PERMIT2());
     }
 
     function _network() internal view returns (Network memory) {
@@ -471,4 +577,5 @@ contract DeployGRAI is Script {
             console2.log("  bribeable:", net.assets[i].bribeable);
         }
     }
+
 }

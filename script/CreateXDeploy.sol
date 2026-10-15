@@ -45,6 +45,11 @@ abstract contract CreateXDeploy is Script {
         return ICreateX(vm.envOr("CREATEX", CREATEX_DEFAULT));
     }
 
+    /// @dev True when CreateX bytecode is present at `_createX()` (or `CREATEX=` override).
+    function _hasCreateX() internal view returns (bool) {
+        return address(_createX()).code.length > 0;
+    }
+
     function _deployer() internal view returns (address) {
         return vm.addr(vm.envUint("PRIVATE_KEY"));
     }
