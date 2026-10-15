@@ -18,6 +18,7 @@ uint32 constant SPOKE_EID = 30110; // Arbitrum One (LayerZero V2)
 uint32 constant ETHEREUM_EID = HOME_EID;
 uint32 constant ARBITRUM_EID = SPOKE_EID;
 uint256 constant MOCK_LZ_FEE = 0.01 ether;
+uint128 constant DEFAULT_LZ_RECEIVE_GAS = 200_000;
 
 /// @dev Captures the last LZ payload so tests can deliver it to the peer OApp.
 contract MockLzEndpoint {
@@ -109,7 +110,37 @@ contract GRSCrossChainTest is Test {
     }
 
     function _fundLz(address who) internal {
-        deal(who, MOCK_LZ_FEE * 10);
+        deal(who, MOCK_LZ_FEE * 20);
+    }
+
+    /// @dev Deliver an arbitrary home→spoke payload (e.g. out-of-order Open/Close).
+    function _deliverHomeToSpoke(bytes memory payload) internal {
+        homeToSpokeNonce += 1;
+        vm.prank(address(endpoint));
+        spoke.lzReceive(
+            Origin({srcEid: HOME_EID, sender: homePeer, nonce: homeToSpokeNonce}),
+            bytes32(uint256(homeToSpokeNonce)),
+            payload,
+            address(0),
+            ""
+        );
+    }
+
+    function _deliverHomeToSpokeWithGas(bytes memory payload, uint256 gasLimit) internal returns (bool ok) {
+        homeToSpokeNonce += 1;
+        vm.prank(address(endpoint));
+        (ok,) = address(spoke).call{gas: gasLimit}(
+            abi.encodeCall(
+                spoke.lzReceive,
+                (
+                    Origin({srcEid: HOME_EID, sender: homePeer, nonce: homeToSpokeNonce}),
+                    bytes32(uint256(homeToSpokeNonce)),
+                    payload,
+                    address(0),
+                    ""
+                )
+            )
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -242,9 +273,9 @@ contract GRSCrossChainTest is Test {
         assertEq(spoke.getSales(0, 1)[0].grsAmount, 0);
         assertEq(spoke.getSales(0, 1)[0].assetAmount, 0);
         assertEq(spoke.salesReserved(), 0);
-        // Escrow stays as unlistable float on spoke (not reminted/burned on close).
-        assertEq(spoke.balanceOf(address(spoke)), lot);
-        assertEq(spoke.remaining(IGRS.Bucket.TokenSales), lot);
+        // Close burns remaining spoke escrow (no stranded TokenSales float).
+        assertEq(spoke.balanceOf(address(spoke)), 0);
+        assertEq(spoke.remaining(IGRS.Bucket.TokenSales), 0);
 
         deal(buyer, quote);
         vm.prank(buyer);
@@ -423,5 +454,160 @@ contract GRSCrossChainTest is Test {
         assertEq(home.spent(IGRS.Bucket.Advisors), vestAmt);
         assertEq(home.totalSupply(), 1_000_000_000e18 - saleLot - bridgeAmt - vestAmt + backAmt);
         assertEq(spoke.totalSupply(), saleLot + bridgeAmt - backAmt + vestAmt);
+    }
+
+    // -------------------------------------------------------------------------
+    // Audit regressions (`audits/GRS-pashov-ai-audit-report-20261015.md`)
+    // -------------------------------------------------------------------------
+
+    function test_Bug1_UnorderedCloseThenOpenRemints() public {
+        uint256 lot = 10e18;
+        uint256 quote = 0.1 ether;
+        _fundLz(admin);
+
+        vm.prank(admin);
+        uint256 id = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        bytes memory openMsg = endpoint.lastMessage();
+
+        vm.prank(admin);
+        home.sale{value: MOCK_LZ_FEE}(id, bytes32(0), 0, 0, bytes32(0), SPOKE_EID);
+        bytes memory closeMsg = endpoint.lastMessage();
+
+        _deliverHomeToSpoke(closeMsg);
+        assertEq(spoke.salesReserved(), 0);
+        assertEq(spoke.balanceOf(address(spoke)), 0);
+
+        _deliverHomeToSpoke(openMsg);
+        assertEq(spoke.getSales(0, 1)[0].grsAmount, 0);
+        assertEq(spoke.salesReserved(), 0);
+        assertEq(spoke.balanceOf(address(spoke)), 0);
+
+        deal(buyer, quote);
+        vm.prank(buyer);
+        vm.expectRevert(IGRS.SaleClosed.selector);
+        spoke.buy{value: quote}(id, lot, buyer);
+    }
+
+    function test_Bug2_CloseStrandsEscrow_RelistRemints() public {
+        uint256 lot = 7e18;
+        uint256 quote = 0.07 ether;
+        _fundLz(admin);
+
+        vm.prank(admin);
+        uint256 id1 = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        _relayHomeToSpoke();
+        assertEq(spoke.balanceOf(address(spoke)), lot);
+
+        vm.prank(admin);
+        home.sale{value: MOCK_LZ_FEE}(id1, bytes32(0), 0, 0, bytes32(0), SPOKE_EID);
+        _relayHomeToSpoke();
+
+        assertEq(spoke.salesReserved(), 0);
+        assertEq(spoke.balanceOf(address(spoke)), 0);
+        assertEq(spoke.remaining(IGRS.Bucket.TokenSales), 0);
+        vm.expectRevert(IGRS.SaleClosed.selector);
+        spoke.buy{value: quote}(id1, lot, buyer);
+
+        vm.prank(admin);
+        vm.expectRevert(IGRS.NotHome.selector);
+        spoke.sale(0, bytes32(0), quote, lot, _q(admin), 0);
+
+        uint256 homeSupplyBefore = home.totalSupply();
+        vm.prank(admin);
+        uint256 id2 = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        _relayHomeToSpoke();
+
+        assertEq(home.totalSupply(), homeSupplyBefore - lot);
+        assertEq(spoke.balanceOf(address(spoke)), lot);
+        assertEq(spoke.salesReserved(), lot);
+        assertEq(id2, 2);
+    }
+
+    function test_Bug3a_ZeroAssetAmountBurnsUnbuyableLot() public {
+        uint256 lot = 100e18;
+        _fundLz(admin);
+        uint256 homeSupplyBefore = home.totalSupply();
+
+        vm.prank(admin);
+        vm.expectRevert(IGRS.InvalidAssetAmount.selector);
+        home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), 0, lot, _q(admin), SPOKE_EID);
+
+        assertEq(home.totalSupply(), homeSupplyBefore);
+        assertEq(spoke.totalSupply(), 0);
+    }
+
+    function test_Bug3b_AssetAmountExceedsUint64AcceptedOnEvmPublish() public {
+        uint256 lot = 1e18;
+        uint256 assetAmount = 19 ether;
+        assertTrue(assetAmount > type(uint64).max);
+
+        _fundLz(admin);
+        uint256 homeSupplyBefore = home.totalSupply();
+
+        vm.prank(admin);
+        vm.expectRevert(IGRS.InvalidAssetAmount.selector);
+        home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), assetAmount, lot, _q(admin), SPOKE_EID);
+
+        assertEq(home.totalSupply(), homeSupplyBefore);
+    }
+
+    function test_Bug4_RemoteGrantBurnsThenSpokeRejectsNonEvmTo() public {
+        uint256 amount = 100e18;
+        bytes32 solanaTo = keccak256("solana-wallet");
+        assertTrue(uint256(solanaTo) >> 160 != 0);
+
+        _fundLz(admin);
+        uint256 homeSupplyBefore = home.totalSupply();
+        uint256 spentBefore = home.spent(IGRS.Bucket.CoreTeam);
+
+        vm.prank(admin);
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        home.grant{value: MOCK_LZ_FEE}(IGRS.Bucket.CoreTeam, solanaTo, amount, 0, 30 days, 90 days, SPOKE_EID);
+
+        assertEq(home.totalSupply(), homeSupplyBefore);
+        assertEq(home.spent(IGRS.Bucket.CoreTeam), spentBefore);
+        assertEq(spoke.totalSupply(), 0);
+    }
+
+    function test_Bug5_HighSaleIdPadExceedsDefaultLzReceiveGas() public {
+        _fundLz(admin);
+
+        vm.startPrank(admin);
+        for (uint256 i; i < 4; ++i) {
+            home.sale(0, bytes32(0), 1 ether, 1e18, bytes32(0), 0);
+        }
+        uint256 lot = 5e18;
+        uint256 quote = 0.05 ether;
+        uint256 id = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        vm.stopPrank();
+
+        assertEq(id, 5);
+        assertEq(home.totalSupply(), 1_000_000_000e18 - lot);
+
+        bytes memory payload = endpoint.lastMessage();
+        bool ok = _deliverHomeToSpokeWithGas(payload, DEFAULT_LZ_RECEIVE_GAS);
+        assertTrue(ok);
+        assertEq(spoke.getSales(4, 1)[0].grsAmount, lot);
+        assertEq(spoke.salesReserved(), lot);
+        assertEq(spoke.balanceOf(address(spoke)), lot);
+    }
+
+    function test_Bug6_GrantToSelfSpendsBucketKeepsFloat() public {
+        uint256 amount = 150_000_000e18;
+        uint256 freeBefore = home.remaining(IGRS.Bucket.TokenSales);
+        uint256 balBefore = home.balanceOf(address(home));
+        uint256 spentBefore = home.spent(IGRS.Bucket.CoreTeam);
+
+        vm.prank(admin);
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        home.sale(0, bytes32(0), 1 ether, 1e18, _q(address(home)), 0);
+
+        vm.prank(admin);
+        vm.expectRevert(IGRS.InvalidRecipient.selector);
+        home.grant(IGRS.Bucket.CoreTeam, _q(address(home)), amount, 0, 0, 0, 0);
+
+        assertEq(home.spent(IGRS.Bucket.CoreTeam), spentBefore);
+        assertEq(home.balanceOf(address(home)), balBefore);
+        assertEq(home.remaining(IGRS.Bucket.TokenSales), freeBefore);
     }
 }
