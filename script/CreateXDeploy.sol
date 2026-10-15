@@ -74,9 +74,12 @@ abstract contract CreateXDeploy is Script {
 
     /// @dev Mirrors CreateX `_guard` for permissioned + flag `0x00` (address prediction).
     function _guardedSalt(address deployer, bytes32 salt) internal pure returns (bytes32) {
+        // casting to 'bytes20' is safe because CreateX permissioned salt packs deployer in the high 20 bytes
+        // forge-lint: disable-next-line(unsafe-typecast)
         require(address(bytes20(salt)) == deployer, "salt deployer mismatch");
         require(bytes1(salt[20]) == bytes1(CREATE3_FLAG_CROSS_CHAIN_REDEPLOY_OFF), "bad salt flag");
         // CreateX `_efficientHash(bytes32(uint160(msg.sender)), salt)` when msg.sender == deployer.
+        // forge-lint: disable-next-line(asm-keccak256)
         return keccak256(bytes.concat(bytes32(uint256(uint160(deployer))), salt));
     }
 

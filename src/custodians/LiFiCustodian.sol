@@ -161,6 +161,7 @@ contract LiFiCustodian is Custodian, IERC1271 {
 
     /// @notice EIP-712 digest the owner must ECDSA-sign for Permit2 `openFor`.
     /// @dev `spender` in the digest is `INPUT_SETTLER_ESCROW` (`msg.sender` inside Permit2).
+    // forge-lint: disable-start(asm-keccak256)
     function permit2Digest(StandardOrder memory order) public view returns (bytes32) {
         bytes32 witness = _permit2WitnessHash(order);
 
@@ -191,6 +192,7 @@ contract LiFiCustodian is Custodian, IERC1271 {
 
         return keccak256(abi.encodePacked("\x19\x01", IPermit2Domain(PERMIT2).DOMAIN_SEPARATOR(), structHash));
     }
+    // forge-lint: disable-end(asm-keccak256)
 
     /// @notice Prefix a Permit2 ECDSA (or nested EIP-1271) payload for `openFor`.
     function encodeOpenForSignature(bytes memory permit2Signature) public pure returns (bytes memory) {
@@ -246,6 +248,7 @@ contract LiFiCustodian is Custodian, IERC1271 {
         IERC20(quote_).forceApprove(address(INPUT_SETTLER_ESCROW), type(uint256).max);
     }
 
+    // forge-lint: disable-start(asm-keccak256)
     function _permit2WitnessHash(StandardOrder memory order) internal pure returns (bytes32) {
         return keccak256(
             abi.encode(
@@ -278,6 +281,7 @@ contract LiFiCustodian is Custodian, IERC1271 {
         }
         return keccak256(abi.encodePacked(hashes));
     }
+    // forge-lint: disable-end(asm-keccak256)
 
     function _isConstrainedCustodyOrder(StandardOrder memory order) internal view returns (bool) {
         if (order.user != address(this)) return false;
@@ -295,8 +299,10 @@ contract LiFiCustodian is Custodian, IERC1271 {
         bool soldQuote;
 
         for (uint256 i; i < inLen; ++i) {
-            address token = address(uint160(order.inputs[i][0]));
             if (order.inputs[i][0] >> 160 != 0) return false;
+            // casting to 'uint160' is safe because high 12 bytes checked above
+            // forge-lint: disable-next-line(unsafe-typecast)
+            address token = address(uint160(order.inputs[i][0]));
             if (token != base && token != quote) return false;
             if (token == base) soldBase = true;
             if (token == quote) soldQuote = true;
@@ -311,6 +317,8 @@ contract LiFiCustodian is Custodian, IERC1271 {
             if (o.chainId != block.chainid) return false;
             if (o.recipient != selfId) return false;
             if (uint256(o.token) >> 160 != 0) return false;
+            // casting to 'uint160' is safe because high 12 bytes checked above
+            // forge-lint: disable-next-line(unsafe-typecast)
             address token = address(uint160(uint256(o.token)));
             if (token != base && token != quote) return false;
             if (token == base) boughtBase = true;
@@ -322,6 +330,8 @@ contract LiFiCustodian is Custodian, IERC1271 {
 
     function _tokenFromId(uint256 id) internal pure returns (address token) {
         if (id >> 160 != 0) revert BadInputToken();
+        // casting to 'uint160' is safe because high 12 bytes checked above
+        // forge-lint: disable-next-line(unsafe-typecast)
         token = address(uint160(id));
         if (token == address(0)) revert BadInputToken();
     }
