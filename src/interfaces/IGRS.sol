@@ -138,19 +138,28 @@ interface IGRS {
     /// @notice Per-eid lzReceive gas/value for auto enforcedOptions on `setPeer`. `gas == 0` clears.
     function setPeerLzReceiveBudget(uint32 eid, uint128 gas, uint128 value) external;
 
-    /// @notice Home: append a sale. Id is the next 1-based index. `dstEid == 0` is local only; else burns
-    ///         `grsAmount` from TokenSales, LZ-publishes so the spoke mints that GRS into escrow, and
-    ///         closes the home row so home `buy` cannot fill the same lot.
-    function sale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
-        external
-        payable
-        returns (uint256 id);
+    /// @notice Home: `id == 0` appends a sale; `id != 0` closes that lot (and LZ-publishes zeros when
+    ///         `dstEid != 0`). Create: `dstEid == 0` is local only; else burns `grsAmount`, publishes to
+    ///         spoke escrow, then zeros the home row.
+    function sale(
+        uint256 id,
+        bytes32 asset,
+        uint256 assetAmount,
+        uint256 grsAmount,
+        bytes32 recipient,
+        uint32 dstEid
+    ) external payable returns (uint256);
 
-    /// @notice Native LZ fee for `sale(..., dstEid)` (next id). `dstEid == 0` is 0.
-    function quoteSale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
-        external
-        view
-        returns (uint256 nativeFee);
+    /// @notice Native LZ fee for `sale(id, ..., dstEid)`. `dstEid == 0` is 0.
+    ///         `id == 0` quotes create (next id); `id != 0` quotes close for that id.
+    function quoteSale(
+        uint256 id,
+        bytes32 asset,
+        uint256 assetAmount,
+        uint256 grsAmount,
+        bytes32 recipient,
+        uint32 dstEid
+    ) external view returns (uint256 nativeFee);
 
     /// @notice Asset units due for `grsAmount` GRS from that sale's remaining `assetAmount`.
     function quoteBuy(uint256 id, uint256 grsAmount) external view returns (uint256 cost);

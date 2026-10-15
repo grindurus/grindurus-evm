@@ -18,6 +18,7 @@ import {IERC1046} from "./interfaces/IERC1046.sol";
 import {IGRS} from "./interfaces/IGRS.sol";
 
 /// @title GRS (Grindurus Token)
+/// @author Vakhtanh Chikhladze (github: @Pozzitron1337)
 /// @notice Fixed-supply LayerZero OFT. Home chain mints the 1B genesis into per-bucket inventory
 ///         (`docs.grindurus.xyz` mechanics / `grs.svg`); delegate `grant`s vesting / instant payouts. Any holder may `vest`
 ///         their own GRS (home or spoke). Spokes mint/burn via OFT. Admin is Ownable2Step.
@@ -146,19 +147,27 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         _bridgeFrom(msg.sender, dstEid, to, amountLd);
     }
 
-    /// @notice Home: append a sale. Id is `_sales.length + 1`. `asset = 0` is native ETH. `recipient = 0`
-    ///         pays `owner()` at buy. `recipient` is 32 bytes (EVM address left-padded; Solana pubkey as-is).
-    ///         `dstEid == 0` is local only (`msg.value` must be 0). Else burns `grsAmount` from TokenSales
-    ///         inventory and LZ-publishes so the spoke mints that GRS into escrow. The home row is
-    ///         then closed (`grsAmount` / `assetAmount` = 0) so home `buy` cannot fill the same lot.
+    /// @notice Home: create or close a sale. `id == 0` appends (`_sales.length + 1`); `id != 0` closes
+    ///         that lot (`assetAmount` / `grsAmount` → 0) and releases any local `salesReserved`.
+    ///         Create: `asset = 0` is native ETH; `recipient = 0` pays `owner()` at buy; `recipient` is
+    ///         32 bytes (EVM address left-padded; Solana pubkey as-is). `dstEid == 0` is local only
+    ///         (`msg.value` must be 0). Else burns `grsAmount` from TokenSales and LZ-publishes so the
+    ///         spoke mints escrow; home row is then closed so home `buy` cannot fill the same lot.
+    ///         Close: create args are ignored; `dstEid == 0` closes home only; else LZ-publishes a
+    ///         zeroed row so the spoke unlists (frees spoke `salesReserved`; escrow stays as float).
     function sale(
+        uint256 id,
         bytes32 asset,
         uint256 assetAmount,
         uint256 grsAmount,
         bytes32 recipient,
         uint32 dstEid
-    ) public payable onlyOwner returns (uint256 id) {
+    ) public payable onlyOwner returns (uint256) {
         _requireHome();
+        if (id != 0) {
+            _closeSale(id, dstEid);
+            return id;
+        }
         if (dstEid == 0) {
             if (msg.value != 0) revert InvalidPayment();
             // Earmark float so overlapping local lots cannot oversubscribe `_freeInventory`.
@@ -175,13 +184,14 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
                 _debit(address(this), grsAmount, grsAmount, dstEid);
             }
         }
-        id = _upsertSale(0, asset, assetAmount, grsAmount, recipient, false);
+        id = _appendSale(asset, assetAmount, grsAmount, recipient);
         if (dstEid != 0) {
-            _sale(id, dstEid);
+            _openSale(id, dstEid);
             Sale storage published = _sales[id - 1];
             published.grsAmount = 0;
             published.assetAmount = 0;
         }
+        return id;
     }
 
     /// @notice Assign `amount` from `bucket`. Instant if `cliffSeconds` and `durationSeconds` are 0
@@ -274,16 +284,25 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         nativeFee = this.quoteSend(_bridgeParam(dstEid, to, amountLd), false).nativeFee;
     }
 
-    /// @notice Native LZ fee for `sale(..., dstEid)` (next id). `dstEid == 0` is 0.
-    function quoteSale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient, uint32 dstEid)
-        public
-        view
-        returns (uint256 nativeFee)
-    {
+    /// @notice Native LZ fee for `sale(id, ..., dstEid)`. `dstEid == 0` is 0.
+    ///         `id == 0` quotes create (next id + args); `id != 0` quotes close (zeroed row for that id).
+    function quoteSale(
+        uint256 id,
+        bytes32 asset,
+        uint256 assetAmount,
+        uint256 grsAmount,
+        bytes32 recipient,
+        uint32 dstEid
+    ) public view returns (uint256 nativeFee) {
         if (dstEid == 0) return 0;
-        nativeFee = _quote(
-            dstEid, _encodeSale(_sales.length + 1, asset, assetAmount, grsAmount, recipient), _saleOptions(dstEid), false
-        ).nativeFee;
+        bytes memory message;
+        if (id == 0) {
+            message = _encodeSale(_sales.length + 1, asset, assetAmount, grsAmount, recipient);
+        } else {
+            Sale storage s = _saleAt(id);
+            message = _encodeSale(id, s.asset, 0, 0, s.recipient);
+        }
+        nativeFee = _quote(dstEid, message, _saleOptions(dstEid), false).nativeFee;
     }
 
     /// @notice Native LZ fee for `grant(..., dstEid)`. `dstEid == 0` is 0. Instant quotes OFT send;
@@ -452,7 +471,7 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
             // id == 0 is the OFT-compose forgery path (append + remint); home always publishes id ≥ 1.
             if (id == 0) revert UnknownSale();
             uint256 previous = (id > 0 && id <= _sales.length) ? _sales[id - 1].grsAmount : 0;
-            _upsertSale(id, asset, assetAmount, grsAmount, recipient, true);
+            _acceptSale(id, asset, assetAmount, grsAmount, recipient);
             if (previous == 0) {
                 if (grsAmount != 0) {
                     _credit(address(this), grsAmount, origin.srcEid);
@@ -610,31 +629,27 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return address(uint160(n));
     }
 
-    function _upsertSale(
-        uint256 id,
-        bytes32 asset,
-        uint256 assetAmount,
-        uint256 grsAmount,
-        bytes32 recipient,
-        bool accepted
-    ) internal returns (uint256) {
+    /// @dev Home: push a new lot; id = `_sales.length` (1-based).
+    function _appendSale(bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
+        internal
+        returns (uint256 id)
+    {
         if (recipient == bytes32(uint256(uint160(address(this))))) revert InvalidRecipient();
-        Sale memory row =
-            Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient});
-        if (id == 0) {
-            _sales.push(row);
-            id = _sales.length;
-        } else if (accepted) {
-            while (_sales.length < id) {
-                _sales.push(Sale({asset: bytes32(0), assetAmount: 0, grsAmount: 0, recipient: bytes32(0)}));
-            }
-            _sales[id - 1] = row;
-        } else {
-            revert UnknownSale();
+        _sales.push(Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient}));
+        id = _sales.length;
+        emit SaleSet(id, asset, assetAmount, grsAmount, recipient);
+    }
+
+    /// @dev Spoke: write/overwrite lot `id` from an LZ sale message (pads holes if needed).
+    function _acceptSale(uint256 id, bytes32 asset, uint256 assetAmount, uint256 grsAmount, bytes32 recipient)
+        internal
+    {
+        if (recipient == bytes32(uint256(uint160(address(this))))) revert InvalidRecipient();
+        while (_sales.length < id) {
+            _sales.push(Sale({asset: bytes32(0), assetAmount: 0, grsAmount: 0, recipient: bytes32(0)}));
         }
-        if (accepted) emit SaleAccepted(id, asset, assetAmount, grsAmount, recipient);
-        else emit SaleSet(id, asset, assetAmount, grsAmount, recipient);
-        return id;
+        _sales[id - 1] = Sale({asset: asset, assetAmount: assetAmount, grsAmount: grsAmount, recipient: recipient});
+        emit SaleAccepted(id, asset, assetAmount, grsAmount, recipient);
     }
 
     function _vesting(uint256 id) internal view returns (Vesting storage v) {
@@ -642,7 +657,22 @@ contract GRS is OFT, Ownable2Step, IERC1046, IGRS {
         return _vestings[id - 1];
     }
 
-    function _sale(uint256 id, uint32 dstEid) internal {
+    /// @dev Close lot `id` on home; optional LZ zero-row to `dstEid` so the spoke unlists.
+    function _closeSale(uint256 id, uint32 dstEid) internal {
+        Sale storage s = _saleAt(id);
+        uint256 unsold = s.grsAmount;
+        if (dstEid == 0) {
+            if (msg.value != 0) revert InvalidPayment();
+        }
+        // Local listings earmark `salesReserved`; cross-chain publish already zeros home first.
+        if (unsold > 0) salesReserved -= unsold;
+        s.grsAmount = 0;
+        s.assetAmount = 0;
+        if (dstEid != 0) _openSale(id, dstEid);
+        emit SaleSet(id, s.asset, 0, 0, s.recipient);
+    }
+
+    function _openSale(uint256 id, uint32 dstEid) internal {
         Sale storage s = _sales[id - 1];
         bytes memory message = _encodeSale(id, s.asset, s.assetAmount, s.grsAmount, s.recipient);
         bytes memory options = _saleOptions(dstEid);

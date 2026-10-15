@@ -178,7 +178,7 @@ contract DeployGRS is Script {
         uint256 grsAmount = vm.envOr("GRS_AMOUNT", SALE_GRS_50M);
         address recipient = vm.envOr("RECIPIENT", address(0));
         uint32 dstEid = uint32(vm.envOr("DST_EID", uint256(0)));
-        uint256 fee = dstEid == 0 ? 0 : grs.quoteSale(_q(usdc), SALE_USDC_1M, grsAmount, _q(recipient), dstEid);
+        uint256 fee = dstEid == 0 ? 0 : grs.quoteSale(0, _q(usdc), SALE_USDC_1M, grsAmount, _q(recipient), dstEid);
 
         console2.log("GRS        ", address(grs));
         console2.log("USDC       ", usdc);
@@ -199,7 +199,7 @@ contract DeployGRS is Script {
         require(grs.owner() == vm.addr(pk), "PRIVATE_KEY is not GRS owner");
 
         vm.startBroadcast(pk);
-        id = grs.sale{value: fee}(_q(usdc), SALE_USDC_1M, grsAmount, _q(recipient), dstEid);
+        id = grs.sale{value: fee}(0, _q(usdc), SALE_USDC_1M, grsAmount, _q(recipient), dstEid);
         vm.stopBroadcast();
 
         console2.log("sale id    ", id);
@@ -215,7 +215,7 @@ contract DeployGRS is Script {
         uint256 grsAmount = vm.envOr("GRS_AMOUNT", SALE_GRS_50M);
         address recipient = vm.envOr("RECIPIENT", address(0));
         uint32 dstEid = uint32(vm.envOr("DST_EID", uint256(0)));
-        uint256 fee = dstEid == 0 ? 0 : grs.quoteSale(bytes32(0), SALE_ETH_400, grsAmount, _q(recipient), dstEid);
+        uint256 fee = dstEid == 0 ? 0 : grs.quoteSale(0, bytes32(0), SALE_ETH_400, grsAmount, _q(recipient), dstEid);
 
         console2.log("GRS        ", address(grs));
         console2.log("asset      ", "native ETH");
@@ -236,7 +236,7 @@ contract DeployGRS is Script {
         require(grs.owner() == vm.addr(pk), "PRIVATE_KEY is not GRS owner");
 
         vm.startBroadcast(pk);
-        id = grs.sale{value: fee}(bytes32(0), SALE_ETH_400, grsAmount, _q(recipient), dstEid);
+        id = grs.sale{value: fee}(0, bytes32(0), SALE_ETH_400, grsAmount, _q(recipient), dstEid);
         vm.stopBroadcast();
 
         console2.log("sale id    ", id);
@@ -281,7 +281,7 @@ contract DeployGRS is Script {
         // Solana sale codec packs assetAmount as u64.
         require(assetAmount <= type(uint64).max, "assetAmount exceeds Solana u64");
 
-        uint256 fee = grs.quoteSale(asset, assetAmount, grsAmount, recipient, dstEid);
+        uint256 fee = grs.quoteSale(0, asset, assetAmount, grsAmount, recipient, dstEid);
 
         console2.log("GRS        ", address(grs));
         console2.log("asset      ", assetLabel);
@@ -307,7 +307,7 @@ contract DeployGRS is Script {
         require(grs.peers(dstEid) != bytes32(0), "Solana peer not set (setSolanaPeer)");
 
         vm.startBroadcast(pk);
-        id = grs.sale{value: fee}(asset, assetAmount, grsAmount, recipient, dstEid);
+        id = grs.sale{value: fee}(0, asset, assetAmount, grsAmount, recipient, dstEid);
         vm.stopBroadcast();
 
         console2.log("sale id    ", id);

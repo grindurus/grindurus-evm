@@ -137,13 +137,13 @@ contract GRSCrossChainTest is Test {
 
         uint256 lot = 10e18;
         uint256 quote = 0.1 ether;
-        uint256 fee = ethereum.quoteSale(bytes32(0), quote, lot, _q(admin), ARBITRUM_EID);
+        uint256 fee = ethereum.quoteSale(0, bytes32(0), quote, lot, _q(admin), ARBITRUM_EID);
         assertEq(fee, MOCK_LZ_FEE);
         deal(admin, fee);
 
         uint256 ethSupplyBefore = ethereum.totalSupply();
         vm.prank(admin);
-        uint256 id = ethereum.sale{value: fee}(bytes32(0), quote, lot, _q(admin), ARBITRUM_EID);
+        uint256 id = ethereum.sale{value: fee}(0, bytes32(0), quote, lot, _q(admin), ARBITRUM_EID);
 
         assertEq(id, 1);
         assertEq(lz.lastDstEid(), ARBITRUM_EID);
@@ -193,7 +193,7 @@ contract GRSCrossChainTest is Test {
         _fundLz(admin);
 
         vm.prank(admin);
-        uint256 id = home.sale{value: MOCK_LZ_FEE}(bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        uint256 id = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), quote, lot, _q(admin), SPOKE_EID);
 
         assertEq(id, 1);
         assertEq(endpoint.lastDstEid(), SPOKE_EID);
@@ -217,6 +217,39 @@ contract GRSCrossChainTest is Test {
         assertEq(spoke.balanceOf(buyer), lot);
         assertEq(spoke.getSales(0, 1)[0].grsAmount, 0);
         assertEq(admin.balance, adminBefore + quote);
+    }
+
+    function test_CrossChain_CloseSaleUnlistsOnSpoke() public {
+        uint256 lot = 7e18;
+        uint256 quote = 0.07 ether;
+        _fundLz(admin);
+
+        vm.prank(admin);
+        uint256 id = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), quote, lot, _q(admin), SPOKE_EID);
+        _relayHomeToSpoke();
+
+        assertEq(spoke.salesReserved(), lot);
+        assertEq(spoke.getSales(0, 1)[0].grsAmount, lot);
+
+        uint256 closeFee = home.quoteSale(id, bytes32(0), 0, 0, bytes32(0), SPOKE_EID);
+        assertEq(closeFee, MOCK_LZ_FEE);
+        _fundLz(admin);
+
+        vm.prank(admin);
+        home.sale{value: closeFee}(id, bytes32(0), 0, 0, bytes32(0), SPOKE_EID);
+        _relayHomeToSpoke();
+
+        assertEq(spoke.getSales(0, 1)[0].grsAmount, 0);
+        assertEq(spoke.getSales(0, 1)[0].assetAmount, 0);
+        assertEq(spoke.salesReserved(), 0);
+        // Escrow stays as unlistable float on spoke (not reminted/burned on close).
+        assertEq(spoke.balanceOf(address(spoke)), lot);
+        assertEq(spoke.remaining(IGRS.Bucket.TokenSales), lot);
+
+        deal(buyer, quote);
+        vm.prank(buyer);
+        vm.expectRevert(IGRS.SaleClosed.selector);
+        spoke.buy{value: quote}(id, lot, buyer);
     }
 
     // -------------------------------------------------------------------------
@@ -345,7 +378,7 @@ contract GRSCrossChainTest is Test {
         uint256 saleLot = 4e18;
         uint256 saleQuote = 0.04 ether;
         vm.prank(admin);
-        uint256 saleId = home.sale{value: MOCK_LZ_FEE}(bytes32(0), saleQuote, saleLot, _q(admin), SPOKE_EID);
+        uint256 saleId = home.sale{value: MOCK_LZ_FEE}(0, bytes32(0), saleQuote, saleLot, _q(admin), SPOKE_EID);
         _relayHomeToSpoke();
         deal(buyer, saleQuote);
         vm.prank(buyer);
