@@ -22,6 +22,7 @@ library TreasuryArt {
     uint256 private constant USD_DECIMALS = 1e6;
 
     function tokenJson(
+        uint256 tokenId,
         address locker,
         address cashflowOwner,
         address referrer,
@@ -30,12 +31,13 @@ library TreasuryArt {
         uint256 l2Value
     ) internal pure returns (string memory) {
         bool root = referrer == locker;
+        string memory idLabel = string.concat("#", tokenId.toString());
         return string.concat(
-            '{"name":"Treasury Locker ',
-            _short(locker),
+            '{"name":"Treasury Note of Grinders Artificial Index ',
+            idLabel,
             '","description":"Tradable claim on GRAI revenue share for a depositor locker.",',
             '"image":"data:image/svg+xml;base64,',
-            Base64.encode(bytes(_svg(locker, cashflowOwner, referrer, root, ownValue, l1Value, l2Value))),
+            Base64.encode(bytes(_svg(tokenId, locker, cashflowOwner, referrer, root, ownValue, l1Value, l2Value))),
             '","attributes":[{"trait_type":"Locker","value":"',
             locker.toHexString(),
             '"},{"trait_type":"CashflowOwner","value":"',
@@ -44,6 +46,8 @@ library TreasuryArt {
             referrer.toHexString(),
             '"},{"trait_type":"Root","value":"',
             root ? "true" : "false",
+            '"},{"trait_type":"TokenId","value":"',
+            tokenId.toString(),
             '"},{"trait_type":"OWN","value":"',
             _usd(ownValue),
             '"},{"trait_type":"L1","value":"',
@@ -54,7 +58,9 @@ library TreasuryArt {
         );
     }
 
+    /// @dev Square `320×320` card — MetaMask / wallet grids crop landscape SVGs.
     function _svg(
+        uint256 tokenId,
         address locker,
         address cashflowOwner,
         address referrer,
@@ -64,31 +70,45 @@ library TreasuryArt {
         uint256 l2Value
     ) private pure returns (string memory) {
         return string.concat(
-            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 148' shape-rendering='crispEdges'>",
-            "<rect width='320' height='148' fill='#000'/>",
-            "<rect x='3' y='3' width='314' height='142' fill='none' stroke='#ff2d8c' stroke-width='2'/>",
-            "<circle cx='160' cy='3' r='3' fill='#ff2d8c'/>",
-            "<circle cx='160' cy='145' r='3' fill='#ff2d8c'/>",
-            "<text x='16' y='30' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#fff'>Locker</text>",
-            "<text x='74' y='30' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
-            _short(locker),
-            "</text>",
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 320' width='320' height='320' shape-rendering='crispEdges'>",
+            "<rect width='320' height='320' fill='#000'/>",
+            "<rect x='8' y='8' width='304' height='304' fill='none' stroke='#ff2d8c' stroke-width='2'/>",
+            "<circle cx='160' cy='8' r='4' fill='#ff2d8c'/>",
+            "<circle cx='160' cy='312' r='4' fill='#ff2d8c'/>",
+            "<text x='24' y='40' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='16' font-weight='700' fill='#ff2d8c'>T-GRAI</text>",
             root
-                ? "<text x='304' y='30' text-anchor='end' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#ff2d8c'>ROOT</text>"
+                ? "<text x='296' y='40' text-anchor='end' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#ff2d8c'>ROOT</text>"
                 : "",
-            "<text x='16' y='50' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#fff'>Owner:</text>",
-            "<text x='82' y='50' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
-            _short(cashflowOwner),
+            // `tokenId` is uint160(locker) — decimal is ~48 digits, so split across two lines.
+            "<text x='24' y='58' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='9' fill='#8a8a8a'>Treasury Note of Grinders Artificial Index</text>",
+            "<text x='24' y='72' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='9' fill='#8a8a8a'>#",
+            tokenId.toString(),
             "</text>",
-            "<text x='16' y='70' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' font-weight='700' fill='#fff'>Referrer:</text>",
-            "<text x='102' y='70' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
-            _short(referrer),
-            "</text>",
-            "<line x1='16' y1='82' x2='304' y2='82' stroke='#ff2d8c' stroke-width='2'/>",
-            _col(53, "OWN", ownValue),
+            _row("Locker", locker, 116),
+            _row("Owner", cashflowOwner, 158),
+            _row("Referrer", referrer, 200),
+            "<line x1='24' y1='236' x2='296' y2='236' stroke='#ff2d8c' stroke-width='2'/>",
+            _col(64, "OWN", ownValue),
             _col(160, "L1", l1Value),
-            _col(267, "L2", l2Value),
+            _col(256, "L2", l2Value),
             "</svg>"
+        );
+    }
+
+    /// @dev Label + short address on one line; addresses share a left column at `x=118`.
+    function _row(string memory label, address account, uint256 y) private pure returns (string memory) {
+        string memory ys = y.toString();
+        return string.concat(
+            "<text x='24' y='",
+            ys,
+            "' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='14' fill='#8a8a8a'>",
+            label,
+            "</text>",
+            "<text x='118' y='",
+            ys,
+            "' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='15' font-weight='700' fill='#fff'>",
+            _short(account),
+            "</text>"
         );
     }
 
@@ -97,12 +117,12 @@ library TreasuryArt {
         return string.concat(
             "<text x='",
             xs,
-            "' y='106' text-anchor='middle' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='13' fill='#8a8a8a'>",
+            "' y='268' text-anchor='middle' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='13' fill='#8a8a8a'>",
             label,
             "</text>",
             "<text x='",
             xs,
-            "' y='128' text-anchor='middle' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='16' font-weight='700' fill='#fff'>",
+            "' y='296' text-anchor='middle' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='16' font-weight='700' fill='#fff'>",
             _usd(amount),
             "</text>"
         );
@@ -519,7 +539,7 @@ contract Treasury is ITreasury, ERC721EnumerableUpgradeable, ERC2981Upgradeable,
             Base64.encode(
                 bytes(
                     TreasuryArt.tokenJson(
-                        locker, ownerOf(tokenId), book.referrer, book.value, book.l1Value, book.l2Value
+                        tokenId, locker, ownerOf(tokenId), book.referrer, book.value, book.l1Value, book.l2Value
                     )
                 )
             )
