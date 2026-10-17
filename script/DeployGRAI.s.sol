@@ -55,6 +55,9 @@ import {CreateXDeploy} from "./CreateXDeploy.sol";
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "deployLiFiCustodian(address,address,bool)" 0xGrinders 0x0 true \
 ///     --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "upgradeTreasuryImpl(address,address)" 0xTreasuryProxy 0x0 \
+///     --rpc-url arbitrum --broadcast --verify
 contract DeployGRAI is CreateXDeploy {
     struct AssetData {
         address asset;
@@ -193,6 +196,34 @@ contract DeployGRAI is CreateXDeploy {
     function setTreasury(GRAI grai, address treasury) public {
         grai.setTreasury(treasury);
         console2.log("Wired GRAI.setTreasury:", treasury);
+    }
+
+    /// @notice UUPS-upgrade Treasury proxy to `impl`. If `impl == address(0)`, deploy a new `Treasury` impl first.
+    /// @param treasuryProxy Existing Treasury ERC1967 proxy.
+    /// @param impl Existing Treasury impl, or `address(0)` to deploy a new one.
+    function upgradeTreasuryImpl(address treasuryProxy, address impl) public returns (address implementation) {
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        Treasury treasury = Treasury(payable(treasuryProxy));
+
+        console2.log("Treasury proxy:", treasuryProxy);
+        console2.log("owner:", treasury.owner());
+        console2.log("impl:", impl);
+
+        require(treasuryProxy.code.length > 0, "TREASURY not a contract");
+        require(treasury.owner() == vm.addr(pk), "PRIVATE_KEY is not Treasury owner");
+
+        vm.startBroadcast(pk);
+        if (impl == address(0)) {
+            implementation = address(new Treasury());
+        } else {
+            require(impl.code.length > 0, "impl not a contract");
+            implementation = impl;
+        }
+        treasury.upgradeToAndCall(implementation, "");
+        vm.stopBroadcast();
+
+        console2.log("Treasury impl (upgraded):", implementation);
+        console2.log("Treasury proxy:", treasuryProxy);
     }
 
     //////////////////// GRINDERS ////////////////////
