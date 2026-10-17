@@ -204,7 +204,8 @@ abstract contract GRAIFixture is Test {
             cfg.unlockPenaltyBps,
             cfg.poachFeeBps,
             cfg.liquidationPeriod,
-            cfg.redeemPeriod
+            cfg.redeemPeriod,
+            cfg.mintPremiumBpsPerYear
         ) = grai.config();
     }
 
@@ -219,7 +220,7 @@ abstract contract GRAIFixture is Test {
 
     /// @dev Packed `config` is one storage word (current OZ layout). Update if inheritance changes.
     ///      `forge inspect GRAI storage-layout` → `config` slot.
-    uint256 private constant _CONFIG_SLOT = 14;
+    uint256 private constant _CONFIG_SLOT = 13;
 
     function _writeConfig(IGRAI.Config memory cfg) internal {
         vm.store(address(grai), bytes32(_CONFIG_SLOT), bytes32(_packConfig(cfg)));
@@ -230,7 +231,8 @@ abstract contract GRAIFixture is Test {
             | (uint256(cfg.revenueShareBps) << 32) | (uint256(cfg.claimTipBps) << 48)
             | (uint256(cfg.bribePremiumBps) << 64) | (uint256(cfg.quorumBps) << 80)
             | (uint256(cfg.unlockPenaltyBps) << 96) | (uint256(cfg.poachFeeBps) << 112)
-            | (uint256(cfg.liquidationPeriod) << 128) | (uint256(cfg.redeemPeriod) << 160);
+            | (uint256(cfg.liquidationPeriod) << 128) | (uint256(cfg.redeemPeriod) << 160)
+            | (uint256(cfg.mintPremiumBpsPerYear) << 192);
     }
 
     function _deposit(address user, MockERC20 token, uint256 amount) internal returns (uint256 graiOut) {

@@ -37,8 +37,10 @@ contract GRAI is
     /// @notice Fixed-point scale for dividend `accShare` math (`1e18`).
     uint256 internal constant PRECISION = 1e18;
 
-    /// @notice Fund lifecycle regime (`GRINDING` ↔ `REDEMPTION`).
-    Regime public regime;
+    /// @notice Unix time when mint-premium compounding starts (`0` = premium off, mint at book).
+    /// @dev Set once at `initialize` / `reinitializeV2`. Rate lives in `config.mintPremiumBpsPerYear`.
+    ///      Packed with `liquidationAt` + `weth` in one slot (6+6+20).
+    uint48 public mintPremiumAt;
 
     /// @notice Timestamp when redemption opened; zero while `GRINDING`.
     uint48 public liquidationAt;
@@ -79,12 +81,16 @@ contract GRAI is
     /// @notice Sum of GRAI committed toward liquidation quorum (`escrows[locker].voted`; ≤ `totalLocked`).
     uint256 public totalVoted;
 
-    /// @notice Book NAV in `USD_DECIMALS` (6); mint rate = `value * totalSupply / totalValue`. Moves on
-    ///         `deposit`, redeem burn, and `revive`; excludes yield inventory on this contract.
+    /// @notice Book NAV in `USD_DECIMALS` (6). Book mint = `value * totalSupply / totalValue`; deposit
+    ///         ask compounds `config.mintPremiumBpsPerYear` in `previewDeposit`. Moves on `deposit`,
+    ///         redeem burn, and `revive`; excludes yield inventory on this contract.
     uint256 public totalValue;
 
-    /// @notice Bribe premium, liquidation quorum, unlock fee, and timing.
+    /// @notice Bribe premium, liquidation quorum, unlock fee, mint premium, and timing.
     Config public config;
+
+    /// @notice Fund lifecycle regime (`GRINDING` ↔ `REDEMPTION`).
+    Regime public regime;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -112,9 +118,11 @@ contract GRAI is
             unlockPenaltyBps: 1_00, // 1% on every unlock
             poachFeeBps: 1_00, // 1% of poach ask → Grinders
             liquidationPeriod: uint32(24 hours),
-            redeemPeriod: uint32(7 days)
+            redeemPeriod: uint32(7 days),
+            mintPremiumBpsPerYear: 5_00 // +5%/year compound; retarget via `setConfig(MINT_PREMIUM)`
         });
         _requireValidConfig(config);
+        mintPremiumAt = uint48(block.timestamp);
     }
 
     /// @inheritdoc OwnableUpgradeable
@@ -163,8 +171,9 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev `id` selects the field; `data` is the packed value. Yield cuts are immutable after
-    ///      `initialize` — only tip, quorum, unlock, poach fee, periods, `revenueShareBps`, and
-    ///      per-asset `BRIBEABLE` are patchable. `BRIBEABLE` packs `asset` (low 160) + flag (bit 160).
+    ///      `initialize` — only tip, quorum, unlock, poach fee, periods, `revenueShareBps`,
+    ///      `mintPremiumBpsPerYear`, and per-asset `BRIBEABLE` are patchable.
+    ///      `BRIBEABLE` packs `asset` (low 160) + flag (bit 160).
     function setConfig(ConfigId id, uint256 data) external onlyOwner {
         // Live redeem/revive clocks; freeze both windows for the whole liquidation.
         _requireRegime(Regime.GRINDING);
@@ -197,6 +206,8 @@ contract GRAI is
             cfg.liquidationPeriod = uint32(data);
         } else if (id == ConfigId.REDEEM_PERIOD) {
             cfg.redeemPeriod = uint32(data);
+        } else if (id == ConfigId.MINT_PREMIUM) {
+            cfg.mintPremiumBpsPerYear = uint16(data);
         }
         // forge-lint: disable-end(unsafe-typecast)
 
@@ -348,13 +359,33 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Mints shares at book value: `graiOut = value * totalSupply / totalValue`, or `value` when
-    ///      `totalValue == 0` (bootstrap). While `totalSupply == totalValue`, that is 1 GRAI per $1 book
-    ///      (USD_DECIMALS). Yield held by GRAI is excluded from `totalValue` — it is a separate pool for
-    ///      dividends / liquidation upside, not part of the deposit exchange rate.
+    /// @dev Book mint: `book = value * totalSupply / totalValue`, or `value` when `totalValue == 0`.
+    ///      Ask compounds `config.mintPremiumBpsPerYear` once per full year since `mintPremiumAt`:
+    ///      `priceBps = BPS * (BPS + rate)^n / BPS^n`, then `graiOut = book * BPS / priceBps`
+    ///      (par while rate/clock off or year 0). Full `value` still credits `totalValue` on `deposit`.
+    ///      Yield held by GRAI is excluded from `totalValue`.
     function previewDeposit(address asset, uint256 amount) public view returns (uint256 value, uint256 graiOut) {
         value = usdValue(asset, amount);
-        graiOut = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
+        uint256 book = totalValue > 0 ? (value * totalSupply()) / totalValue : value;
+
+        uint16 rate = config.mintPremiumBpsPerYear;
+        uint48 start = mintPremiumAt;
+        if (rate == 0 || start == 0 || block.timestamp < start) {
+            return (value, book);
+        }
+        uint256 yearsElapsed = (block.timestamp - start) / 365 days;
+        if (yearsElapsed == 0) {
+            return (value, book);
+        }
+        if (yearsElapsed > 100) yearsElapsed = 100;
+        uint256 priceBps = BPS;
+        for (uint256 i; i < yearsElapsed;) {
+            priceBps = (priceBps * (BPS + rate)) / BPS;
+            unchecked {
+                ++i;
+            }
+        }
+        return (value, (book * BPS) / priceBps);
     }
 
     //////////////////// POACH ////////////////////
@@ -879,6 +910,7 @@ contract GRAI is
         if (cfg.quorumBps >= BPS) revert BpsTooHigh();
         if (cfg.unlockPenaltyBps > 10_00) revert BpsTooHigh();
         if (cfg.poachFeeBps > 10_00) revert BpsTooHigh();
+        if (cfg.mintPremiumBpsPerYear > BPS) revert BpsTooHigh();
         if (cfg.quorumBps < 2) revert BpsTooHigh();
         if (cfg.dividendCutBps == 0) revert InvalidCuts();
         if (uint256(cfg.dividendCutBps) + cfg.treasuryCutBps != BPS) revert InvalidCuts();

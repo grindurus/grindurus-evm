@@ -19,7 +19,8 @@ contract DumpGrinderArtTest is Test {
             payable(
                 address(
                     new ERC1967Proxy(
-                        address(new GRAI()), abi.encodeCall(GRAI.initialize, (admin, address(wethToken)))
+                        address(new GRAI()),
+                        abi.encodeCall(GRAI.initialize, (admin, address(wethToken)))
                     )
                 )
             )

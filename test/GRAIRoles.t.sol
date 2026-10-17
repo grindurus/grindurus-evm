@@ -198,7 +198,8 @@ contract GRAIRolesTest is Test {
             uint16 unlockPenaltyBps,
             uint16 poachFeeBps,
             uint32 liquidationPeriod,
-            uint32 redeemPeriod
+            uint32 redeemPeriod,
+            uint16 mintPremiumBpsPerYear
         ) = grai.config();
         // Yield cuts stay at initialize defaults (immutable via setConfig).
         assertEq(dividendCutBps, 5_000);
@@ -211,6 +212,7 @@ contract GRAIRolesTest is Test {
         assertEq(poachFeeBps, 200);
         assertEq(liquidationPeriod, 12 hours);
         assertEq(redeemPeriod, 3 days);
+        assertEq(mintPremiumBpsPerYear, 5_00);
     }
 
     function test_OwnerCanPatchClaimTipBps() public {
@@ -220,7 +222,7 @@ contract GRAIRolesTest is Test {
             address(grai),
             abi.encodeCall(grai.setConfig, (IGRAI.ConfigId.CLAIM_TIP, uint256(50)))
         );
-        (,,, uint16 claimTipBps,,,,,,) = grai.config();
+        (,,, uint16 claimTipBps,,,,,,,) = grai.config();
         assertEq(claimTipBps, 50);
     }
 

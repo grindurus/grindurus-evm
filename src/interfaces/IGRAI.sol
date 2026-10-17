@@ -54,7 +54,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         UNLOCK_PENALTY,
         LIQUIDATION_PERIOD,
         REDEEM_PERIOD,
-        POACH_FEE
+        POACH_FEE,
+        MINT_PREMIUM
     }
 
     struct Asset {
@@ -129,6 +130,9 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         uint32 liquidationPeriod;
         /// @notice Extra window after `liquidationPeriod` before liquidation can be closed via `revive`.
         uint32 redeemPeriod;
+        /// @notice Compound mint premium per full year, in bps (`500` = +5%/year on deposit ask).
+        /// @dev Appended after periods so existing `config` slot packing stays stable on upgrade.
+        uint16 mintPremiumBpsPerYear;
     }
 
     event AssetUpdate(address indexed asset, bool listed);
@@ -168,7 +172,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
             uint16 unlockPenaltyBps,
             uint16 poachFeeBps,
             uint32 liquidationPeriod,
-            uint32 redeemPeriod
+            uint32 redeemPeriod,
+            uint16 mintPremiumBpsPerYear
         );
 
     function treasury() external view returns (ITreasury);
@@ -271,6 +276,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     /// @notice Patch a `Config` field, or `BRIBEABLE` (`assets[asset].bribeable` via packed `data`).
     function setConfig(ConfigId id, uint256 data) external;
 
+    /// @notice Unix time when mint-premium compounding starts (`0` disables premium).
+    function mintPremiumAt() external view returns (uint48);
+
+    /// @notice Book USD value of `amount` and GRAI minted after mint-premium ask.
+    /// @dev Book shares = `value * supply / totalValue` (or `value` if empty). Ask compounds
+    ///      `config.mintPremiumBpsPerYear` per full year since `mintPremiumAt`, then
+    ///      `graiOut = book * 100_00 / priceBps`. Full `value` still credits `totalValue`.
     function previewDeposit(address asset, uint256 amount) external view returns (uint256 value, uint256 graiOut);
 
     /// @notice Mint GRAI against deposited `asset`. If `lock`, escrow the minted `graiOut` for
