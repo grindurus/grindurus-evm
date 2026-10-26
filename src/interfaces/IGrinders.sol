@@ -23,6 +23,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     error NotGrai();
     error NotOwner();
     error NotToreador();
+    error LengthMismatch();
 
     /// @notice View row for `getCustodiansData`.
     struct CustodianData {
@@ -35,6 +36,10 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
         uint256 ethBalance;
         uint256 baseBalance;
         uint256 quoteBalance;
+        string baseSymbol;
+        uint8 baseDecimals;
+        string quoteSymbol;
+        uint8 quoteDecimals;
     }
 
     event Heartbeat(uint48 timestamp);
@@ -59,7 +64,7 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     ///         Gates `set` / `setToreador` / UUPS / `upgradeCustodian`.
     function owner() external view returns (address);
 
-    /// @notice Ops role for `allocate` / `deallocate` / `distribute`.
+    /// @notice Ops role for `allocate` / `deallocate` / `distribute` / `batchDistribute`.
     ///         Protocol `owner()` cannot call those — only `toreador`.
     ///         `mint` / `register` / `setAssets` are owner-gated.
     function toreador() external view returns (address);
@@ -119,6 +124,12 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     function deallocate(address custodian, address asset, uint256 amount) external;
     /// @notice `toreador` forwards yield `amount` of `asset` from `custodian` to GRAI.
     function distribute(address custodian, address asset, uint256 amount) external;
+    /// @notice `toreador` batch of `distribute`; arrays must be equal length; one heartbeat.
+    function batchDistribute(
+        address[] calldata custodians,
+        address[] calldata assets,
+        uint256[] calldata yieldAmounts
+    ) external;
 
     /// @notice Permissionless while `grai.liquidation()`: liquidate custodians `[fromId, toId)` and
     ///         transfer swept amounts to GRAI. Does not check `grinding`. GRAI opens by flipping

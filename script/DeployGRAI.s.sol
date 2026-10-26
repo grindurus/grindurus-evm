@@ -58,6 +58,9 @@ import {CreateXDeploy} from "./CreateXDeploy.sol";
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "upgradeTreasuryImpl(address,address)" 0xTreasuryProxy 0x0 \
 ///     --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "upgradeGrindersImpl(address,address)" 0xGrindersProxy 0x0 \
+///     --rpc-url arbitrum --broadcast --verify
 contract DeployGRAI is CreateXDeploy {
     struct AssetData {
         address asset;
@@ -256,6 +259,37 @@ contract DeployGRAI is CreateXDeploy {
     function setGrinders(GRAI grai, address grinders) public {
         grai.setGrinders(grinders);
         console2.log("Wired GRAI.setGrinders:", grinders);
+    }
+
+    /// @notice UUPS-upgrade Grinders proxy to `impl`. If `impl == address(0)`, deploy a new `Grinders` impl first.
+    /// @dev Caller must be protocol owner (`Grinders.owner()` == `grai.owner()`). Storage layout is preserved.
+    /// @param grindersProxy Existing Grinders ERC1967 proxy.
+    /// @param impl Existing Grinders impl, or `address(0)` to deploy a new one.
+    function upgradeGrindersImpl(address grindersProxy, address impl) public returns (address implementation) {
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        Grinders grinders = Grinders(payable(grindersProxy));
+
+        console2.log("Grinders proxy:", grindersProxy);
+        console2.log("owner:", grinders.owner());
+        console2.log("toreador:", grinders.toreador());
+        console2.log("impl:", impl);
+
+        require(grindersProxy.code.length > 0, "GRINDERS not a contract");
+        require(grinders.owner() == vm.addr(pk), "PRIVATE_KEY is not Grinders owner");
+
+        vm.startBroadcast(pk);
+        if (impl == address(0)) {
+            implementation = address(new Grinders());
+        } else {
+            require(impl.code.length > 0, "impl not a contract");
+            implementation = impl;
+        }
+        grinders.upgradeToAndCall(implementation, "");
+        vm.stopBroadcast();
+
+        console2.log("Grinders impl (upgraded):", implementation);
+        console2.log("Grinders proxy:", grindersProxy);
+        console2.log("totalSupply:", grinders.totalSupply());
     }
 
     //////////////////// SETTERS ////////////////////

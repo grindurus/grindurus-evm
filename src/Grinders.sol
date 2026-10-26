@@ -4,6 +4,7 @@ pragma solidity ^0.8.30;
 import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
@@ -370,6 +371,27 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
         _heartbeat();
     }
 
+    /// @notice Batch `distribute` over parallel arrays; one heartbeat at the end.
+    /// @dev `toreador` only. Reverts `LengthMismatch` if array lengths differ.
+    function batchDistribute(
+        address[] calldata custodians_,
+        address[] calldata assets,
+        uint256[] calldata yieldAmounts
+    ) public {
+        _onlyToreador();
+        uint256 n = custodians_.length;
+        if (n != assets.length || n != yieldAmounts.length) revert LengthMismatch();
+        for (uint256 i; i < n;) {
+            address custodian = custodians_[i];
+            _requireCustodian(custodian);
+            ICustodian(payable(custodian)).distribute(assets[i], yieldAmounts[i]);
+            unchecked {
+                ++i;
+            }
+        }
+        if (n != 0) _heartbeat();
+    }
+
     //////////////////// ANYBODY ////////////////////
 
     /// @inheritdoc IGrinders
@@ -465,8 +487,27 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
                 list[i].quoteBalance = list[i].quoteAsset == address(0)
                     ? custodian.balance
                     : IERC20(list[i].quoteAsset).balanceOf(custodian);
+                (list[i].baseSymbol, list[i].baseDecimals) = _tokenMeta(list[i].baseAsset);
+                (list[i].quoteSymbol, list[i].quoteDecimals) = _tokenMeta(list[i].quoteAsset);
             }
             unchecked { ++i; }
+        }
+    }
+
+    /// @dev Native/`address(0)` → ETH/18. Bad ERC-20 metadata → empty symbol / 18 decimals.
+    function _tokenMeta(address asset) internal view returns (string memory symbol, uint8 decimals_) {
+        if (asset == address(0)) {
+            return ("ETH", 18);
+        }
+        try IERC20Metadata(asset).symbol() returns (string memory s) {
+            symbol = s;
+        } catch {
+            symbol = "";
+        }
+        try IERC20Metadata(asset).decimals() returns (uint8 d) {
+            decimals_ = d;
+        } catch {
+            decimals_ = 18;
         }
     }
 
