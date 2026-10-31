@@ -56,6 +56,9 @@ import {CreateXDeploy} from "./CreateXDeploy.sol";
 ///     --sig "deployLiFiCustodian(address,address,bool)" 0xGrinders 0x0 true \
 ///     --rpc-url arbitrum --broadcast --verify
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
+///     --sig "upgradeGraiImpl(address,address)" 0xGraiProxy 0x0 \
+///     --rpc-url arbitrum --broadcast --verify
+///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
 ///     --sig "upgradeTreasuryImpl(address,address)" 0xTreasuryProxy 0x0 \
 ///     --rpc-url arbitrum --broadcast --verify
 ///   PRIVATE_KEY=0x... forge script script/DeployGRAI.s.sol:DeployGRAI \
@@ -168,6 +171,43 @@ contract DeployGRAI is CreateXDeploy {
         }
         console2.log("GRAI impl:", impl);
         console2.log("GRAI proxy:", address(grai));
+    }
+
+    /// @notice UUPS-upgrade GRAI proxy to `impl`. If `impl == address(0)`, deploy a new `GRAI` impl first.
+    /// @dev Caller must be protocol owner (`grai.owner()`). Storage layout is preserved.
+    ///      Safe without a dividend-debt migrate when `totalVoted == 0` (debts already on full `locked`).
+    /// @param graiProxy Existing GRAI ERC1967 proxy.
+    /// @param impl Existing GRAI impl, or `address(0)` to deploy a new one.
+    function upgradeGraiImpl(address graiProxy, address impl) public returns (address implementation) {
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        GRAI grai = GRAI(payable(graiProxy));
+
+        console2.log("GRAI proxy:", graiProxy);
+        console2.log("owner:", grai.owner());
+        console2.log("treasury:", address(grai.treasury()));
+        console2.log("grinders:", address(grai.grinders()));
+        console2.log("totalLocked:", grai.totalLocked());
+        console2.log("totalVoted:", grai.totalVoted());
+        console2.log("impl:", impl);
+
+        require(graiProxy.code.length > 0, "GRAI not a contract");
+        require(grai.owner() == vm.addr(pk), "PRIVATE_KEY is not GRAI owner");
+
+        vm.startBroadcast(pk);
+        if (impl == address(0)) {
+            implementation = address(new GRAI());
+        } else {
+            require(impl.code.length > 0, "impl not a contract");
+            implementation = impl;
+        }
+        grai.upgradeToAndCall(implementation, "");
+        vm.stopBroadcast();
+
+        console2.log("GRAI impl (upgraded):", implementation);
+        console2.log("GRAI proxy:", graiProxy);
+        console2.log("totalSupply:", grai.totalSupply());
+        console2.log("totalLocked:", grai.totalLocked());
+        console2.log("totalVoted:", grai.totalVoted());
     }
 
     //////////////////// TREASURY ////////////////////

@@ -17,8 +17,9 @@ import {PriceOracleRouter} from "./PriceOracleRouter.sol";
 /// @title GRinders Artificial Index (GRAI)
 /// @author Chikhladze Vakhtanh (GH: @Pozzitron1337)
 /// @notice Condition-redeemable fund-share ERC20. Roles:
-///         holder → `lock` (dividends) and/or `vote` (quorum; auto-locks wallet shortfall) → voter;
-///         anyone may `bribe` to buy out a vote. Yield splits per `config` cuts (dividends / treasury).
+///         holder → `lock` (dividends on full lock) and/or `vote` (quorum; auto-locks shortfall;
+///         voted GRAI still earns dividends) → voter; anyone may `bribe` to buy out a vote
+///         (shrinks voter `locked` / future dividend share). Yield splits per `config` cuts.
 /// @dev Interact only via the ERC1967Proxy. Admin authority is Ownable2Step `owner`.
 contract GRAI is
     IGRAI,
@@ -298,7 +299,7 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev Quorum intentionally uses the live supply and a strict `>` vs `quorumBps`
-    ///      (exact equality is not enough). Deposits add new backing and unvoted GRAI,
+    ///      (exact equality is not enough). Deposits add new backing (and new GRAI),
     ///      reducing liquidation support until voters again exceed the configured share.
     function hasQuorum() public view returns (bool) {
         return totalVoted * BPS > totalSupply() * config.quorumBps;
@@ -418,8 +419,9 @@ contract GRAI is
     //////////////////// LOCK ////////////////////
 
     /// @inheritdoc IGRAI
-    /// @dev Escrows GRAI for dividend eligibility on the unvoted portion (`locked - voted`).
-    ///      Not required before `vote` — `vote` locks any shortfall itself. Exit locked (unvoted) GRAI via `unlock`.
+    /// @dev Escrows GRAI for dividend eligibility on the full lock (`locked`). Voting does not
+    ///      forfeit that share. Not required before `vote` — `vote` locks any shortfall itself.
+    ///      Exit via `unlock` (clamps vote) or `bribe` (voted portion).
     function lock(uint256 graiAmount) public nonReentrant {
         _requireRegime(Regime.GRINDING);
         _lock(msg.sender, graiAmount);
@@ -535,12 +537,12 @@ contract GRAI is
     }
 
     /// @inheritdoc IGRAI
-    /// @dev Pending = stored `claimable` plus unrealized accrual vs `assets[asset].accShare` on unvoted lock
-    ///      (`locked - voted`). `type(uint256).max` = full pending; otherwise `min(amount, pending)`.
+    /// @dev Pending = stored `claimable` plus unrealized accrual vs `assets[asset].accShare` on
+    ///      `escrows[locker].locked`. `type(uint256).max` = full pending; otherwise `min(amount, pending)`.
     function previewClaim(address locker, address asset, uint256 amount) public view returns (uint256) {
         _requireNotGRAI(asset);
         Position storage pos = positions[locker][asset];
-        uint256 accumulated = (_unvoted(locker) * assets[asset].accShare) / PRECISION;
+        uint256 accumulated = (escrows[locker].locked * assets[asset].accShare) / PRECISION;
         uint256 pending = pos.claimable;
         if (accumulated >= pos.debt) pending += accumulated - pos.debt;
         if (amount == type(uint256).max || amount >= pending) return pending;
@@ -578,8 +580,8 @@ contract GRAI is
 
     /// @inheritdoc IGRAI
     /// @dev No prior `lock` needed: locks any shortfall from the wallet, then commits toward quorum.
-    ///      Voted GRAI leaves the dividend base (`locked - voted`) and is buyable via `bribe`;
-    ///      exit also via `unlock` (clamps vote, unlock penalty).
+    ///      Voted GRAI stays in the dividend base (`locked`); buyable via `bribe`, or exit via
+    ///      `unlock` (clamps vote, unlock penalty). Bribe shrinks future dividend share by cutting `locked`.
     function vote(uint256 graiAmount) public nonReentrant {
         _requireRegime(Regime.GRINDING);
         _requireNotZeroAmount(graiAmount);
@@ -923,12 +925,6 @@ contract GRAI is
         return IERC20(asset).balanceOf(address(this));
     }
 
-    /// @dev Lock dividends accrue only on unvoted escrow: `locked - voted`. Fully voted locks earn none.
-    function _unvoted(address account) internal view returns (uint256) {
-        Escrow storage entry = escrows[account];
-        return entry.locked - entry.voted;
-    }
-
     /// @notice Balance available to liquidation redeem / revive (excludes dividend claim reserve).
     function _redeemable(address asset) internal view returns (uint256) {
         uint256 bal = _balance(asset);
@@ -945,14 +941,15 @@ contract GRAI is
 
     //////////////////// DIVIDENDS ////////////////////
 
-    /// @dev Accrue yield to unvoted locks via `accShare`. Reserved this bump is the delayed-whale
-    ///      increment `floor(eligible * newShare / PRECISION) - floor(eligible * oldShare / PRECISION)`
+    /// @dev Accrue yield to all locks via `accShare` on `totalLocked` (voted GRAI still earns).
+    ///      Reserved this bump is the delayed-whale increment
+    ///      `floor(eligible * newShare / PRECISION) - floor(eligible * oldShare / PRECISION)`
     ///      so a locker who accrues after several harvests cannot outrun `totalClaimable`.
     ///      Index dust (`amount - reserved`) goes to treasury instead of ghosting in the reserve
     ///      (which would also block delist). A zero reserved increment does not bump `accShare`.
     function _distribute(address asset, uint256 amount) internal {
         if (amount == 0) return;
-        uint256 eligible = totalLocked - totalVoted;
+        uint256 eligible = totalLocked;
         uint256 indexIncrease = eligible > 0 ? (amount * PRECISION) / eligible : 0;
         // No eligible locks, or cut too small to move the index → full cut to treasury.
         if (indexIncrease == 0) {
@@ -983,7 +980,7 @@ contract GRAI is
 
     function _accrueDividend(address account, address asset) internal {
         Position storage pos = positions[account][asset];
-        uint256 accumulated = (_unvoted(account) * assets[asset].accShare) / PRECISION;
+        uint256 accumulated = (escrows[account].locked * assets[asset].accShare) / PRECISION;
         // Relist reseeds `accShare` to 0 while stale `debt` may remain; saturate instead of underflow.
         if (accumulated >= pos.debt) pos.claimable += accumulated - pos.debt;
         pos.debt = accumulated;
@@ -991,10 +988,10 @@ contract GRAI is
 
     function _syncDividendDebts(address account) internal {
         uint256 len = assetList.length;
-        uint256 unvoted = _unvoted(account);
+        uint256 locked = escrows[account].locked;
         for (uint256 i; i < len;) {
             address asset = assetList[i];
-            positions[account][asset].debt = (unvoted * assets[asset].accShare) / PRECISION;
+            positions[account][asset].debt = (locked * assets[asset].accShare) / PRECISION;
             unchecked { ++i; }
         }
     }

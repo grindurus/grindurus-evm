@@ -60,7 +60,7 @@ contract GRAILifecycleTest is GRAIFixture {
         assertEq(bobGrai, 2_300e6); // 300 USDC + 1 ETH
         assertEq(carolGrai, 2_300e6);
 
-        // ── 2. Lock (unvoted) so everyone is dividend-eligible ──
+        // ── 2. Lock so everyone is dividend-eligible ──
         _lock(alice, aliceGrai);
         _lock(bob, bobGrai);
         _lock(carol, carolGrai);

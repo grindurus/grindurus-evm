@@ -66,7 +66,8 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
         /// @notice When true, `asset` may be used as the payment token in `bribe` / `previewBribe`.
         /// @dev Must not be fee-on-transfer: `bribe` requires exact `_pay` credit.
         bool bribeable;
-        /// @notice Cumulative yield of `asset` per unvoted locked GRAI (`locked - voted`), scaled by 1e18.
+        /// @notice Cumulative yield of `asset` per locked GRAI (`escrows.locked`), scaled by 1e18.
+        /// @dev Voting does not leave this index; bribe/unlock reduces `locked` and thus share.
         uint256 accShare;
         /// @notice Tokens reserved for locker claims (excluded from redeem / revive).
         uint256 totalClaimable;
@@ -101,7 +102,7 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
 
     /// @notice Yield split, bribe premium, liquidation quorum, unlock fee, and timing.
     struct Config {
-        /// @notice Share of distributed yield / bribe premium paid as dividends on unvoted locked GRAI, in bps.
+        /// @notice Share of distributed yield / bribe premium paid as dividends on locked GRAI, in bps.
         uint16 dividendCutBps;
         /// @notice Share of distributed yield / bribe premium sent to `treasury`, in bps.
         uint16 treasuryCutBps;
@@ -306,11 +307,13 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     function redeem(uint256 graiAmount) external;
 
     /// @notice Escrow wallet GRAI for dividend eligibility (optional if only voting — `vote` auto-locks).
-    ///         Exit unvoted lock via `unlock`; voted GRAI exits via `bribe` or unlock (clamps vote).
+    ///         Dividends accrue on full `locked` (voting does not forfeit share). Exit via `unlock`
+    ///         (clamps vote) or `bribe` (voted portion; shrinks future dividend share).
     function lock(uint256 graiAmount) external;
 
     /// @notice Commit GRAI toward liquidation quorum. No prior `lock` required: locks any wallet
-    ///         shortfall first so `voted + graiAmount` ends ≤ `locked`.
+    ///         shortfall first so `voted + graiAmount` ends ≤ `locked`. Voted GRAI remains
+    ///         dividend-eligible until bribed or unlocked.
     function vote(uint256 graiAmount) external;
 
     /// @notice Accrue residual dividends and return `graiAmount` from the active lock to the wallet.
@@ -368,9 +371,10 @@ interface IGRAI is IERC20, IERC20Metadata, IERC1046, IPriceOracleRouter {
     ///         Ask is book scaled by a dynamic adj vs half-quorum (premium / par / discount; slope
     ///         `bribePremiumBps`, uncapped above quorum on the discount leg). `asset` must not be
     ///         fee-on-transfer: payment must credit exactly `bribeAmount`; briber receives the full
-    ///         escrowed `graiAmount`. Premium: voter gets book + half the premium, rest → cuts.
-    ///         Discount: ask is book − half gap; the other half → cuts. Par: voter gets the full
-    ///         credited pull.
+    ///         escrowed `graiAmount` (wallet, not auto-locked). Reduces voter `locked`/`voted`, so
+    ///         future dividend share shrinks; already accrued `claimable` stays with the voter.
+    ///         Premium: voter gets book + half the premium, rest → cuts. Discount: ask is book −
+    ///         half gap; the other half → cuts. Par: voter gets the full credited pull.
     function bribe(address asset, address voter, uint256 graiAmount) external payable;
 
     /// @notice Liquidation open when `hasQuorum()` and Grinders is stale (`!grinding()`).
