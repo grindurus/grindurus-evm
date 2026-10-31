@@ -463,6 +463,58 @@ contract Grinders is IGrinders, ERC721EnumerableUpgradeable, UUPSUpgradeable {
     //////////////////// VIEW FUNCTIONS ////////////////////
 
     /// @inheritdoc IGrinders
+    /// @dev `value` = Σ `usdValue(asset, totalYielded)`; `assets` = GRAI `Asset` rows in list order.
+    function getIndexedYield() public view returns (uint256 value, IGRAI.Asset[] memory assets) {
+        if (address(grai).code.length == 0) {
+            return (0, new IGRAI.Asset[](0));
+        }
+        address[] memory list;
+        try grai.getAssets() returns (address[] memory got) {
+            list = got;
+        } catch {
+            return (0, new IGRAI.Asset[](0));
+        }
+        assets = new IGRAI.Asset[](list.length);
+        for (uint256 i; i < list.length;) {
+            address asset = list[i];
+            try grai.assets(asset) returns (
+                address asset_,
+                uint32 id,
+                bool bribeable,
+                uint256 accShare,
+                uint256 totalClaimable,
+                uint256 totalYielded_
+            ) {
+                assets[i] = IGRAI.Asset({
+                    asset: asset_,
+                    id: id,
+                    bribeable: bribeable,
+                    accShare: accShare,
+                    totalClaimable: totalClaimable,
+                    totalYielded: totalYielded_
+                });
+                if (totalYielded_ != 0) {
+                    try grai.usdValue(asset, totalYielded_) returns (uint256 usd) {
+                        value += usd;
+                    } catch {}
+                }
+            } catch {
+                assets[i] = IGRAI.Asset({
+                    asset: asset,
+                    id: 0,
+                    bribeable: false,
+                    accShare: 0,
+                    totalClaimable: 0,
+                    totalYielded: 0
+                });
+            }
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /// @inheritdoc IGrinders
     function getCustodiansData(uint256 fromId, uint256 toId) public view returns (CustodianData[] memory list) {
         if (fromId >= toId) revert InvalidCustodianRange(fromId, toId);
         uint256 n = totalSupply();

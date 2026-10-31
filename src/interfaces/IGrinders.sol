@@ -88,6 +88,11 @@ interface IGrinders is IERC721Enumerable, IERC1046 {
     ///         reverting `liquidation()` → `true` (no external gate). Else GRAI's flag.
     function liquidation() external view returns (bool);
 
+    /// @notice Lifetime Indexed Yield: USD book value + per-asset GRAI `Asset` snapshots.
+    /// @dev `value = Σ grai.usdValue(asset, assets[asset].totalYielded)` (`USD_DECIMALS` = 6).
+    ///      `assets` mirrors GRAI `assetList` order. Empty / reverting GRAI → `(0, [])`.
+    function getIndexedYield() external view returns (uint256 value, IGRAI.Asset[] memory assets);
+
     /// @notice Refresh the liquidation heartbeat (only linked GRAI, e.g. on `revive`).
     function heartbeat() external;
 
